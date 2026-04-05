@@ -3,3 +3,4 @@ dist/
 config.yaml
 logs/
 *.log
+package-lock.json
