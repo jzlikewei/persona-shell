@@ -12,39 +12,30 @@ async function main() {
   // Start director process
   await director.start();
 
-  // Feishu message → queue → director (with correlation ID)
+  // Feishu message → queue → director
   feishu.onMessage(async (text, messageId, chatId) => {
+    // /esc — cancel the oldest pending message
+    if (text.trim() === '/esc') {
+      const cancelled = queue.resolveOldest();
+      if (cancelled) {
+        console.log(`[bridge] /esc: cancelled message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
+        queue.logAction('CANCELLED', cancelled.messageId, `cid=${cancelled.correlationId}`);
+        await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+      } else {
+        await feishu.reply(messageId, '队列为空，没有可取消的消息');
+      }
+      return;
+    }
+
     console.log(`[bridge] Received message: ${text.slice(0, 50)}...`);
     const correlationId = queue.enqueue({ text, messageId, chatId });
     queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
-    // Inject correlation ID so Director can echo it back
-    const taggedText = `[CID:${correlationId}]\n${text}`;
-    await director.send(taggedText);
+    await director.send(text);
   });
 
-  // Director response → resolve by correlation ID → reply feishu
+  // Director response → resolve oldest → reply feishu
   director.on('response', async (reply: string) => {
-    // Try to extract correlation ID from Director's reply
-    const cidMatch = reply.match(/\[CID:(cid-\d+-[0-9a-f]{4})\]/);
-    let item;
-    let cleanReply = reply;
-
-    if (cidMatch) {
-      const correlationId = cidMatch[1];
-      item = queue.resolve(correlationId);
-      // Strip the CID tag from the reply before sending to user
-      cleanReply = reply.replace(/\[CID:cid-\d+-[0-9a-f]{4}\]\n?/, '').trim();
-      if (item) {
-        console.log(`[bridge] Matched response by cid=${correlationId}`);
-      } else {
-        console.warn(`[bridge] CID ${correlationId} not found in queue, falling back to oldest`);
-        item = queue.resolveOldest();
-      }
-    } else {
-      // Fallback: Director did not echo CID, resolve oldest message
-      console.warn('[bridge] No CID in director response, falling back to oldest');
-      item = queue.resolveOldest();
-    }
+    const item = queue.resolveOldest();
 
     if (!item) {
       console.warn('[bridge] Got director response but queue is empty');
@@ -52,8 +43,8 @@ async function main() {
     }
 
     try {
-      await feishu.reply(item.messageId, cleanReply);
-      queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} ${cleanReply.slice(0, 100)}`);
+      await feishu.reply(item.messageId, reply);
+      queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} ${reply.slice(0, 100)}`);
       console.log(`[bridge] Replied to ${item.messageId} (cid=${item.correlationId})`);
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);

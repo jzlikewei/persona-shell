@@ -112,7 +112,7 @@ export class Director extends EventEmitter {
     // Resume previous session if available
     const savedSession = this.readSession();
     if (savedSession) {
-      cmd += ` --conversation-id ${savedSession}`;
+      cmd += ` --resume ${savedSession}`;
       console.log(`[director] Resuming session: ${savedSession}`);
     } else {
       console.log('[director] Starting new session');
