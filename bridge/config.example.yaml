@@ -1,0 +1,13 @@
+# 配置模板 — 复制为 config.yaml 并填入实际值
+feishu:
+  app_id: "cli_xxxx"
+  app_secret: "xxxx"
+
+director:
+  pipe_dir: "/tmp/persona"
+  pid_file: "/tmp/persona/director.pid"
+  claude_path: "claude"
+
+logging:
+  level: "info"
+  queue_log: "logs/queue.log"

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+logs/
+*.log
+
+# Sensitive config
+bridge/config.yaml
+
+# Runtime
+/tmp/
+*.pid
+
+# OS
+.DS_Store
+
+# Empty dirs (keep with .gitkeep)
