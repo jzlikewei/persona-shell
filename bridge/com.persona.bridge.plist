@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.persona.bridge</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ilike/.bun/bin/bun</string>
+        <string>src/index.ts</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/ilike/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge/logs/bridge.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge/logs/bridge.stderr.log</string>
+</dict>
+</plist>
