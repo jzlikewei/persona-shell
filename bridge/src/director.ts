@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { spawn, execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { open } from 'fs/promises';
 import { join } from 'path';
 import { createInterface } from 'readline';
@@ -12,12 +12,15 @@ export class Director extends EventEmitter {
   private pipeIn: string;
   private pipeOut: string;
   private writeHandle: FileHandle | null = null;
+  private sessionFile: string;
+  private sessionId: string | null = null;
 
   constructor(config: Config['director']) {
     super();
     this.config = config;
     this.pipeIn = join(config.pipe_dir, 'director-in');
     this.pipeOut = join(config.pipe_dir, 'director-out');
+    this.sessionFile = join(config.pipe_dir, 'director-session');
   }
 
   async start(): Promise<void> {
@@ -40,6 +43,32 @@ export class Director extends EventEmitter {
     console.log('[director] Pipes connected');
 
     this.listenOutput(readHandle);
+  }
+
+  /** Kill current Director and restart with a fresh session (no --conversation-id) */
+  async flush(): Promise<void> {
+    console.log('[director] FLUSH: killing current session, starting fresh...');
+
+    // Kill existing process
+    const pid = this.readPid();
+    if (pid) {
+      try { process.kill(pid); } catch { /* already dead */ }
+    }
+
+    // Clear session — next spawn won't pass --conversation-id
+    this.clearSession();
+
+    // Clean up handles
+    await this.writeHandle?.close();
+    this.writeHandle = null;
+
+    // Clean up pipes
+    for (const pipe of [this.pipeIn, this.pipeOut]) {
+      try { unlinkSync(pipe); } catch { /* ok */ }
+    }
+
+    // Restart
+    await this.start();
   }
 
   async send(message: string): Promise<void> {
@@ -78,7 +107,16 @@ export class Director extends EventEmitter {
   private spawnDirector(): void {
     // Use shell redirection so the shell handles FIFO opens,
     // not Node.js (which would deadlock with openSync)
-    const cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose`;
+    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions`;
+
+    // Resume previous session if available
+    const savedSession = this.readSession();
+    if (savedSession) {
+      cmd += ` --conversation-id ${savedSession}`;
+      console.log(`[director] Resuming session: ${savedSession}`);
+    } else {
+      console.log('[director] Starting new session');
+    }
 
     const child = spawn('sh', ['-c', `${cmd} < "${this.pipeIn}" > "${this.pipeOut}"`], {
       detached: true,
@@ -108,6 +146,12 @@ export class Director extends EventEmitter {
         switch (event.type) {
           case 'system':
             console.log(`[director] System event: ${event.subtype}`);
+            // Capture session_id from init event
+            if (event.subtype === 'init' && event.session_id) {
+              this.sessionId = event.session_id;
+              this.saveSession(event.session_id);
+              console.log(`[director] Session ID: ${event.session_id}`);
+            }
             break;
 
           case 'assistant':
@@ -162,5 +206,21 @@ export class Director extends EventEmitter {
     } catch {
       return null;
     }
+  }
+
+  private saveSession(sessionId: string): void {
+    writeFileSync(this.sessionFile, sessionId);
+  }
+
+  private readSession(): string | null {
+    try {
+      return readFileSync(this.sessionFile, 'utf-8').trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private clearSession(): void {
+    try { unlinkSync(this.sessionFile); } catch { /* ok */ }
   }
 }
