@@ -17,7 +17,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/Users/ilike/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <string>/Users/ilike/.local/bin:/Users/ilike/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
 
     <key>RunAtLoad</key>

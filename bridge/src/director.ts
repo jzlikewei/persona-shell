@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { spawn, execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, openSync } from 'fs';
 import { open } from 'fs/promises';
 import { join, resolve } from 'path';
 import { createInterface } from 'readline';
@@ -118,10 +118,14 @@ export class Director extends EventEmitter {
       console.log('[director] Starting new session');
     }
 
+    const projectRoot = resolve(import.meta.dirname, '..', '..');
+    const stderrPath = join(this.config.pipe_dir, 'director-stderr.log');
+    const stderrFd = openSync(stderrPath, 'a');
+
     const child = spawn('sh', ['-c', `${cmd} < "${this.pipeIn}" > "${this.pipeOut}"`], {
       detached: true,
-      stdio: 'ignore',
-      cwd: resolve(import.meta.dirname, '..', '..'),  // 项目根目录，确保 Claude Code 能找到 CLAUDE.md 和 .claude/memory/
+      stdio: ['ignore', 'ignore', stderrFd],
+      cwd: projectRoot,
     });
 
     child.unref();
