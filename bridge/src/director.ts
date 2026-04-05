@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { spawn, execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
 import { open } from 'fs/promises';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
@@ -121,6 +121,7 @@ export class Director extends EventEmitter {
     const child = spawn('sh', ['-c', `${cmd} < "${this.pipeIn}" > "${this.pipeOut}"`], {
       detached: true,
       stdio: 'ignore',
+      cwd: resolve(import.meta.dirname, '..', '..'),  // 项目根目录，确保 Claude Code 能找到 CLAUDE.md 和 .claude/memory/
     });
 
     child.unref();
