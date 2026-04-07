@@ -7,7 +7,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge/start.sh</string>
+        <string>/Users/ilike/go/src/github.com/jzlikewei/persona/start.sh</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -17,9 +17,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge/logs/bridge.stdout.log</string>
+    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/logs/bridge.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge/logs/bridge.stderr.log</string>
+    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/logs/bridge.stderr.log</string>
 </dict>
 </plist>

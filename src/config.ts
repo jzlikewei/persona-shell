@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { load } from 'js-yaml';
 import { resolve } from 'path';
+import { homedir } from 'os';
 
 export interface Config {
   feishu: {
@@ -8,6 +9,7 @@ export interface Config {
     app_secret: string;
   };
   director: {
+    persona_dir: string;
     pipe_dir: string;
     pid_file: string;
     claude_path: string;
@@ -16,6 +18,10 @@ export interface Config {
     level: string;
     queue_log: string;
   };
+}
+
+function expandHome(p: string): string {
+  return p.startsWith('~') ? p.replace('~', homedir()) : p;
 }
 
 export function loadConfig(path?: string): Config {
@@ -30,6 +36,7 @@ export function loadConfig(path?: string): Config {
   return {
     feishu: config.feishu,
     director: {
+      persona_dir: expandHome(config.director?.persona_dir ?? '~/.persona'),
       pipe_dir: config.director?.pipe_dir ?? '/tmp/persona',
       pid_file: config.director?.pid_file ?? '/tmp/persona/director.pid',
       claude_path: config.director?.claude_path ?? 'claude',

@@ -4,6 +4,7 @@ feishu:
   app_secret: "xxxx"
 
 director:
+  persona_dir: "~/.persona"
   pipe_dir: "/tmp/persona"
   pid_file: "/tmp/persona/director.pid"
   claude_path: "claude"

@@ -1,13 +1,17 @@
 import { spawn } from 'child_process';
 import { readFileSync, readdirSync, existsSync, mkdirSync } from 'fs';
-import { resolve, join, basename } from 'path';
+import { join, basename } from 'path';
 import { readFile } from 'fs/promises';
 import { load } from 'js-yaml';
 import type { Config } from './config.js';
 
-const PROJECT_ROOT = resolve(import.meta.dirname, '..', '..');
-const PERSONAS_DIR = join(PROJECT_ROOT, 'personas');
-const OUTBOX_DIR = join(PROJECT_ROOT, 'outbox');
+function getPersonasDir(config: Config['director']): string {
+  return join(config.persona_dir, 'personas');
+}
+
+function getOutboxDir(config: Config['director']): string {
+  return join(config.persona_dir, 'outbox');
+}
 
 interface PersonaFrontmatter {
   name: string;
@@ -40,8 +44,8 @@ function parseFrontmatter(raw: string): { frontmatter: PersonaFrontmatter; body:
   return { frontmatter, body: match[2] };
 }
 
-function loadPersona(type: string): PersonaDefinition {
-  const filePath = join(PERSONAS_DIR, `${type}.md`);
+function loadPersona(type: string, config: Config['director']): PersonaDefinition {
+  const filePath = join(getPersonasDir(config), `${type}.md`);
   if (!existsSync(filePath)) {
     throw new Error(`Persona definition not found: ${filePath}`);
   }
@@ -53,9 +57,10 @@ function loadPersona(type: string): PersonaDefinition {
 /**
  * List available persona types by scanning the personas/ directory.
  */
-export function listPersonaTypes(): string[] {
-  if (!existsSync(PERSONAS_DIR)) return [];
-  return readdirSync(PERSONAS_DIR)
+export function listPersonaTypes(config: Config['director']): string[] {
+  const dir = getPersonasDir(config);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
     .filter((f) => f.endsWith('.md'))
     .map((f) => basename(f, '.md'));
 }
@@ -71,12 +76,13 @@ export function spawnPersona(
   briefing: string,
   config: Config['director'],
 ): string {
-  const persona = loadPersona(type);
+  const persona = loadPersona(type, config);
   const taskId = `${type}-${Date.now()}-${++taskCounter}`;
-  const outFile = join(OUTBOX_DIR, `task-${taskId}.json`);
+  const outboxDir = getOutboxDir(config);
+  const outFile = join(outboxDir, `task-${taskId}.json`);
 
-  if (!existsSync(OUTBOX_DIR)) {
-    mkdirSync(OUTBOX_DIR, { recursive: true });
+  if (!existsSync(outboxDir)) {
+    mkdirSync(outboxDir, { recursive: true });
   }
 
   // Build the prompt: persona definition first, then briefing
@@ -95,7 +101,7 @@ export function spawnPersona(
   const child = spawn('sh', ['-c', shellCmd], {
     detached: true,
     stdio: 'ignore',
-    cwd: PROJECT_ROOT,
+    cwd: config.persona_dir,
   });
 
   child.unref();
@@ -110,10 +116,11 @@ export function spawnPersona(
  */
 export async function waitForResult(
   taskId: string,
+  config: Config['director'],
   options?: { timeoutMs?: number; intervalMs?: number },
 ): Promise<TaskResult> {
   const { timeoutMs = 300_000, intervalMs = 2_000 } = options ?? {};
-  const outFile = join(OUTBOX_DIR, `task-${taskId}.json`);
+  const outFile = join(getOutboxDir(config), `task-${taskId}.json`);
   const personaType = taskId.split('-')[0];
 
   const deadline = Date.now() + timeoutMs;

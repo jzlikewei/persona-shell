@@ -14,3 +14,4 @@ bridge/config.yaml
 .DS_Store
 
 # Empty dirs (keep with .gitkeep)
+config.yaml

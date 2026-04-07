@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { spawn, execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, openSync } from 'fs';
 import { open } from 'fs/promises';
-import { join, resolve } from 'path';
+import { join } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
@@ -105,13 +105,11 @@ export class Director extends EventEmitter {
   }
 
   private spawnDirector(): void {
-    // Use shell redirection so the shell handles FIFO opens,
-    // not Node.js (which would deadlock with openSync)
-    const projectRoot = resolve(import.meta.dirname, '..', '..');
-    const personasDir = join(projectRoot, 'personas');
-    const skillsDir = join(projectRoot, 'skills');
+    const personaDir = this.config.persona_dir;
+    const personasDir = join(personaDir, 'personas');
+    const skillsDir = join(personaDir, 'skills');
 
-    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --add-dir "${projectRoot}" --plugin-dir "${personasDir}" --plugin-dir "${skillsDir}"`;
+    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --add-dir "${personaDir}" --plugin-dir "${personasDir}" --plugin-dir "${skillsDir}"`;
 
     // Resume previous session if available
     const savedSession = this.readSession();
@@ -128,7 +126,7 @@ export class Director extends EventEmitter {
     const child = spawn('sh', ['-c', `${cmd} < "${this.pipeIn}" > "${this.pipeOut}"`], {
       detached: true,
       stdio: ['ignore', 'ignore', stderrFd],
-      cwd: projectRoot,
+      cwd: personaDir,
     });
 
     child.unref();
