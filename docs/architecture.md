@@ -439,3 +439,9 @@ last_flush: 2026-04-05T14:30:00
 - 记忆层的变更历史（git 管理）
 
 日志存储于 `audit_log/` 目录，按日组织。
+
+## 附录：已知问题与后续优化
+
+### /esc 中断期间的消息缓冲
+
+`/esc` 通过 SIGINT + restart 实现真正的请求取消。`interrupt()` 期间（约 2-3 秒），`director.send()` 会因 writeHandle 为 null 抛异常。当前依赖飞书 SDK 在 WebSocket 层缓冲后续消息，实际触发概率低。后续可在 Director 层加 send 队列，在 restart 期间缓冲消息，restart 完成后自动 flush。

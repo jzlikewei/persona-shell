@@ -13,6 +13,9 @@ export interface Config {
     pipe_dir: string;
     pid_file: string;
     claude_path: string;
+    time_sync_interval_ms: number;
+    flush_context_limit: number;
+    flush_interval_ms: number;
   };
   logging: {
     level: string;
@@ -40,6 +43,13 @@ export function loadConfig(path?: string): Config {
       pipe_dir: config.director?.pipe_dir ?? '/tmp/persona',
       pid_file: config.director?.pid_file ?? '/tmp/persona/director.pid',
       claude_path: config.director?.claude_path ?? 'claude',
+      time_sync_interval_ms: (config.director as Record<string, unknown>)?.time_sync_interval_hours
+        ? Number((config.director as Record<string, unknown>).time_sync_interval_hours) * 3600_000
+        : 2 * 3600_000,
+      flush_context_limit: Number((config.director as Record<string, unknown>)?.flush_context_limit ?? 700_000),
+      flush_interval_ms: (config.director as Record<string, unknown>)?.flush_interval_days
+        ? Number((config.director as Record<string, unknown>).flush_interval_days) * 86_400_000
+        : 7 * 86_400_000,
     },
     logging: {
       level: config.logging?.level ?? 'info',

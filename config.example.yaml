@@ -8,6 +8,8 @@ director:
   pipe_dir: "/tmp/persona"
   pid_file: "/tmp/persona/director.pid"
   claude_path: "claude"
+  flush_context_limit: 700000       # 上下文 token 阈值，超过则自动 flush
+  flush_interval_days: 7            # 距上次 flush 的最大天数
 
 logging:
   level: "info"

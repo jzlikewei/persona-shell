@@ -16,10 +16,10 @@ async function main() {
   feishu.onMessage(async (text, messageId, chatId) => {
     // /esc — cancel the oldest pending message
     if (text.trim() === '/esc') {
-      const cancelled = queue.resolveOldest();
+      const cancelled = queue.cancelOldest();
       if (cancelled) {
-        console.log(`[bridge] /esc: cancelled message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
-        queue.logAction('CANCELLED', cancelled.messageId, `cid=${cancelled.correlationId}`);
+        console.log(`[bridge] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
+        await director.interrupt();
         await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
       } else {
         await feishu.reply(messageId, '队列为空，没有可取消的消息');
@@ -27,10 +27,31 @@ async function main() {
       return;
     }
 
+    // /flush — manually flush Director context
+    if (text.trim() === '/flush') {
+      await feishu.reply(messageId, '正在执行 FLUSH...');
+      const success = await director.flush();
+      if (success) {
+        await feishu.reply(messageId, 'FLUSH 完成，上下文已刷新');
+      } else {
+        await feishu.reply(messageId, 'FLUSH 未能完成（超时或正在进行中），请稍后重试');
+      }
+      return;
+    }
+
     console.log(`[bridge] Received message: ${text.slice(0, 50)}...`);
     const correlationId = queue.enqueue({ text, messageId, chatId });
     queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
-    await director.send(text);
+    try {
+      await director.send(text);
+    } catch (err) {
+      if (String(err).includes('flushing')) {
+        await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
+        queue.resolve(correlationId);
+      } else {
+        throw err;
+      }
+    }
   });
 
   // Director response → resolve oldest → reply feishu

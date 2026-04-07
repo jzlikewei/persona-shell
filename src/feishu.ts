@@ -32,7 +32,11 @@ export function createFeishuClient(config: Config['feishu']) {
         if (!text) return;
 
         for (const handler of handlers) {
-          handler(text, message_id, chat_id);
+          try {
+            await handler(text, message_id, chat_id);
+          } catch (err) {
+            console.error('[feishu] Handler error:', err);
+          }
         }
       } catch {
         console.error('[feishu] Failed to parse message content:', content);
