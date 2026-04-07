@@ -7,18 +7,8 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ilike/.bun/bin/bun</string>
-        <string>src/index.ts</string>
+        <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge/start.sh</string>
     </array>
-
-    <key>WorkingDirectory</key>
-    <string>/Users/ilike/go/src/github.com/jzlikewei/persona/bridge</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/Users/ilike/.local/bin:/Users/ilike/.bun/bin:/usr/local/bin:/usr/bin:/bin</string>
-    </dict>
 
     <key>RunAtLoad</key>
     <true/>
