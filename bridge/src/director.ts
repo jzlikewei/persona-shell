@@ -107,7 +107,11 @@ export class Director extends EventEmitter {
   private spawnDirector(): void {
     // Use shell redirection so the shell handles FIFO opens,
     // not Node.js (which would deadlock with openSync)
-    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions`;
+    const projectRoot = resolve(import.meta.dirname, '..', '..');
+    const personasDir = join(projectRoot, 'personas');
+    const skillsDir = join(projectRoot, 'skills');
+
+    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --add-dir "${projectRoot}" --plugin-dir "${personasDir}" --plugin-dir "${skillsDir}"`;
 
     // Resume previous session if available
     const savedSession = this.readSession();
@@ -118,7 +122,6 @@ export class Director extends EventEmitter {
       console.log('[director] Starting new session');
     }
 
-    const projectRoot = resolve(import.meta.dirname, '..', '..');
     const stderrPath = join(this.config.pipe_dir, 'director-stderr.log');
     const stderrFd = openSync(stderrPath, 'a');
 
