@@ -103,6 +103,20 @@ async function main() {
 
   console.log('[bridge] Persona Bridge started');
 
+  // Notify restart success
+  const lastChatId = feishu.getLastChatId();
+  if (lastChatId) {
+    // Delay to let WS connect first
+    setTimeout(async () => {
+      try {
+        await feishu.sendMessage(lastChatId, 'Bridge 已重启 ✓');
+        console.log('[bridge] Restart notification sent');
+      } catch (err) {
+        console.warn('[bridge] Failed to send restart notification:', err);
+      }
+    }, 3000);
+  }
+
   // Graceful shutdown
   process.on('SIGINT', () => {
     console.log('[bridge] Shutting down (Director stays alive)...');

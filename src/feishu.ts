@@ -1,10 +1,12 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { readFileSync, writeFileSync } from 'fs';
 import type { Config } from './config.js';
 
 type MessageHandler = (text: string, messageId: string, chatId: string) => void;
 
 const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
 const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则强制重连
+const LAST_CHAT_FILE = '/tmp/persona/last-chat-id';
 
 export function createFeishuClient(config: Config['feishu']) {
   const client = new Lark.Client({
@@ -24,6 +26,9 @@ export function createFeishuClient(config: Config['feishu']) {
 
       const { chat_id, message_id, content } = message;
       if (!chat_id || !message_id || !content) return;
+
+      // Persist chat_id for restart notification
+      try { writeFileSync(LAST_CHAT_FILE, chat_id); } catch { /* ok */ }
 
       // Only handle text messages for now
       const msgType = (message as Record<string, unknown>).msg_type as string | undefined;
@@ -114,6 +119,26 @@ export function createFeishuClient(config: Config['feishu']) {
         },
       });
       lastActiveTime = Date.now();
+    },
+
+    async sendMessage(chatId: string, text: string) {
+      await client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          content: JSON.stringify({ text }),
+          msg_type: 'text',
+        },
+      });
+      lastActiveTime = Date.now();
+    },
+
+    getLastChatId(): string | null {
+      try {
+        return readFileSync(LAST_CHAT_FILE, 'utf-8').trim() || null;
+      } catch {
+        return null;
+      }
     },
   };
 }
