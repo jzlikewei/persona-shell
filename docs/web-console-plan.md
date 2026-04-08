@@ -131,3 +131,44 @@ src/
 ## 先做 Phase 1
 
 预估工作量：~300-400 行新代码 + ~50 行现有代码改造。
+
+---
+
+## Execution Checklist
+
+> 唯一需求来源。cron tick 只读此文件确定进度和下一批任务。
+> 规则：严格 layer gate，只做最细粒度的未完成层。下层未关闭时上层保持 `[ ]`。
+
+### Phase 1: Status + Operations (MVP)
+
+Phase 1 代码已提交（`5f619ab`），需运行验证和修复。
+
+- [ ] 1.1 运行验证：启动 Bridge（`bun run dev`），访问 `http://localhost:3000`，确认 TUI 界面渲染
+- [ ] 1.2 状态推送验证：确认 WebSocket 1s 间隔推送 Director 状态，数据刷新正常
+- [ ] 1.3 快捷键验证：按 f/e/r 触发 Flush/Esc/Restart，确认命令执行和反馈显示
+- [ ] 1.4 修复验证中发现的问题（如有）
+
+### Phase 2: Logs + Session Viewing
+
+- [ ] 2.1 日志查看器后端
+  - [ ] 2.1.1 日志源抽象：读取 + tail 三个日志文件（queue.log / bridge.stdout.log / director-stderr.log）
+  - [ ] 2.1.2 WebSocket 日志频道：按源订阅/取消订阅，实时推送新行
+- [ ] 2.2 日志查看器前端
+  - [ ] 2.2.1 xterm.js 日志视图模式：标签栏切换日志源
+  - [ ] 2.2.2 xterm-addon-search 集成：日志内搜索
+- [ ] 2.3 当前会话查看器后端
+  - [ ] 2.3.1 Session JSONL 解析器：提取 user/assistant 消息
+  - [ ] 2.3.2 WebSocket 会话频道：初始加载 + 实时追加新消息
+- [ ] 2.4 当前会话查看器前端
+  - [ ] 2.4.1 ANSI 格式化消息渲染（user/assistant 消息对，折叠 thinking/tool_use）
+  - [ ] 2.4.2 实时追加 Director 新响应
+
+### Phase 3: History Sessions + Advanced Features
+
+- [ ] 3.1 历史会话列表：扫描 JSONL 目录，按时间排序，显示消息数/大小/时长
+- [ ] 3.2 历史会话详情：复用 Phase 2 渲染器
+- [ ] 3.3 会话搜索：关键词搜索消息内容
+- [ ] 3.4 手动发消息：绕过飞书直接向 Director 发送文本
+- [ ] 3.5 Token 用量趋势：读取 stats-cache.json，渲染趋势图
+- [ ] 3.6 Persona 子人格/技能目录查看
+- [ ] 3.7 Outbox 任务列表和结果查看

@@ -11,6 +11,10 @@ bridge/config.yaml
 *.pid
 state/
 
+# execution-cron-builder (private, not committed)
+.cron/
+.ops/
+
 # OS
 .DS_Store
 
