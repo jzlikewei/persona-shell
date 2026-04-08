@@ -20,6 +20,8 @@ export class Director extends EventEmitter {
   private lastFlushAt: number = Date.now();
   private lastInputTokens = 0;
   private pendingCount = 0;
+  private currentDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  private writingDailyReport = false;
   private flushCheckpointResolve: (() => void) | null = null;
   private flushBootstrapResolve: (() => void) | null = null;
   private drainResolve: (() => void) | null = null;
@@ -292,6 +294,23 @@ export class Director extends EventEmitter {
     }
   }
 
+  private checkDailyReport(): void {
+    if (this.flushing || this.writingDailyReport) return;
+
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    if (today === this.currentDate) return;
+
+    const yesterday = this.currentDate;
+    this.currentDate = today;
+
+    console.log(`[director] Date changed: ${yesterday} → ${today}, requesting daily report...`);
+    this.writingDailyReport = true;
+    this.pendingCount++;
+    this.writeRaw(
+      `[系统] 日期已变更为 ${today}。请为 ${yesterday} 撰写日报，保存到 daily/${yesterday}.md。同时更新 daily/state.md 的状态。`
+    );
+  }
+
   private async restart(): Promise<void> {
     await this.writeHandle?.close();
     this.writeHandle = null;
@@ -425,6 +444,10 @@ export class Director extends EventEmitter {
                 // Late flush response (bootstrap timeout) — discard and end flush
                 console.log(`[director] FLUSH: discarding late response, ending flush`);
                 this.finishFlush();
+              } else if (this.writingDailyReport) {
+                // Daily report response — don't emit to users
+                console.log(`[director] Daily report done: ${currentResponse.trim().slice(0, 100)}`);
+                this.writingDailyReport = false;
               } else {
                 this.emit('response', currentResponse.trim());
               }
@@ -440,6 +463,7 @@ export class Director extends EventEmitter {
             // Check if auto-flush is needed (after emitting response)
             if (!this.flushing) {
               this.checkFlush();
+              this.checkDailyReport();
             }
             break;
         }
