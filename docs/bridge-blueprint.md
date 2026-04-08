@@ -65,9 +65,9 @@ Bridge 重启后恢复关键状态，解决"重启归零"问题。
 
 让系统异常可见、可追踪。
 
-- [ ] 4.1 **异常通知到飞书**: Director 崩溃、FLUSH 失败、飞书断连 > 3 分钟时，向最后活跃 chat 发送告警消息 [Explorer P1#6]
-- [ ] 4.2 **Director 输出旁路留存**: `director.ts` 的 `listenOutput` 在解析 JSON line 之前，把 raw line appendFileSync 到 `logs/director-output.log` [Explorer P1#7]
-- [ ] 4.3 **消息处理耗时**: `queue.ts` 记录 enqueue 和 resolve 的时间差；`index.ts` 回复时附加 `(耗时 Xs)` 信息 [Explorer P2]
+- [x] 4.1 **异常通知到飞书**: Director 崩溃、FLUSH 失败、飞书断连 > 3 分钟时，向最后活跃 chat 发送告警消息 [Explorer P1#6]
+- [x] 4.2 **Director 输出旁路留存**: `director.ts` 的 `listenOutput` 在解析 JSON line 之前，把 raw line appendFileSync 到 `logs/director-output.log` [Explorer P1#7]
+- [x] 4.3 **消息处理耗时**: `queue.ts` 记录 enqueue 和 resolve 的时间差；`index.ts` 回复时附加 `(耗时 Xs)` 信息 [Explorer P2]
 
 ### Phase 5: Web Console Validation
 

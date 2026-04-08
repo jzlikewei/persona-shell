@@ -17,6 +17,8 @@ export function createFeishuClient(config: Config['feishu']) {
   });
 
   const handlers: MessageHandler[] = [];
+  /** 4.1: Alert handlers for disconnect/reconnect notifications */
+  const alertHandlers: Array<(message: string) => void> = [];
   let lastActiveTime = Date.now();
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -83,6 +85,11 @@ export function createFeishuClient(config: Config['feishu']) {
 
       if (sinceLastConnect > MAX_DISCONNECT_TIME && sdkGaveUp) {
         console.warn(`[feishu] Watchdog: connection down for ${Math.round(sinceLastConnect / 1000)}s, SDK gave up. Forcing reconnect...`);
+        // 4.1: Notify alert handlers about disconnection
+        const alertMsg = `⚠️ 飞书连接断开超过 ${Math.round(sinceLastConnect / 1000)}s，正在重连...`;
+        for (const handler of alertHandlers) {
+          try { handler(alertMsg); } catch { /* ignore */ }
+        }
         forceReconnect().catch((err) => console.error('[feishu] Watchdog: forceReconnect error:', err));
       }
     }, WATCHDOG_INTERVAL);
@@ -122,6 +129,11 @@ export function createFeishuClient(config: Config['feishu']) {
 
     onMessage(handler: MessageHandler) {
       handlers.push(handler);
+    },
+
+    /** 4.1: Register handler for system alerts (disconnection, etc.) */
+    onAlert(handler: (message: string) => void) {
+      alertHandlers.push(handler);
     },
 
     async reply(messageId: string, text: string) {

@@ -1,12 +1,15 @@
 import { EventEmitter } from 'events';
 import { spawn, execSync } from 'child_process';
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, openSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, openSync, appendFileSync } from 'fs';
 import { open } from 'fs/promises';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
 import { saveState, loadState } from './state-store.js';
+
+/** 4.2: Director output sidecar log path */
+const DIRECTOR_OUTPUT_LOG = join(import.meta.dirname, '..', 'logs', 'director-output.log');
 
 interface DirectorPersistedState {
   lastFlushAt: number;
@@ -322,8 +325,16 @@ export class Director extends EventEmitter {
       console.log(`[director] Auto-flush triggered: ${reason}`);
       // Fire and forget — flush is async but we don't block the event loop
       this.flush().then((success) => {
-        if (success) this.emit('auto-flush-complete');
-      }).catch((err) => console.error('[director] Auto-flush failed:', err));
+        if (success) {
+          this.emit('auto-flush-complete');
+        } else {
+          // 4.1: Notify about auto-flush failure
+          this.emit('alert', `⚠️ 自动 FLUSH 未能完成（reason: ${reason}）`);
+        }
+      }).catch((err) => {
+        console.error('[director] Auto-flush failed:', err);
+        this.emit('alert', `⚠️ 自动 FLUSH 异常: ${String(err).slice(0, 200)}`);
+      });
     }
   }
 
@@ -430,6 +441,13 @@ export class Director extends EventEmitter {
 
     rl.on('line', (line) => {
       if (!line.trim()) return;
+
+      // 4.2: Sidecar raw output to logs/director-output.log before parsing
+      try {
+        const logDir = dirname(DIRECTOR_OUTPUT_LOG);
+        if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+        appendFileSync(DIRECTOR_OUTPUT_LOG, line + '\n');
+      } catch { /* best-effort logging */ }
 
       try {
         const event = JSON.parse(line);
@@ -542,6 +560,8 @@ export class Director extends EventEmitter {
         // Flush handles its own restart — do nothing here
         console.log('[director] Pipe closed during flush (expected)');
       } else {
+        // 4.1: Alert before unexpected restart
+        this.emit('alert', `🔴 Director 进程意外退出，正在重启...`);
         console.log('[director] Output pipe closed, restarting...');
         await this.restart();
       }

@@ -50,6 +50,29 @@ async function main() {
     }
   });
 
+  // 4.1: Alert notification — forward Director and system alerts to feishu
+  director.on('alert', (message: string) => {
+    const lastChatId = feishu.getLastChatId();
+    if (lastChatId) {
+      feishu.sendMessage(lastChatId, message).catch((err) => {
+        console.warn('[bridge] Failed to send alert notification:', err);
+      });
+    }
+  });
+
+  // 4.1: Feishu disconnection alert — sent after reconnection succeeds
+  feishu.onAlert((message: string) => {
+    const lastChatId = feishu.getLastChatId();
+    if (lastChatId) {
+      // Delay slightly — reconnection may still be in progress
+      setTimeout(() => {
+        feishu.sendMessage(lastChatId, message).catch((err) => {
+          console.warn('[bridge] Failed to send feishu alert:', err);
+        });
+      }, 5000);
+    }
+  });
+
   // Feishu message → queue → director
   feishu.onMessage(async (text, messageId, chatId, msgType) => {
     // 1.3: Non-text message feedback
@@ -153,18 +176,30 @@ async function main() {
       return;
     }
 
+    // 4.3: Calculate message processing elapsed time
+    const elapsedMs = Date.now() - item.timestamp;
+    const elapsedSec = (elapsedMs / 1000).toFixed(1);
+    const replyWithTiming = `${reply}\n\n(耗时 ${elapsedSec}s)`;
+
     try {
-      await feishu.reply(item.messageId, reply);
-      queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} ${reply.slice(0, 100)}`);
-      console.log(`[bridge] Replied to ${item.messageId} (cid=${item.correlationId})`);
+      await feishu.reply(item.messageId, replyWithTiming);
+      queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
+      console.log(`[bridge] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
       console.error(`[bridge] Failed to reply:`, err);
     }
   });
 
-  director.on('close', () => {
+  director.on('close', async () => {
     console.error('[bridge] Director closed unexpectedly');
+    // 4.1: Notify before exit
+    const lastChatId = feishu.getLastChatId();
+    if (lastChatId) {
+      try {
+        await feishu.sendMessage(lastChatId, '🔴 Director 已关闭，Bridge 即将退出');
+      } catch { /* best-effort */ }
+    }
     process.exit(1);
   });
 
