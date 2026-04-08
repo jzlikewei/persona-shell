@@ -9,6 +9,7 @@ bridge/config.yaml
 # Runtime
 /tmp/
 *.pid
+state/
 
 # OS
 .DS_Store
