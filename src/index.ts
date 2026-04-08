@@ -17,6 +17,7 @@ async function main() {
   const queue = new MessageQueue(config.logging.queue_log);
   const director = new Director(config.director);
   const feishu = createFeishuClient(config.feishu);
+  const startTime = Date.now();
 
   // Start director process
   await director.start();
@@ -24,8 +25,25 @@ async function main() {
   // 启动 Web 管理控制台
   startConsole(director, queue, config);
 
+  // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
+  director.on('auto-flush-complete', () => {
+    const lastChatId = feishu.getLastChatId();
+    if (lastChatId) {
+      feishu.sendMessage(lastChatId, '🔄 上下文已自动刷新').catch((err) => {
+        console.warn('[bridge] Failed to send auto-flush notification:', err);
+      });
+    }
+  });
+
   // Feishu message → queue → director
-  feishu.onMessage(async (text, messageId, chatId) => {
+  feishu.onMessage(async (text, messageId, chatId, msgType) => {
+    // 1.3: Non-text message feedback
+    if (msgType !== 'text') {
+      console.log(`[bridge] Non-text message type: ${msgType}`);
+      await feishu.reply(messageId, `暂不支持 ${msgType} 类型消息，请发送文字消息`);
+      return;
+    }
+
     // /esc — cancel the oldest pending message
     if (text.trim() === '/esc') {
       const cancelled = queue.cancelOldest();
@@ -58,6 +76,41 @@ async function main() {
       setTimeout(() => process.exit(0), 500);
       return;
     }
+
+    // 1.4: /status — show Director status summary
+    if (text.trim() === '/status') {
+      const s = director.getStatus();
+      const uptime = Math.floor((Date.now() - startTime) / 1000);
+      const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
+      const lines = [
+        `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
+        `📊 Tokens: ${s.lastInputTokens.toLocaleString()} / ${s.flushContextLimit.toLocaleString()}`,
+        `📬 Pending: ${s.pendingCount} | Queue: ${queue.length}`,
+        `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
+        `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
+      ];
+      await feishu.reply(messageId, lines.join('\n'));
+      return;
+    }
+
+    // 1.5: /help — list all available commands
+    if (text.trim() === '/help') {
+      const lines = [
+        '📖 可用命令:',
+        '/status — 查看 Director 状态摘要',
+        '/flush — 手动刷新上下文',
+        '/esc — 取消队列中最早的消息',
+        '/restart — 重启 Bridge 进程',
+        '/help — 显示此帮助信息',
+      ];
+      await feishu.reply(messageId, lines.join('\n'));
+      return;
+    }
+
+    // 1.1: ACK — add emoji reaction to let user know message is received
+    feishu.addReaction(messageId, 'THUMBSUP').catch((err) => {
+      console.warn('[bridge] Failed to add reaction:', err);
+    });
 
     console.log(`[bridge] Received message: ${text.slice(0, 50)}...`);
     const correlationId = queue.enqueue({ text, messageId, chatId });

@@ -294,7 +294,9 @@ export class Director extends EventEmitter {
         : `time since last flush exceeded ${this.config.flush_interval_ms}ms`;
       console.log(`[director] Auto-flush triggered: ${reason}`);
       // Fire and forget — flush is async but we don't block the event loop
-      this.flush().catch((err) => console.error('[director] Auto-flush failed:', err));
+      this.flush().then((success) => {
+        if (success) this.emit('auto-flush-complete');
+      }).catch((err) => console.error('[director] Auto-flush failed:', err));
     }
   }
 

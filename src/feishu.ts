@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { Config } from './config.js';
 
-type MessageHandler = (text: string, messageId: string, chatId: string) => void;
+type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
 
 const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
 const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则强制重连
@@ -35,10 +35,17 @@ export function createFeishuClient(config: Config['feishu']) {
         writeFileSync(LAST_CHAT_FILE, chat_id);
       } catch { /* ok */ }
 
-      // Only handle text messages for now
-      const msgType = (message as Record<string, unknown>).msg_type as string | undefined;
-      if (msgType && msgType !== 'text') {
-        console.log(`[feishu] Ignoring non-text message type: ${msgType}`);
+      const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
+
+      // Non-text messages: pass through with empty text so handler can reply
+      if (msgType !== 'text') {
+        for (const handler of handlers) {
+          try {
+            await handler('', message_id, chat_id, msgType);
+          } catch (err) {
+            console.error('[feishu] Handler error:', err);
+          }
+        }
         return;
       }
 
@@ -49,7 +56,7 @@ export function createFeishuClient(config: Config['feishu']) {
 
         for (const handler of handlers) {
           try {
-            await handler(text, message_id, chat_id);
+            await handler(text, message_id, chat_id, msgType);
           } catch (err) {
             console.error('[feishu] Handler error:', err);
           }
@@ -138,6 +145,13 @@ export function createFeishuClient(config: Config['feishu']) {
         },
       });
       lastActiveTime = Date.now();
+    },
+
+    async addReaction(messageId: string, emojiType: string) {
+      await client.im.v1.messageReaction.create({
+        path: { message_id: messageId },
+        data: { reaction_type: { emoji_type: emojiType } },
+      });
     },
 
     getLastChatId(): string | null {

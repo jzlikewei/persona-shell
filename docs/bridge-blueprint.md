@@ -36,11 +36,11 @@ persona-bridge 是飞书 ↔ Claude CLI Director 的桥接层。7 个文件、~1
 
 用户体验最高优先级改进，每项 5-40 行。
 
-- [ ] 1.1 **消息 ACK**: `index.ts` 收到非命令消息后，立即调用飞书 API 给原消息添加 emoji 反应（如 👀），让用户知道消息已收到 [Explorer P0#1]
-- [ ] 1.2 **自动 FLUSH 通知**: `director.ts` 自动触发 flush 时（`checkFlush()`），flush 完成后通过 emit 事件通知 `index.ts`，由 `index.ts` 向最后活跃 chat 发送"上下文已自动刷新"消息 [Explorer P0#5]
-- [ ] 1.3 **非文本消息反馈**: `index.ts` 的 feishu onMessage handler 中，非 text 类型消息回复"暂不支持该消息类型" [Explorer P1#9]
-- [ ] 1.4 **`/status` 命令**: `index.ts` 新增 `/status` 命令，返回 Director 状态摘要（alive/pid/tokens/pending/lastFlush/uptime）[Explorer P1#10]
-- [ ] 1.5 **`/help` 命令**: `index.ts` 新增 `/help` 命令，返回所有可用命令列表 [Explorer P2#20]
+- [x] 1.1 **消息 ACK**: `index.ts` 收到非命令消息后，立即调用飞书 API 给原消息添加 emoji 反应（如 👀），让用户知道消息已收到 [Explorer P0#1]
+- [x] 1.2 **自动 FLUSH 通知**: `director.ts` 自动触发 flush 时（`checkFlush()`），flush 完成后通过 emit 事件通知 `index.ts`，由 `index.ts` 向最后活跃 chat 发送"上下文已自动刷新"消息 [Explorer P0#5]
+- [x] 1.3 **非文本消息反馈**: `index.ts` 的 feishu onMessage handler 中，非 text 类型消息回复"暂不支持该消息类型" [Explorer P1#9]
+- [x] 1.4 **`/status` 命令**: `index.ts` 新增 `/status` 命令，返回 Director 状态摘要（alive/pid/tokens/pending/lastFlush/uptime）[Explorer P1#10]
+- [x] 1.5 **`/help` 命令**: `index.ts` 新增 `/help` 命令，返回所有可用命令列表 [Explorer P2#20]
 
 ### Phase 2: State Persistence
 
