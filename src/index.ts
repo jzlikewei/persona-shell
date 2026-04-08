@@ -51,6 +51,14 @@ async function main() {
       return;
     }
 
+    // /restart — restart Bridge process (launchd will respawn)
+    if (text.trim() === '/restart') {
+      await feishu.reply(messageId, 'Bridge 正在重启...');
+      console.log('[bridge] /restart: exiting for launchd respawn');
+      setTimeout(() => process.exit(0), 500);
+      return;
+    }
+
     console.log(`[bridge] Received message: ${text.slice(0, 50)}...`);
     const correlationId = queue.enqueue({ text, messageId, chatId });
     queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
