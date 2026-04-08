@@ -1,4 +1,4 @@
-# 配置模板 — 复制为 config.yaml 并填入实际值
+# 配置模板 — 复制到 ~/.persona/config.yaml 并填入实际值
 feishu:
   app_id: "cli_xxxx"
   app_secret: "xxxx"
@@ -8,9 +8,14 @@ director:
   pipe_dir: "/tmp/persona"
   pid_file: "/tmp/persona/director.pid"
   claude_path: "claude"
+  time_sync_interval_hours: 2       # 距上次时间同步超过 N 小时则注入时间前缀
   flush_context_limit: 700000       # 上下文 token 阈值，超过则自动 flush
   flush_interval_days: 7            # 距上次 flush 的最大天数
 
 logging:
   level: "info"
   queue_log: "logs/queue.log"
+
+console:
+  enabled: true
+  port: 3000

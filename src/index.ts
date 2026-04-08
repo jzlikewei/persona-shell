@@ -2,6 +2,15 @@ import { loadConfig } from './config.js';
 import { Director } from './director.js';
 import { createFeishuClient } from './feishu.js';
 import { MessageQueue } from './queue.js';
+import { startConsole } from './console.js';
+
+// Prepend ISO timestamp to all console output
+for (const method of ['log', 'warn', 'error'] as const) {
+  const original = console[method].bind(console);
+  console[method] = (...args: unknown[]) => {
+    original(`[${new Date().toISOString()}]`, ...args);
+  };
+}
 
 async function main() {
   const config = loadConfig();
@@ -11,6 +20,9 @@ async function main() {
 
   // Start director process
   await director.start();
+
+  // 启动 Web 管理控制台
+  startConsole(director, queue, config);
 
   // Feishu message → queue → director
   feishu.onMessage(async (text, messageId, chatId) => {

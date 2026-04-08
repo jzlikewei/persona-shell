@@ -29,6 +29,23 @@ export class MessageQueue {
     }
   }
 
+  /** 返回队列当前所有项的快照，供控制台使用 */
+  getSnapshot(): Array<{
+    text: string;
+    messageId: string;
+    correlationId: string;
+    timestamp: number;
+    cancelled: boolean;
+  }> {
+    return Array.from(this.items.values()).map((item) => ({
+      text: item.text.slice(0, 50),
+      messageId: item.messageId,
+      correlationId: item.correlationId,
+      timestamp: item.timestamp,
+      cancelled: !!item.cancelled,
+    }));
+  }
+
   enqueue(item: Omit<QueueItem, 'timestamp' | 'correlationId'>): string {
     const correlationId = generateCorrelationId();
     const entry: QueueItem = { ...item, timestamp: Date.now(), correlationId };

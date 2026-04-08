@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { spawn, execSync } from 'child_process';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, openSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, openSync } from 'fs';
 import { open } from 'fs/promises';
 import { join } from 'path';
 import { createInterface } from 'readline';
@@ -172,6 +172,54 @@ export class Director extends EventEmitter {
     return this.flushing;
   }
 
+  /** 返回 Director 当前状态快照，供控制台使用 */
+  getStatus(): {
+    alive: boolean;
+    pid: number | null;
+    sessionId: string | null;
+    flushing: boolean;
+    interrupted: boolean;
+    pendingCount: number;
+    lastInputTokens: number;
+    lastFlushAt: number;
+    flushContextLimit: number;
+  } {
+    return {
+      alive: this.isDirectorAlive(),
+      pid: this.readPid(),
+      sessionId: this.sessionId,
+      flushing: this.flushing,
+      interrupted: this.interrupted,
+      pendingCount: this.pendingCount,
+      lastInputTokens: this.lastInputTokens,
+      lastFlushAt: this.lastFlushAt,
+      flushContextLimit: this.config.flush_context_limit,
+    };
+  }
+
+  /** 公开的重启方法：杀掉当前进程并重新启动 */
+  async restartDirector(): Promise<void> {
+    const pid = this.readPid();
+    if (pid) {
+      try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
+    }
+    // restart() 会在 pipe close 回调中被触发，但我们这里主动调用以确保完成
+    // 等待 pipe 关闭后自动 restart
+    await new Promise<void>((resolve) => {
+      const onRestart = () => resolve();
+      // 如果 pipe close 触发了 restart，listenOutput 的 close handler 会调用 restart()
+      // 我们用一个 timeout 兜底
+      const timer = setTimeout(() => {
+        this.removeListener('restarted', onRestart);
+        resolve();
+      }, 10_000);
+      this.once('restarted', () => {
+        clearTimeout(timer);
+        onRestart();
+      });
+    });
+  }
+
   async send(message: string): Promise<void> {
     if (!this.writeHandle) {
       throw new Error('Director not started');
@@ -275,7 +323,13 @@ export class Director extends EventEmitter {
     const personasDir = join(personaDir, 'personas');
     const skillsDir = join(personaDir, 'skills');
 
-    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --add-dir "${personaDir}" --plugin-dir "${personasDir}" --plugin-dir "${skillsDir}"`;
+    // Collect all skill subdirectories as plugin dirs
+    const skillPluginDirs = readdirSync(skillsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => `--plugin-dir "${join(skillsDir, d.name)}"`)
+      .join(' ');
+
+    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --add-dir "${personaDir}" --plugin-dir "${personasDir}" ${skillPluginDirs}`;
 
     // Resume previous session if available
     const savedSession = this.readSession();
@@ -342,6 +396,13 @@ export class Director extends EventEmitter {
             break;
 
           case 'result':
+            // Handle stale session error — clear session and let close handler restart
+            if (event.is_error && event.errors?.some((e: string) => e.includes('No conversation found'))) {
+              console.warn('[director] Session expired, clearing session for fresh start');
+              this.clearSession();
+              break;
+            }
+
             // Track input_tokens from usage
             if (event.usage?.input_tokens) {
               this.lastInputTokens = event.usage.input_tokens;
@@ -404,8 +465,8 @@ export class Director extends EventEmitter {
         // Flush handles its own restart — do nothing here
         console.log('[director] Pipe closed during flush (expected)');
       } else {
-        console.log('[director] Output pipe closed, director may have exited');
-        this.emit('close');
+        console.log('[director] Output pipe closed, restarting...');
+        await this.restart();
       }
     });
   }

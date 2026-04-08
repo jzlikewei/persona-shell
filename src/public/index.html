@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Persona Console</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5/css/xterm.min.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1e2e; }
+    #terminal { width: 100%; height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script>
+    // ── 初始化 xterm ──
+    const term = new Terminal({
+      cursorBlink: false,
+      disableStdin: true,
+      fontFamily: '"SF Mono", "Menlo", "Consolas", monospace',
+      fontSize: 14,
+      theme: {
+        background: '#1e1e2e',
+        foreground: '#cdd6f4',
+        cursor: '#1e1e2e',
+        green: '#a6e3a1',
+        red: '#f38ba8',
+        yellow: '#f9e2af',
+        blue: '#89b4fa',
+        cyan: '#94e2d5',
+        white: '#cdd6f4',
+        brightBlack: '#585b70',
+      },
+    });
+
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById('terminal'));
+    fitAddon.fit();
+    window.addEventListener('resize', () => fitAddon.fit());
+
+    // ── ANSI 颜色辅助 ──
+    const ESC = '\x1b[';
+    const RESET = ESC + '0m';
+    const BOLD = ESC + '1m';
+    const DIM = ESC + '2m';
+    const GREEN = ESC + '32m';
+    const RED = ESC + '31m';
+    const YELLOW = ESC + '33m';
+    const BLUE = ESC + '34m';
+    const CYAN = ESC + '36m';
+    const WHITE = ESC + '37m';
+
+    // ── 状态 ──
+    let lastStatus = null;
+    let feedbackMsg = '';
+    let feedbackTimer = null;
+
+    // ── WebSocket ──
+    const wsUrl = 'ws://' + location.host;
+    let ws = null;
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+      ws.onopen = function() { console.log('[console] WebSocket connected'); };
+      ws.onclose = function() {
+        console.log('[console] WebSocket disconnected, reconnecting in 2s...');
+        setTimeout(connect, 2000);
+      };
+      ws.onerror = function(e) { console.error('[console] WebSocket error:', e); };
+      ws.onmessage = function(e) {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'status') {
+            lastStatus = msg.data;
+            render();
+          } else if (msg.type === 'command_result') {
+            showFeedback(msg.ok
+              ? GREEN + '✓ ' + msg.command + ': ' + msg.message + RESET
+              : RED + '✗ ' + msg.command + ': ' + msg.message + RESET
+            );
+          }
+        } catch(err) { /* 忽略解析错误 */ }
+      };
+    }
+    connect();
+
+    function sendCommand(cmd) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'command', command: cmd }));
+      }
+    }
+
+    // ── 键盘监听 ──
+    term.onKey(function(ev) {
+      var k = ev.domEvent.key.toLowerCase();
+      if (k === 'f') sendCommand('flush');
+      else if (k === 'e') sendCommand('esc');
+      else if (k === 'r') sendCommand('restart');
+    });
+
+    // ── 反馈信息 ──
+    function showFeedback(msg) {
+      feedbackMsg = msg;
+      if (feedbackTimer) clearTimeout(feedbackTimer);
+      feedbackTimer = setTimeout(function() {
+        feedbackMsg = '';
+        render();
+      }, 2000);
+      render();
+    }
+
+    // ── 工具函数 ──
+    function formatDuration(ms) {
+      if (ms < 0) return '0s';
+      var s = Math.floor(ms / 1000);
+      if (s < 60) return s + 's';
+      var m = Math.floor(s / 60);
+      if (m < 60) return m + 'm ' + (s % 60) + 's';
+      var h = Math.floor(m / 60);
+      return h + 'h ' + (m % 60) + 'm';
+    }
+
+    function formatNumber(n) {
+      return n.toLocaleString('en-US');
+    }
+
+    function renderProgressBar(ratio, width) {
+      var filled = Math.round(ratio * width);
+      var empty = width - filled;
+      var color = GREEN;
+      if (ratio > 0.95) color = RED;
+      else if (ratio > 0.8) color = YELLOW;
+      return color + repeat('█', filled) + DIM + repeat('░', empty) + RESET;
+    }
+
+    function repeat(ch, n) {
+      var s = '';
+      for (var i = 0; i < n; i++) s += ch;
+      return s;
+    }
+
+    // 填充到固定宽度（plainLen 是不含 ANSI 转义的纯文本长度）
+    function pad(text, plainLen, width) {
+      var padding = Math.max(0, width - plainLen);
+      return text + repeat(' ', padding);
+    }
+
+    // ── TUI 渲染 ──
+    function render() {
+      if (!lastStatus) return;
+
+      var d = lastStatus.director;
+      var q = lastStatus.queue;
+      var b = lastStatus.bridge;
+      var now = Date.now();
+      var W = Math.max(term.cols, 60);
+      var inner = W - 4; // 边框内宽度
+
+      var lines = [];
+
+      // 顶部边框
+      lines.push(CYAN + '┌─ Persona Console ' + repeat('─', Math.max(0, inner - 18)) + '┐' + RESET);
+      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
+
+      // Director 状态
+      var aliveIcon = d.alive ? GREEN + '●' + RESET : RED + '●' + RESET;
+      var aliveText = d.alive ? GREEN + 'ALIVE' + RESET : RED + 'DEAD' + RESET;
+      var pidStr = d.pid ? 'pid=' + d.pid : 'pid=N/A';
+      var sessStr = d.sessionId ? 'session=' + d.sessionId.slice(0, 8) + '...' : 'session=N/A';
+      var dirLine = '  Director: ' + aliveIcon + ' ' + aliveText + '  ' + DIM + pidStr + '  ' + sessStr + RESET;
+      var dirPlain = '  Director: ● ' + (d.alive ? 'ALIVE' : 'DEAD') + '  ' + pidStr + '  ' + sessStr;
+      lines.push(CYAN + '│' + RESET + pad(dirLine, dirPlain.length, inner) + CYAN + '│' + RESET);
+
+      // Token 进度条
+      var tokenRatio = d.flushContextLimit > 0 ? d.lastInputTokens / d.flushContextLimit : 0;
+      var barWidth = Math.min(20, inner - 40);
+      var bar = renderProgressBar(Math.min(tokenRatio, 1), barWidth);
+      var tokenText = formatNumber(d.lastInputTokens) + ' / ' + formatNumber(d.flushContextLimit);
+      var tokenLine = '  Tokens:   ' + bar + '  ' + WHITE + tokenText + RESET;
+      var tokenPlain = '  Tokens:   ' + repeat('X', barWidth) + '  ' + tokenText;
+      lines.push(CYAN + '│' + RESET + pad(tokenLine, tokenPlain.length, inner) + CYAN + '│' + RESET);
+
+      // Flush 信息
+      var flushAgo = formatDuration(now - d.lastFlushAt);
+      var flushLine = '  Flush:    ' + DIM + flushAgo + ' ago' + RESET + (d.flushing ? '  ' + YELLOW + '[FLUSHING...]' + RESET : '');
+      var flushPlain = '  Flush:    ' + flushAgo + ' ago' + (d.flushing ? '  [FLUSHING...]' : '');
+      lines.push(CYAN + '│' + RESET + pad(flushLine, flushPlain.length, inner) + CYAN + '│' + RESET);
+
+      // 队列
+      var pendingLabel = d.pendingCount === 0 ? GREEN + '0 pending' + RESET : YELLOW + d.pendingCount + ' pending' + RESET;
+      var queueLine = '  Queue:    ' + pendingLabel;
+      var queuePlain = '  Queue:    ' + d.pendingCount + ' pending';
+      lines.push(CYAN + '│' + RESET + pad(queueLine, queuePlain.length, inner) + CYAN + '│' + RESET);
+
+      // Uptime
+      var uptimeStr = formatDuration(b.uptime);
+      var uptimeLine = '  Uptime:   ' + DIM + uptimeStr + RESET;
+      var uptimePlain = '  Uptime:   ' + uptimeStr;
+      lines.push(CYAN + '│' + RESET + pad(uptimeLine, uptimePlain.length, inner) + CYAN + '│' + RESET);
+
+      // Memory
+      var memMB = (b.memory / 1024 / 1024).toFixed(1);
+      var memLine = '  Memory:   ' + DIM + memMB + ' MB' + RESET;
+      var memPlain = '  Memory:   ' + memMB + ' MB';
+      lines.push(CYAN + '│' + RESET + pad(memLine, memPlain.length, inner) + CYAN + '│' + RESET);
+
+      // 空行
+      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
+
+      // 队列详情区
+      var qSecTitle = '  ── Queue ' + repeat('─', Math.max(0, inner - 12));
+      lines.push(CYAN + '│' + RESET + DIM + qSecTitle.slice(0, inner) + RESET + CYAN + '│' + RESET);
+
+      if (q.length === 0) {
+        var emptyLine = '  ' + DIM + '(empty)' + RESET;
+        lines.push(CYAN + '│' + RESET + pad(emptyLine, 9, inner) + CYAN + '│' + RESET);
+      } else {
+        for (var i = 0; i < q.length; i++) {
+          var item = q[i];
+          var ago = formatDuration(now - item.timestamp);
+          var cancelTag = item.cancelled ? ' ' + RED + '[cancelled]' + RESET : '';
+          var cidShort = item.correlationId.length > 16 ? item.correlationId.slice(0, 16) + '...' : item.correlationId;
+          var textPreview = item.text.length > 30 ? item.text.slice(0, 30) + '...' : item.text;
+          var itemLine = '  [' + cidShort + '] "' + textPreview + '"  ' + DIM + ago + ' ago' + RESET + cancelTag;
+          var itemPlain = '  [' + cidShort + '] "' + textPreview + '"  ' + ago + ' ago' + (item.cancelled ? ' [cancelled]' : '');
+          lines.push(CYAN + '│' + RESET + pad(itemLine, itemPlain.length, inner) + CYAN + '│' + RESET);
+        }
+      }
+
+      // 空行
+      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
+
+      // 快捷键
+      var kSecTitle = '  ── Keys ' + repeat('─', Math.max(0, inner - 11));
+      lines.push(CYAN + '│' + RESET + DIM + kSecTitle.slice(0, inner) + RESET + CYAN + '│' + RESET);
+      var keysLine = '  ' + BOLD + '[f]' + RESET + ' Flush   ' + BOLD + '[e]' + RESET + ' Esc   ' + BOLD + '[r]' + RESET + ' Restart';
+      var keysPlain = '  [f] Flush   [e] Esc   [r] Restart';
+      lines.push(CYAN + '│' + RESET + pad(keysLine, keysPlain.length, inner) + CYAN + '│' + RESET);
+
+      // 反馈信息
+      if (feedbackMsg) {
+        lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
+        var fbPlain = feedbackMsg.replace(/\x1b\[[0-9;]*m/g, '');
+        lines.push(CYAN + '│' + RESET + pad('  ' + feedbackMsg, fbPlain.length + 2, inner) + CYAN + '│' + RESET);
+      }
+
+      // 空行 + 底部边框
+      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
+      lines.push(CYAN + '└' + repeat('─', inner) + '┘' + RESET);
+
+      // 清屏并写入
+      term.write('\x1b[2J\x1b[H' + lines.join('\r\n'));
+    }
+  </script>
+</body>
+</html>
