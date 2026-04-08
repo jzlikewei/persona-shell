@@ -1,4 +1,4 @@
-# persona-bridge 功能缺口分析
+# persona-shell 功能缺口分析
 
 探索者：Explorer
 日期：2026-04-08
@@ -19,7 +19,7 @@
 - `console.log/warn/error` 全局包了时间戳前缀，输出到 stdout/stderr
 - `queue.log` 记录队列操作（ENQUEUE/RESOLVE/CANCEL/ERROR），用 appendFileSync 写文件
 - `director-stderr.log` 捕获 Claude 进程 stderr
-- launchd 把 bridge 自身 stdout/stderr 写到 `logs/bridge.stdout.log` 和 `logs/bridge.stderr.log`
+- launchd 把 shell 自身 stdout/stderr 写到 `logs/shell.stdout.log` 和 `logs/shell.stderr.log`
 
 **缺口**：
 
@@ -28,13 +28,13 @@
 | 无结构化日志 | 中 | 所有日志都是 `console.log` 拼字符串，无法被日志系统（ELK/Loki）解析。没有 log level 过滤（config 中有 `level` 字段但从未使用）。queue.log 是自造格式，和 stdout 日志格式不统一 |
 | 无 FLUSH 全流程日志 | 中 | FLUSH 的每一步有 console.log 但散落在 director.ts 各处，没有 flush ID 串联。出问题时需要对着时间戳人肉关联 drain/checkpoint/reset/bootstrap 的日志 |
 | 无消息全链路追踪 | 高 | correlation ID 只在 queue.log 中出现。从飞书收到消息 → 写入 pipe → Director 处理 → result 回来 → 回复飞书，这条链路中间的 pipe I/O 段完全没有 cid 追踪。如果消息丢了，不知道丢在哪一步 |
-| Director 输出无旁路留存 | 高 | `listenOutput()` 读 pipe 并解析，但 raw JSON line 没有存档。Director 说了什么、thinking 了什么、用了什么工具，Bridge 这边完全没记录。出了问题只能去 `~/.claude/` 翻 session JSONL（如果还在的话）|
+| Director 输出无旁路留存 | 高 | `listenOutput()` 读 pipe 并解析，但 raw JSON line 没有存档。Director 说了什么、thinking 了什么、用了什么工具，Shell 这边完全没记录。出了问题只能去 `~/.claude/` 翻 session JSONL（如果还在的话）|
 | 无运行时 metrics | 低 | 没有消息处理延迟统计、FLUSH 耗时统计、队列等待时间统计。当前规模不需要，但随着使用增多会成为瓶颈定位的盲区 |
 
 ### 1.2 运行时状态可见性：已有但有限（信心：高）
 
 **现状**：
-- Web 控制台（Phase 1）每秒推送状态快照：Director alive/pid/session/flushing/pending/tokens/lastFlush + 队列快照 + Bridge uptime/memory
+- Web 控制台（Phase 1）每秒推送状态快照：Director alive/pid/session/flushing/pending/tokens/lastFlush + 队列快照 + Shell uptime/memory
 - `director.getStatus()` 和 `queue.getSnapshot()` 提供内存快照
 
 **缺口**：
@@ -42,14 +42,14 @@
 | 缺口 | 严重度 | 说明 |
 |------|--------|------|
 | 控制台未验证可运行 | 高 | Phase 1 代码已提交但从未验证（web-console-plan.md 中 1.1-1.4 全部未勾选）。可能完全跑不起来 |
-| 飞书侧无状态查询 | 中 | 本体在飞书里无法查看 Bridge/Director 状态。需要开浏览器访问 Web 控制台。可以加一个 `/status` 命令 |
+| 飞书侧无状态查询 | 中 | 本体在飞书里无法查看 Shell/Director 状态。需要开浏览器访问 Web 控制台。可以加一个 `/status` 命令 |
 | 无 Persona 子进程状态 | 中 | spawn 出去的 Persona 进程（persona-runner.ts）完全是 fire-and-forget。没有进程列表、没有存活检查、没有超时监控。Director 不知道有多少子人格在跑 |
 
 ### 1.3 告警/异常通知：缺失（信心：高）
 
 **现状**：
 - 无任何告警机制
-- Director 崩溃 → `process.exit(1)` → launchd 重启 → 发"Bridge 已重启"通知（但不说明崩溃原因）
+- Director 崩溃 → `process.exit(1)` → launchd 重启 → 发"Shell 已重启"通知（但不说明崩溃原因）
 - FLUSH 失败 → console.warn → 无通知
 
 **缺口**：
@@ -57,13 +57,13 @@
 | 缺口 | 严重度 | 说明 |
 |------|--------|------|
 | 无主动异常通知 | 高 | Director 崩溃、FLUSH 失败、飞书断连、消息处理异常——所有这些只写日志，不通知本体。本体不看日志就不知道系统出了问题 |
-| 无健康检查端点 | 低 | Web 控制台有 HTTP 但没有 `/healthz` 端点，外部监控无法探测 Bridge 是否健康 |
+| 无健康检查端点 | 低 | Web 控制台有 HTTP 但没有 `/healthz` 端点，外部监控无法探测 Shell 是否健康 |
 
 ### 1.4 历史数据追溯：缺失（信心：高）
 
 **现状**：
 - queue.log 是唯一的持久化操作日志，但只是 appendFileSync，没有轮转
-- Director 会话 JSONL 在 `~/.claude/` 目录下，不受 Bridge 管理
+- Director 会话 JSONL 在 `~/.claude/` 目录下，不受 Shell 管理
 - 无消息历史存档
 
 **缺口**：
@@ -71,7 +71,7 @@
 | 缺口 | 严重度 | 说明 |
 |------|--------|------|
 | 无日志轮转 | 中 | queue.log 和 stdout/stderr 日志无限增长。launchd 的日志文件每次重启被截断（plist 中用 StandardOutPath 而非 append），但长期运行时仍会膨胀 |
-| 无消息历史查询 | 低 | 飞书消息 → Director 回复的完整对话历史没有在 Bridge 侧存档。要回溯只能去飞书或 `~/.claude/` JSONL |
+| 无消息历史查询 | 低 | 飞书消息 → Director 回复的完整对话历史没有在 Shell 侧存档。要回溯只能去飞书或 `~/.claude/` JSONL |
 
 ---
 
@@ -80,7 +80,7 @@
 ### 2.1 进程崩溃恢复：已有但不完整（信心：高）
 
 **现状**：
-- Bridge 崩溃 → launchd KeepAlive 自动重启 → 重连 Director（如果 Director 还活着）或重新 spawn
+- Shell 崩溃 → launchd KeepAlive 自动重启 → 重连 Director（如果 Director 还活着）或重新 spawn
 - Director 崩溃 → `rl.on('close')` 触发 → `restart()` 重新 spawn + `--resume`（如果有 session）
 - Director session expired → 清 session 文件，让 close handler 用新 session 重启
 
@@ -88,9 +88,9 @@
 
 | 缺口 | 严重度 | 说明 |
 |------|--------|------|
-| Bridge 重启后内存状态全丢 | **高** | `pendingCount`, `lastFlushAt`, `lastInputTokens`, `lastTimeSyncAt`, `currentDate`, `writingDailyReport` — 全部是内存变量，Bridge 重启后归零。后果：(1) lastFlushAt 重置为 Date.now()，推迟了本应触发的自动 FLUSH；(2) lastInputTokens 归零，即使 Director 上下文已接近满，也不会触发 FLUSH；(3) pendingCount 归零但 Director 可能还在处理之前的消息，queue 和 Director 失去同步 |
-| 队列内容重启后丢失 | **高** | MessageQueue 是纯内存 Map。Bridge 重启后，之前在队列中等待的消息（已发给 Director 但未收到回复的）全部丢失。用户看到消息已发送但永远收不到回复。Director 的回复回来后 `resolveOldest()` 返回 undefined，回复被静默丢弃 |
-| 重启后无法恢复 Director 的真实状态 | 高 | Bridge 重连 Director 后，不知道 Director 的 input_tokens 是多少（只有下一次 result 事件才会更新）。在这个窗口期内，FLUSH 判断完全失灵 |
+| Shell 重启后内存状态全丢 | **高** | `pendingCount`, `lastFlushAt`, `lastInputTokens`, `lastTimeSyncAt`, `currentDate`, `writingDailyReport` — 全部是内存变量，Shell 重启后归零。后果：(1) lastFlushAt 重置为 Date.now()，推迟了本应触发的自动 FLUSH；(2) lastInputTokens 归零，即使 Director 上下文已接近满，也不会触发 FLUSH；(3) pendingCount 归零但 Director 可能还在处理之前的消息，queue 和 Director 失去同步 |
+| 队列内容重启后丢失 | **高** | MessageQueue 是纯内存 Map。Shell 重启后，之前在队列中等待的消息（已发给 Director 但未收到回复的）全部丢失。用户看到消息已发送但永远收不到回复。Director 的回复回来后 `resolveOldest()` 返回 undefined，回复被静默丢弃 |
+| 重启后无法恢复 Director 的真实状态 | 高 | Shell 重连 Director 后，不知道 Director 的 input_tokens 是多少（只有下一次 result 事件才会更新）。在这个窗口期内，FLUSH 判断完全失灵 |
 
 ### 2.2 FLUSH 失败降级：已有但有隐患（信心：中）
 
@@ -208,7 +208,7 @@
 
 | 缺口 | 严重度 | 说明 |
 |------|--------|------|
-| 完全无集成 | **高** | `persona-runner.ts` 导出了函数但**没有任何调用者**。index.ts 和 director.ts 都没有 import 它。这意味着 Director 当前完全不能从 Bridge 层 spawn 子人格。Director（Claude Code）只能自己通过 Agent 工具 spawn sub-agent，走的是 Claude Code 内置路径而非 Bridge 管理的路径 |
+| 完全无集成 | **高** | `persona-runner.ts` 导出了函数但**没有任何调用者**。index.ts 和 director.ts 都没有 import 它。这意味着 Director 当前完全不能从 Shell 层 spawn 子人格。Director（Claude Code）只能自己通过 Agent 工具 spawn sub-agent，走的是 Claude Code 内置路径而非 Shell 管理的路径 |
 | 无任务注册表 | **高** | spawn 出去的进程没有注册。没有全局的"当前运行中的任务"列表。不知道有几个 Persona 在跑、跑了多久、是否超时、是否还活着 |
 | 无结果回收通路 | **高** | `waitForResult()` 是同步 polling。在当前架构中，Director 是 Claude Code 进程在 pipe 后面运行，它无法调用 TS 侧的 `waitForResult()`。outbox/ 目录的结果文件没有任何主动通知机制——没有 file watcher，没有 inbox 投递。Director 必须自己 `cat outbox/task-xxx.json` 来获取结果 |
 | 无超时强制终止 | 中 | waitForResult 超时只是抛异常，不 kill 子进程。超时的 Persona 进程会一直跑下去，消耗 API token |
@@ -225,11 +225,11 @@
 
 ### 4.3 任务结果回收通路：缺失（信心：高）
 
-**这是架构层面最大的缺口。** architecture.md 描述了完整的 Briefing → Report 协议和 inbox/outbox 通信机制，但 Bridge 侧完全没有实现。
+**这是架构层面最大的缺口。** architecture.md 描述了完整的 Briefing → Report 协议和 inbox/outbox 通信机制，但 Shell 侧完全没有实现。
 
 | 缺口 | 严重度 | 说明 |
 |------|--------|------|
-| 无 outbox watcher | **高** | Director 不知道子人格什么时候完成了任务。需要 Bridge 侧 watch outbox/ 目录，发现新文件后通过 pipe 通知 Director |
+| 无 outbox watcher | **高** | Director 不知道子人格什么时候完成了任务。需要 Shell 侧 watch outbox/ 目录，发现新文件后通过 pipe 通知 Director |
 | 无 inbox 投递 | **高** | architecture.md 描述了 inbox/ 作为消息接收目录，但没有任何代码写入 inbox/。子人格结果应该写入 Director 的 inbox/ 并通知 |
 | 无任务状态推送 | 中 | Web 控制台不显示当前运行的 Persona 任务。应该像显示队列一样显示 task 列表 |
 
@@ -264,13 +264,13 @@
 
 ### 5.3 直觉预感
 
-1. **pipe I/O 是最脆弱的链路**。named pipe 是无缓冲的、无 ACK 的。一旦 Director 进程异常退出但 pipe 没有触发 close（理论上不太可能但边界情况下可能），整个 Bridge 会卡死。可能需要一个 Director 心跳检测机制。
+1. **pipe I/O 是最脆弱的链路**。named pipe 是无缓冲的、无 ACK 的。一旦 Director 进程异常退出但 pipe 没有触发 close（理论上不太可能但边界情况下可能），整个 Shell 会卡死。可能需要一个 Director 心跳检测机制。
 
-2. **persona-runner.ts 可能是死代码**。它被精心设计了但没有调用者。Director（Claude Code）使用的是 Claude Code 内置的 Agent 功能来 spawn 子人格，而不是通过 Bridge。这意味着 Bridge 对子人格完全没有可见性和控制力。需要确认 Director 实际是如何 spawn 子人格的。
+2. **persona-runner.ts 可能是死代码**。它被精心设计了但没有调用者。Director（Claude Code）使用的是 Claude Code 内置的 Agent 功能来 spawn 子人格，而不是通过 Shell。这意味着 Shell 对子人格完全没有可见性和控制力。需要确认 Director 实际是如何 spawn 子人格的。
 
 3. **FLUSH 的"认知连续性"问题可能比技术问题更严重**。FLUSH 后 Director 从 state.md 恢复，但 state.md 是 Director 自己写的。如果 Director 对"什么是重要的"的判断有偏差，每次 FLUSH 都会丢失一些上下文。这是一个渐进的记忆衰减问题，不会立即显现。
 
-4. **当前架构的真正瓶颈不是 Bridge，而是 Director 的单点性**。所有消息串行经过一个 Director session。如果 Director 在处理一个耗时任务（比如 spawn Persona 然后等结果），后续消息会排队等待。没有"紧急通道"让本体的消息优先处理。
+4. **当前架构的真正瓶颈不是 Shell，而是 Director 的单点性**。所有消息串行经过一个 Director session。如果 Director 在处理一个耗时任务（比如 spawn Persona 然后等结果），后续消息会排队等待。没有"紧急通道"让本体的消息优先处理。
 
 ---
 
@@ -294,7 +294,7 @@
 | 7 | **Director 输出旁路留存**：raw JSON line 写文件存档 | 可观测性 | 缺失 | 小（~20 行） |
 | 8 | **飞书 reply 失败重试**：指数退避重试 2-3 次 | 可恢复性 | 缺失 | 小（~30 行） |
 | 9 | **非文本消息反馈**：回复"暂不支持该消息类型" | UX | 缺失 | 小（~5 行） |
-| 10 | **`/status` 飞书命令**：在飞书中查看 Bridge/Director 状态摘要 | UX | 缺失 | 中（~40 行） |
+| 10 | **`/status` 飞书命令**：在飞书中查看 Shell/Director 状态摘要 | UX | 缺失 | 中（~40 行） |
 | 11 | **旧 rl close 竞态修复**：引入 generation ID | 可恢复性 | 已有 bug | 小（~20 行） |
 | 12 | **队列持久化**：队列写入文件，重启后恢复 | 可恢复性 | 缺失 | 中（~60 行） |
 
@@ -328,9 +328,9 @@
 
 ## 总结
 
-persona-bridge 作为"飞书 ↔ Director"的桥接层，核心消息收发已经可用，FLUSH 机制经过一轮修复也基本稳固。最大的三个结构性缺口是：
+persona-shell 作为"飞书 ↔ Director"的桥接层，核心消息收发已经可用，FLUSH 机制经过一轮修复也基本稳固。最大的三个结构性缺口是：
 
-1. **状态不持久**——Bridge 重启后关键状态归零，FLUSH 判断失灵，队列消息丢失
+1. **状态不持久**——Shell 重启后关键状态归零，FLUSH 判断失灵，队列消息丢失
 2. **用户无反馈**——消息发出后零确认，出错后静默失败，自动 FLUSH 无通知
 3. **多 Agent 交互是空壳**——persona-runner.ts 是死代码，没有任务注册/回收/监控
 

@@ -4,7 +4,7 @@ import type { Director } from './director.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 
-// Bridge 启动时间，用于计算 uptime
+// Shell 启动时间，用于计算 uptime
 const startedAt = Date.now();
 
 /**
@@ -34,7 +34,7 @@ export function startConsole(
       data: {
         director: director.getStatus(),
         queue: queue.getSnapshot(),
-        bridge: {
+        shell: {
           uptime: Date.now() - startedAt,
           memory: process.memoryUsage().rss,
         },

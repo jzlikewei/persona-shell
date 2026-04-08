@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.persona.bridge</string>
+    <string>com.persona.shell</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -17,9 +17,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>__PROJECT_DIR__/logs/bridge.stdout.log</string>
+    <string>__PROJECT_DIR__/logs/shell.stdout.log</string>
 
     <key>StandardErrorPath</key>
-    <string>__PROJECT_DIR__/logs/bridge.stderr.log</string>
+    <string>__PROJECT_DIR__/logs/shell.stderr.log</string>
 </dict>
 </plist>

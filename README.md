@@ -1,4 +1,4 @@
-# Persona Bridge
+# Persona Shell
 
 飞书 ↔ Director（Claude Code）消息桥接服务。
 
@@ -51,8 +51,8 @@ director:
 bun run install-service
 
 # 管理
-launchctl start com.persona.bridge
-launchctl stop  com.persona.bridge
+launchctl start com.persona.shell
+launchctl stop  com.persona.shell
 
 # 卸载
 bun run uninstall-service
@@ -61,7 +61,7 @@ bun run uninstall-service
 ## 架构
 
 ```
-飞书消息 → TS Bridge → named pipe (FIFO) → Director (Claude Code) → 回复
+飞书消息 → TS Shell → named pipe (FIFO) → Director (Claude Code) → 回复
                                               │
                                               ├─ cwd = ~/.persona/
                                               ├─ --bare + --add-dir (CLAUDE.md)
@@ -82,12 +82,12 @@ Director 作为长驻 daemon 运行，上下文窗口会持续膨胀。FLUSH 定
 
 ### 时间同步
 
-Director session 跨天时 `currentDate` 会过期。Bridge 在消息间隔超过 2 小时时自动注入时间前缀。
+Director session 跨天时 `currentDate` 会过期。Shell 在消息间隔超过 2 小时时自动注入时间前缀。
 
 ## 目录结构
 
 ```
-persona-bridge/               # 本仓库（基础设施代码）
+persona-shell/               # 本仓库（基础设施代码）
 ├── src/
 │   ├── index.ts               # 入口
 │   ├── feishu.ts              # 飞书 WebSocket 客户端
@@ -97,7 +97,7 @@ persona-bridge/               # 本仓库（基础设施代码）
 │   └── config.ts              # 配置加载（默认 ~/.persona/config.yaml）
 ├── config.example.yaml
 ├── start.sh                   # launchd wrapper（source shell profile）
-├── com.persona.bridge.plist   # launchd 服务定义
+├── com.persona.shell.plist   # launchd 服务定义
 ├── docs/                      # 设计文档 + 审查报告
 └── logs/
 

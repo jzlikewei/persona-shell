@@ -2,7 +2,7 @@
 
 ## 目标
 
-给 persona-bridge 加一个 Web 管理控制台，能**完整管理**这个应用：看状态、看操作、看当前和历史会话、执行常用操作。用 xterm.js 做 Web TUI 风格。
+给 persona-shell 加一个 Web 管理控制台，能**完整管理**这个应用：看状态、看操作、看当前和历史会话、执行常用操作。用 xterm.js 做 Web TUI 风格。
 
 ## 数据源
 
@@ -12,8 +12,8 @@
 | 消息队列 | MessageQueue 实例内存 | 进程内直接读 |
 | 当前会话消息 | `~/.claude/projects/-Users-ilike--persona/{sessionId}.jsonl` | 读文件 |
 | 历史会话列表 | 同目录下所有 `.jsonl` 文件 | 扫描目录 |
-| 实时 Director 输出 | FIFO 管道（当前 Bridge 单消费者） | Bridge 读后 fan-out 广播 |
-| 日志 | `logs/queue.log`、`bridge.stdout.log`、`director-stderr.log` | 读文件 + tail |
+| 实时 Director 输出 | FIFO 管道（当前 Shell 单消费者） | Shell 读后 fan-out 广播 |
+| 日志 | `logs/queue.log`、`shell.stdout.log`、`director-stderr.log` | 读文件 + tail |
 | 系统统计 | `~/.claude/stats-cache.json` | 读文件 |
 
 ## 架构
@@ -21,7 +21,7 @@
 ```
 Browser (xterm.js)
     ↕ WebSocket
-persona-bridge (Bun)
+persona-shell (Bun)
     ├── index.ts          ← 现有：飞书 ↔ Director
     ├── console.ts        ← 新增：Web 控制台服务
     │     ├── Bun.serve()         HTTP + WebSocket
@@ -33,7 +33,7 @@ persona-bridge (Bun)
           └── 对外暴露 getSnapshot() + EventEmitter
 ```
 
-嵌入 Bridge 进程，不独立部署。原因：Queue 状态在内存里，Director 实例引用在进程内。
+嵌入 Shell 进程，不独立部署。原因：Queue 状态在内存里，Director 实例引用在进程内。
 
 ## 功能分期
 
@@ -46,7 +46,7 @@ persona-bridge (Bun)
 - Token：当前用量 / 阈值 / 使用率百分比
 - 上次 flush 时间 / 距下次自动 flush
 - 队列：深度 + 每条消息摘要
-- Bridge uptime
+- Shell uptime
 
 **操作：**
 - Flush（手动触发）
@@ -62,7 +62,7 @@ persona-bridge (Bun)
 ### Phase 2：日志 + 会话查看
 
 **日志查看器：**
-- 多日志源切换（queue.log / bridge.stdout / director-stderr）
+- 多日志源切换（queue.log / shell.stdout / director-stderr）
 - 实时 tail（新日志追加显示）
 - 搜索（xterm-addon-search）
 
@@ -143,7 +143,7 @@ src/
 
 Phase 1 代码已提交（`5f619ab`），需运行验证和修复。
 
-- [ ] 1.1 运行验证：启动 Bridge（`bun run dev`），访问 `http://localhost:3000`，确认 TUI 界面渲染
+- [ ] 1.1 运行验证：启动 Shell（`bun run dev`），访问 `http://localhost:3000`，确认 TUI 界面渲染
 - [ ] 1.2 状态推送验证：确认 WebSocket 1s 间隔推送 Director 状态，数据刷新正常
 - [ ] 1.3 快捷键验证：按 f/e/r 触发 Flush/Esc/Restart，确认命令执行和反馈显示
 - [ ] 1.4 修复验证中发现的问题（如有）
@@ -151,7 +151,7 @@ Phase 1 代码已提交（`5f619ab`），需运行验证和修复。
 ### Phase 2: Logs + Session Viewing
 
 - [ ] 2.1 日志查看器后端
-  - [ ] 2.1.1 日志源抽象：读取 + tail 三个日志文件（queue.log / bridge.stdout.log / director-stderr.log）
+  - [ ] 2.1.1 日志源抽象：读取 + tail 三个日志文件（queue.log / shell.stdout.log / director-stderr.log）
   - [ ] 2.1.2 WebSocket 日志频道：按源订阅/取消订阅，实时推送新行
 - [ ] 2.2 日志查看器前端
   - [ ] 2.2.1 xterm.js 日志视图模式：标签栏切换日志源

@@ -76,7 +76,7 @@ persona/                              # 项目根目录
 ├── state.md            # FLUSH 工作记忆
 ├── inbox/ + outbox/    # 人格间通信文件
 ├── audit_log/          # 决策日志
-└── TS Bridge           # 飞书接入 + 进程管理
+└── TS Shell           # 飞书接入 + 进程管理
 ```
 
 ### 读取策略
@@ -170,17 +170,17 @@ tools: [Read, Grep, Glob, Bash, Agent]
 
 ### 进程模型
 
-所有 claude 进程（Director 和 Persona）均以 detached 模式运行，不依赖 TS Bridge 的生命周期。
+所有 claude 进程（Director 和 Persona）均以 detached 模式运行，不依赖 TS Shell 的生命周期。
 
 #### Director 进程
 
-通过 named pipe（FIFO）与 TS Bridge 通信，支持 stream-json 双向通信：
+通过 named pipe（FIFO）与 TS Shell 通信，支持 stream-json 双向通信：
 
 ```bash
 # 创建通信管道
 mkfifo /tmp/director-in /tmp/director-out
 
-# 启动 Director（detached，独立于 Bridge）
+# 启动 Director（detached，独立于 Shell）
 claude --print \
   --input-format stream-json \
   --output-format stream-json \
@@ -215,7 +215,7 @@ claude -p "$(cat briefing.md)" \
 - 大多数场景（Solo、Relay）使用 `-p` 模式
 - `-p` 内部仍然支持多轮工具调用，对外表现为单进单出
 - Debate 模式通过 Director 串联多轮 `-p` 调用实现，不需要流式
-- Persona 进程 detached 运行，即使 Bridge/Director 崩溃也不影响正在执行的任务
+- Persona 进程 detached 运行，即使 Shell/Director 崩溃也不影响正在执行的任务
 - Director 重启后扫描 outbox/ 目录收集已完成的 report
 
 ```bash
@@ -229,12 +229,12 @@ claude -p "$(cat briefing-round2.md)" ... > round2-critic.json
 ### 进程容灾
 
 ```
-Bridge 崩溃时：
+Shell 崩溃时：
   Director (detached)      → 还活着，通过 named pipe 等待重连
   Persona A (detached, -p) → 还活着，结果写 outbox/task-001.json
   Persona B (detached, -p) → 还活着，结果写 outbox/task-002.json
 
-Bridge 重启：
+Shell 重启：
   → 重新 open named pipe 连接 Director
   → 如果 Director 也崩了：spawn 新 Director，读 state.md 恢复
   → 扫 outbox/ 收集已完成的 persona 结果
@@ -417,14 +417,14 @@ last_flush: 2026-04-05T14:30:00
 
 | 组件 | 实现 |
 |------|------|
-| TS Bridge | TypeScript 进程，飞书 webhook + 进程管理 + named pipe I/O |
+| TS Shell | TypeScript 进程，飞书 webhook + 进程管理 + named pipe I/O |
 | Director | Claude Code CLI（detached），stream-json 双向通信 |
 | Persona 实例 | Claude Code CLI（detached，`-p` 模式），输出写文件 |
-| Director ↔ Bridge 通信 | named pipe (FIFO) + stream-json 协议 |
+| Director ↔ Shell 通信 | named pipe (FIFO) + stream-json 协议 |
 | 记忆存储 | 本地 Markdown 文件 |
 | 通信协议 | Briefing / Report（YAML 结构） |
 | 定时触发 | cron |
-| 外部 IM 接入 | 飞书 Bot webhook → TS Bridge → named pipe → Director |
+| 外部 IM 接入 | 飞书 Bot webhook → TS Shell → named pipe → Director |
 | 日报输出 | 本地 Markdown 文件 |
 
 ## 十、全局日志与可追踪性

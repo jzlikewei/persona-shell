@@ -3,6 +3,7 @@ import { Director } from './director.js';
 import { createFeishuClient } from './feishu.js';
 import { MessageQueue } from './queue.js';
 import { startConsole } from './console.js';
+import { startOutboxWatcher } from './outbox-watcher.js';
 
 // Prepend ISO timestamp to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -22,7 +23,7 @@ async function main() {
   // 2.3/2.4: Restore queue state from disk
   const restoredQueueCount = queue.restoreFromState();
   if (restoredQueueCount > 0) {
-    console.log(`[bridge] Restored ${restoredQueueCount} queued message(s) from state`);
+    console.log(`[shell] Restored ${restoredQueueCount} queued message(s) from state`);
   }
 
   // 2.2/2.4: Restore director state from disk
@@ -30,12 +31,15 @@ async function main() {
   if (restoredDirector) {
     const flushAgoSec = Math.floor((Date.now() - restoredDirector.lastFlushAt) / 1000);
     console.log(
-      `[bridge] Restored director state: lastFlushAt=${flushAgoSec}s ago, lastInputTokens=${restoredDirector.lastInputTokens}`
+      `[shell] Restored director state: lastFlushAt=${flushAgoSec}s ago, lastInputTokens=${restoredDirector.lastInputTokens}`
     );
   }
 
   // Start director process
   await director.start();
+
+  // 6.1: Outbox watcher — notify Director when sub-role results arrive
+  startOutboxWatcher(config.director.persona_dir, director);
 
   // 启动 Web 管理控制台
   startConsole(director, queue, config);
@@ -45,7 +49,7 @@ async function main() {
     const lastChatId = feishu.getLastChatId();
     if (lastChatId) {
       feishu.sendMessage(lastChatId, '🔄 上下文已自动刷新').catch((err) => {
-        console.warn('[bridge] Failed to send auto-flush notification:', err);
+        console.warn('[shell] Failed to send auto-flush notification:', err);
       });
     }
   });
@@ -55,7 +59,7 @@ async function main() {
     const lastChatId = feishu.getLastChatId();
     if (lastChatId) {
       feishu.sendMessage(lastChatId, message).catch((err) => {
-        console.warn('[bridge] Failed to send alert notification:', err);
+        console.warn('[shell] Failed to send alert notification:', err);
       });
     }
   });
@@ -67,7 +71,7 @@ async function main() {
       // Delay slightly — reconnection may still be in progress
       setTimeout(() => {
         feishu.sendMessage(lastChatId, message).catch((err) => {
-          console.warn('[bridge] Failed to send feishu alert:', err);
+          console.warn('[shell] Failed to send feishu alert:', err);
         });
       }, 5000);
     }
@@ -77,7 +81,7 @@ async function main() {
   feishu.onMessage(async (text, messageId, chatId, msgType) => {
     // 1.3: Non-text message feedback
     if (msgType !== 'text') {
-      console.log(`[bridge] Non-text message type: ${msgType}`);
+      console.log(`[shell] Non-text message type: ${msgType}`);
       await feishu.reply(messageId, `暂不支持 ${msgType} 类型消息，请发送文字消息`);
       return;
     }
@@ -86,7 +90,7 @@ async function main() {
     if (text.trim() === '/esc') {
       const cancelled = queue.cancelOldest();
       if (cancelled) {
-        console.log(`[bridge] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
+        console.log(`[shell] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
         await director.interrupt();
         await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
       } else {
@@ -107,10 +111,10 @@ async function main() {
       return;
     }
 
-    // /restart — restart Bridge process (launchd will respawn)
+    // /restart — restart Shell process (launchd will respawn)
     if (text.trim() === '/restart') {
-      await feishu.reply(messageId, 'Bridge 正在重启...');
-      console.log('[bridge] /restart: exiting for launchd respawn');
+      await feishu.reply(messageId, 'Shell 正在重启...');
+      console.log('[shell] /restart: exiting for launchd respawn');
       setTimeout(() => process.exit(0), 500);
       return;
     }
@@ -138,7 +142,7 @@ async function main() {
         '/status — 查看 Director 状态摘要',
         '/flush — 手动刷新上下文',
         '/esc — 取消队列中最早的消息',
-        '/restart — 重启 Bridge 进程',
+        '/restart — 重启 Shell 进程',
         '/help — 显示此帮助信息',
       ];
       await feishu.reply(messageId, lines.join('\n'));
@@ -146,11 +150,11 @@ async function main() {
     }
 
     // 1.1: ACK — add emoji reaction to let user know message is received
-    feishu.addReaction(messageId, 'THUMBSUP').catch((err) => {
-      console.warn('[bridge] Failed to add reaction:', err);
+    feishu.addReaction(messageId, 'Typing').catch((err) => {
+      console.warn('[shell] Failed to add reaction:', err);
     });
 
-    console.log(`[bridge] Received message: ${text.slice(0, 50)}...`);
+    console.log(`[shell] Received message: ${text.slice(0, 50)}...`);
     const correlationId = queue.enqueue({ text, messageId, chatId });
     queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
     try {
@@ -161,7 +165,7 @@ async function main() {
       if (String(err).includes('flushing')) {
         await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
       } else {
-        console.error(`[bridge] send failed, queue item cleaned:`, err);
+        console.error(`[shell] send failed, queue item cleaned:`, err);
         await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
       }
     }
@@ -172,7 +176,7 @@ async function main() {
     const item = queue.resolveOldest();
 
     if (!item) {
-      console.warn('[bridge] Got director response but queue is empty');
+      console.warn('[shell] Got director response but queue is empty');
       return;
     }
 
@@ -184,20 +188,20 @@ async function main() {
     try {
       await feishu.reply(item.messageId, replyWithTiming);
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
-      console.log(`[bridge] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
+      console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
-      console.error(`[bridge] Failed to reply:`, err);
+      console.error(`[shell] Failed to reply:`, err);
     }
   });
 
   director.on('close', async () => {
-    console.error('[bridge] Director closed unexpectedly');
+    console.error('[shell] Director closed unexpectedly');
     // 4.1: Notify before exit
     const lastChatId = feishu.getLastChatId();
     if (lastChatId) {
       try {
-        await feishu.sendMessage(lastChatId, '🔴 Director 已关闭，Bridge 即将退出');
+        await feishu.sendMessage(lastChatId, '🔴 Director 已关闭，Shell 即将退出');
       } catch { /* best-effort */ }
     }
     process.exit(1);
@@ -206,7 +210,7 @@ async function main() {
   // Start feishu websocket
   feishu.start();
 
-  console.log('[bridge] Persona Bridge started');
+  console.log('[shell] Persona Shell started');
 
   // Notify restart success
   const lastChatId = feishu.getLastChatId();
@@ -214,23 +218,23 @@ async function main() {
     // Delay to let WS connect first
     setTimeout(async () => {
       try {
-        await feishu.sendMessage(lastChatId, 'Bridge 已重启 ✓');
-        console.log('[bridge] Restart notification sent');
+        await feishu.sendMessage(lastChatId, 'Shell 已重启 ✓');
+        console.log('[shell] Restart notification sent');
       } catch (err) {
-        console.warn('[bridge] Failed to send restart notification:', err);
+        console.warn('[shell] Failed to send restart notification:', err);
       }
     }, 3000);
   }
 
   // Graceful shutdown
   process.on('SIGINT', () => {
-    console.log('[bridge] Shutting down (Director stays alive)...');
+    console.log('[shell] Shutting down (Director stays alive)...');
     director.stop();
     process.exit(0);
   });
 }
 
 main().catch((err) => {
-  console.error('[bridge] Fatal error:', err);
+  console.error('[shell] Fatal error:', err);
   process.exit(1);
 });

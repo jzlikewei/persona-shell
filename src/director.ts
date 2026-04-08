@@ -7,6 +7,7 @@ import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
 import { saveState, loadState } from './state-store.js';
+import { countOutboxFiles } from './outbox-watcher.js';
 
 /** 4.2: Director output sidecar log path */
 const DIRECTOR_OUTPUT_LOG = join(import.meta.dirname, '..', 'logs', 'director-output.log');
@@ -111,6 +112,12 @@ export class Director extends EventEmitter {
     if (this.flushing) {
       console.log('[director] FLUSH already in progress, skipping');
       return false;
+    }
+
+    // 6.2: Warn about unprocessed outbox files before flush
+    const outboxCount = countOutboxFiles(this.config.persona_dir);
+    if (outboxCount > 0) {
+      console.warn(`[director] FLUSH: ${outboxCount} unprocessed file(s) in outbox/ — new Director may miss context`);
     }
 
     // Wait for interrupt to complete if in progress
@@ -284,6 +291,13 @@ export class Director extends EventEmitter {
     }) + '\n';
 
     await this.writeHandle.write(payload);
+  }
+
+  /** 6.1: Notify Director that a sub-role result has arrived in outbox */
+  async notifyOutbox(filename: string): Promise<void> {
+    if (!this.writeHandle || this.flushing) return;
+    this.pendingCount++;
+    await this.writeRaw(`[TASK_DONE] 后台任务完成，结果文件: outbox/${filename}。用 Read 工具查看内容。`);
   }
 
   async stop(): Promise<void> {

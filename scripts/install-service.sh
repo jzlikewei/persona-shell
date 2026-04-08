@@ -2,7 +2,7 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PLIST_NAME="com.persona.bridge.plist"
+PLIST_NAME="com.persona.shell.plist"
 PLIST_SRC="${PROJECT_DIR}/${PLIST_NAME}"
 PLIST_DST="$HOME/Library/LaunchAgents/${PLIST_NAME}"
 

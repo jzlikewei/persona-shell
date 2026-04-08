@@ -1,4 +1,4 @@
-# persona-bridge 完整 Blueprint
+# persona-shell 完整 Blueprint
 
 > **来源**: Explorer 功能缺口分析 + Critic 架构审查
 > **日期**: 2026-04-08
@@ -8,9 +8,9 @@
 
 ## 当前状态
 
-persona-bridge 是飞书 ↔ Claude CLI Director 的桥接层。7 个文件、~1100 行代码，核心消息收发可用。但存在三个结构性缺口：
+persona-shell 是飞书 ↔ Claude CLI Director 的桥接层。7 个文件、~1100 行代码，核心消息收发可用。但存在三个结构性缺口：
 
-1. **状态不持久** — Bridge 重启后关键状态归零，FLUSH 判断失灵，队列消息丢失
+1. **状态不持久** — Shell 重启后关键状态归零，FLUSH 判断失灵，队列消息丢失
 2. **用户无反馈** — 消息发出后零确认，出错后静默失败，自动 FLUSH 无通知
 3. **安全与正确性隐患** — Console 无认证、bootstrap 超时泄漏、FIFO 响应错位风险
 
@@ -44,12 +44,12 @@ persona-bridge 是飞书 ↔ Claude CLI Director 的桥接层。7 个文件、~1
 
 ### Phase 2: State Persistence
 
-Bridge 重启后恢复关键状态，解决"重启归零"问题。
+Shell 重启后恢复关键状态，解决"重启归零"问题。
 
 - [x] 2.1 创建 `src/state-store.ts`：简单的 JSON 文件读写模块。`save(key, data)` / `load(key)` → 读写 `state/{key}.json`。写入用 write-rename 模式保证原子性
 - [x] 2.2 `director.ts`: `lastFlushAt` 和 `lastInputTokens` 在变更时持久化到 `state/director.json`；启动时恢复
 - [x] 2.3 `queue.ts`: 队列变更（enqueue/resolve/cancel）时持久化到 `state/queue.json`；启动时恢复未完成的消息
-- [x] 2.4 `index.ts` / `director.ts`: Bridge 启动时从 state 恢复后，日志打印恢复摘要（恢复了几条队列消息、lastFlushAt 距今多久等）
+- [x] 2.4 `index.ts` / `director.ts`: Shell 启动时从 state 恢复后，日志打印恢复摘要（恢复了几条队列消息、lastFlushAt 距今多久等）
 - [x] 2.5 `.gitignore`: 添加 `state/` 目录排除
 
 ### Phase 3: Resilience Fixes
@@ -73,33 +73,23 @@ Bridge 重启后恢复关键状态，解决"重启归零"问题。
 
 Phase 1 代码已提交（`5f619ab`），需运行验证。
 
-- [ ] 5.1 运行验证：启动 Bridge（`bun run dev`），访问 `http://localhost:3000`，确认 TUI 界面渲染
-- [ ] 5.2 状态推送验证：确认 WebSocket 1s 间隔推送 Director 状态，数据刷新正常
-- [ ] 5.3 快捷键验证：按 f/e/r 触发 Flush/Esc/Restart，确认命令执行和反馈显示
-- [ ] 5.4 修复验证中发现的问题（如有）
-- [ ] 5.5 Console 认证：从 config.yaml 读取 `console.token`，HTTP 和 WebSocket 连接需携带 bearer token [H1 完整修复]
+- [x] 5.1 运行验证：启动 Shell（`bun run dev`），访问 `http://localhost:3000`，确认 TUI 界面渲染
+- [x] 5.2 状态推送验证：确认 WebSocket 1s 间隔推送 Director 状态，数据刷新正常
+- [x] 5.3 快捷键验证：按 f/e/r 触发 Flush/Esc/Restart，确认命令执行和反馈显示
+- [x] 5.4 修复验证中发现的问题（如有）— 验证通过，无需修复
+- [ ] 5.5 Console 认证：从 config.yaml 读取 `console.token`，HTTP 和 WebSocket 连接需携带 bearer token [H1 完整修复]（暂缓）
 
-### Phase 6: Director Refactor (设计先行)
+### Phase 6: Multi-Role 最小可用
 
-> 此阶段需先产出设计文档，再执行。直接改代码风险太高。
+> Critic 和 Introspector 一致判定：不要为每天用几次的功能建 500 行调度框架。
+> 先用 Agent tool + run_in_background（已有能力），只解决三个真实问题：
+> 结果闭环（outbox 黑洞）、flush 孤儿检测、基础日志。
+> 等使用数据告诉你需不需要完整的进程管理。
 
-- [ ] 6.1 设计文档：`docs/director-refactor-design.md` — 定义显式状态机 enum、模块拆分方案（ProcessManager / PipeIO / FlushOrchestrator / SessionStore）、接口定义 [H3]
-- [ ] 6.2 抽取 `DirectorState` 显式枚举：`'idle' | 'processing' | 'flushing:drain' | 'flushing:checkpoint' | 'flushing:reset' | 'flushing:bootstrap' | 'interrupted' | 'daily_report'`，替代多个 boolean flag
-- [ ] 6.3 抽取 `SessionStore`：save / read / clear session 文件逻辑
-- [ ] 6.4 抽取 `PipeIO`：FIFO 创建、open、write、listen 逻辑
-- [ ] 6.5 抽取 `FlushOrchestrator`：drain → checkpoint → kill → bootstrap 全流程
-- [ ] 6.6 验证重构后 bun run check 通过，手动测试消息收发 + flush 正常
-
-### Phase 7: Multi-Agent Infrastructure (远期)
-
-> 当前 persona-runner.ts 是死代码。此阶段把多 Agent 做到最小可用。
-
-- [ ] 7.1 设计文档：`docs/multi-agent-design.md` — 任务生命周期、注册表 schema、outbox watcher 机制、并发控制策略
-- [ ] 7.2 `src/task-registry.ts`：任务注册表（spawn 时注册、完成/超时时注销、状态查询）
-- [ ] 7.3 Outbox watcher：`fs.watch` 监听 outbox/ 目录，新文件到达时通过 pipe 通知 Director
-- [ ] 7.4 spawn 并发控制：最大并发数（config 可配）+ `--max-budget-usd` 传递
-- [ ] 7.5 spawn 超时强制终止：超时后 kill 子进程，清理注册表
-- [ ] 7.6 Console 集成：Web 控制台显示当前运行的任务列表
+- [x] 6.1 **Outbox watcher + Director 回注**：Shell 用 `fs.watch` 监听 `~/.persona/outbox/`，新文件到达时通过 pipe 注入 Director 系统消息 `[TASK_DONE] 后台任务完成，结果: outbox/{filename}`
+- [x] 6.2 **Flush 前 outbox 检查**：`director.ts` flush 流程开始前，扫描 outbox/ 未处理文件，日志警告 "有 N 个未处理的 outbox 文件，flush 后可能丢失上下文"
+- [x] 6.3 **删除 `src/persona-runner.ts` 死代码**
+- [x] 6.4 验证：`bun run check` 通过
 
 ### Phase 8: Console Phase 2 — Logs + Sessions (远期)
 
@@ -126,7 +116,7 @@ Phase 1 代码已提交（`5f619ab`），需运行验证。
 | 1.3 非文本消息反馈 | P1#9 | — | 静默忽略 → 告知 |
 | 1.4 /status 命令 | P1#10 | — | 飞书内查状态 |
 | 1.5 /help 命令 | P2#20 | — | 命令发现性 |
-| 2.1-2.5 状态持久化 | P0#4, P1#12 | — | Bridge 重启后恢复 |
+| 2.1-2.5 状态持久化 | P0#4, P1#12 | — | Shell 重启后恢复 |
 | 3.1 rl close generation | P1#11 | — | 旧 close 事件竞态 |
 | 3.2 Restart backoff | — | M2 | 快速重启循环 |
 | 3.3 enqueue/send 顺序 | — | H4 | 队列状态不一致 |
@@ -134,8 +124,7 @@ Phase 1 代码已提交（`5f619ab`），需运行验证。
 | 4.1 异常通知 | P1#6 | — | 出错不知道 |
 | 4.2 Director 输出留存 | P1#7 | — | 调试盲区 |
 | 5.1-5.5 Console 验证 | P0#3 | H1 | 已有代码验证 + 认证 |
-| 6.x Director 重构 | — | H3 | God Object 拆分 |
-| 7.x 多 Agent | P2#16-18 | M4 | persona-runner 是死代码 |
+| 6.x Multi-Role 最小可用 | P2#16-18 | M4 | outbox watcher + 死代码清理，Critic/Introspector 判定不需要完整调度框架 |
 
 ---
 
@@ -162,4 +151,5 @@ Phase 1 代码已提交（`5f619ab`），需运行验证。
 | Queue 日志轮转 | Critic L4 | 同 P3#27 |
 | kill(-pid) stale PID 问题 | Critic M1 | 低概率 + 单用户环境可接受 |
 | Console setInterval 清理 | Critic M6 | 进程退出 OS 回收，实际无泄漏 |
+| Director Refactor (God Object 拆分) | Critic H3 | 当前能工作，拆分风险高收益低。等 multi-role 做完后如果 director.ts 继续膨胀再考虑 |
 | 测试 | Critic 架构评估 | 个人工具不搞形式主义 |

@@ -1,4 +1,4 @@
-# Persona Bridge 架构审查报告
+# Persona Shell 架构审查报告
 
 > **审查人**: Critic (Persona System)
 > **日期**: 2026-04-08
@@ -43,7 +43,7 @@
 
 **位置**: `index.ts:78-94`、`queue.ts:83-104`
 
-**现状**: Bridge 假设"Director 返回的第 N 个 response 对应 Queue 里第 N 条 message"。这个假设在以下场景下崩溃：
+**现状**: Shell 假设"Director 返回的第 N 个 response 对应 Queue 里第 N 条 message"。这个假设在以下场景下崩溃：
 
 | 场景 | 后果 |
 |------|------|
@@ -158,7 +158,7 @@ T6: Queue 中遗留了一条消息，永远不会被 resolve
 
 **位置**: `persona-runner.ts` 全文（~160 行）
 
-**现状**: 该文件定义了 `spawnPersona`、`waitForResult`、`listPersonaTypes` 等函数，但在整个 Bridge 中没有任何文件 import 它。它可能是为 Director (Claude) 设计的 MCP 工具，但从 Bridge 的角度看，它只是增加了维护面积。
+**现状**: 该文件定义了 `spawnPersona`、`waitForResult`、`listPersonaTypes` 等函数，但在整个 Shell 中没有任何文件 import 它。它可能是为 Director (Claude) 设计的 MCP 工具，但从 Shell 的角度看，它只是增加了维护面积。
 
 同时，`waitForResult` 使用文件轮询（每 2 秒检查一次文件存在），且判断"文件写完了吗"的方法是"等 500ms 再读"——这在文件较大时不可靠。
 

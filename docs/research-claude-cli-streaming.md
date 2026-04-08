@@ -52,7 +52,7 @@ claude --print \
 | `--include-hook-events` | 包含 hook 生命周期事件 |
 | `--dangerously-skip-permissions` | 跳过权限检查（仅沙盒环境） |
 
-### TS Bridge 集成示例
+### TS Shell 集成示例
 
 ```typescript
 import { spawn } from 'child_process';
@@ -86,4 +86,4 @@ director.stdout.on('data', (chunk) => {
 
 ## 结论
 
-Claude Code CLI 完全支持作为长驻子进程运行，通过 stdin/stdout 双向 stream-json 进行结构化通信。TS Bridge 只需做飞书协议与 stream-json 之间的格式转换。
+Claude Code CLI 完全支持作为长驻子进程运行，通过 stdin/stdout 双向 stream-json 进行结构化通信。TS Shell 只需做飞书协议与 stream-json 之间的格式转换。
