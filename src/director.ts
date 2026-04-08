@@ -31,6 +31,10 @@ export class Director extends EventEmitter {
   private flushCheckpointResolve: (() => void) | null = null;
   private flushBootstrapResolve: (() => void) | null = null;
   private drainResolve: (() => void) | null = null;
+  /** 3.1: Generation counter — incremented on each listenOutput call to prevent stale close handlers */
+  private generation = 0;
+  /** 3.2: Recent restart timestamps for backoff detection */
+  private restartTimestamps: number[] = [];
 
   constructor(config: Config['director']) {
     super();
@@ -341,6 +345,17 @@ export class Director extends EventEmitter {
   }
 
   private async restart(): Promise<void> {
+    // 3.2: Exponential backoff — abort if ≥3 restarts within 5 minutes
+    const now = Date.now();
+    const BACKOFF_WINDOW = 5 * 60_000; // 5 minutes
+    const MAX_RESTARTS = 3;
+    this.restartTimestamps.push(now);
+    this.restartTimestamps = this.restartTimestamps.filter((t) => now - t < BACKOFF_WINDOW);
+    if (this.restartTimestamps.length >= MAX_RESTARTS) {
+      console.error(`[director] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — exiting to let launchd handle recovery`);
+      process.exit(1);
+    }
+
     await this.writeHandle?.close();
     this.writeHandle = null;
 
@@ -406,6 +421,8 @@ export class Director extends EventEmitter {
   }
 
   private listenOutput(readHandle: FileHandle): void {
+    // 3.1: Capture current generation so stale close handlers are ignored
+    const gen = ++this.generation;
     const stream = readHandle.createReadStream({ encoding: 'utf-8' });
     const rl = createInterface({ input: stream });
 
@@ -503,6 +520,12 @@ export class Director extends EventEmitter {
     });
 
     rl.on('close', async () => {
+      // 3.1: Ignore close events from stale generations
+      if (gen !== this.generation) {
+        console.log(`[director] Ignoring stale close event (gen=${gen}, current=${this.generation})`);
+        return;
+      }
+
       // Reset pending count — any in-flight messages are lost with the pipe
       this.pendingCount = 0;
       if (this.drainResolve) {

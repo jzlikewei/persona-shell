@@ -133,11 +133,13 @@ async function main() {
     try {
       await director.send(text);
     } catch (err) {
+      // 3.3: All send errors must clean up queue state to prevent orphaned items
+      queue.resolve(correlationId);
       if (String(err).includes('flushing')) {
         await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
-        queue.resolve(correlationId);
       } else {
-        throw err;
+        console.error(`[bridge] send failed, queue item cleaned:`, err);
+        await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
       }
     }
   });

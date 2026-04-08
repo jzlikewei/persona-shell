@@ -125,14 +125,29 @@ export function createFeishuClient(config: Config['feishu']) {
     },
 
     async reply(messageId: string, text: string) {
-      await client.im.v1.message.reply({
-        path: { message_id: messageId },
-        data: {
-          content: JSON.stringify({ text }),
-          msg_type: 'text',
-        },
-      });
-      lastActiveTime = Date.now();
+      // 3.4: Retry with exponential backoff (1s, 3s) on failure
+      const delays = [1000, 3000];
+      let lastErr: unknown;
+      for (let attempt = 0; attempt <= delays.length; attempt++) {
+        try {
+          await client.im.v1.message.reply({
+            path: { message_id: messageId },
+            data: {
+              content: JSON.stringify({ text }),
+              msg_type: 'text',
+            },
+          });
+          lastActiveTime = Date.now();
+          return;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < delays.length) {
+            console.warn(`[feishu] reply attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms...`, err);
+            await new Promise((r) => setTimeout(r, delays[attempt]));
+          }
+        }
+      }
+      console.error('[feishu] reply failed after all retries:', lastErr);
     },
 
     async sendMessage(chatId: string, text: string) {

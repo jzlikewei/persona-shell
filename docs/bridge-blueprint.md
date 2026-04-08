@@ -56,10 +56,10 @@ Bridge 重启后恢复关键状态，解决"重启归零"问题。
 
 修复已知的竞态条件和异常处理漏洞。
 
-- [ ] 3.1 `director.ts`: 引入 generation ID（递增计数器），`listenOutput` 的 close handler 检查 generation，防止旧 readline close 事件重置新 Director 的 pendingCount [Critic M1 / Explorer P1#11]
-- [ ] 3.2 `director.ts`: restart 加指数退避。记录最近重启时间，5 分钟内连续重启 >= 3 次则停止并 `process.exit(1)` 让 launchd 接管 [Critic M2]
-- [ ] 3.3 `index.ts`: `enqueue` 和 `send` 的顺序修正 — send 失败时确保 queue 状态一致。当前 enqueue 在 send 之前，send 的 flushing 异常走 `queue.resolve()` 清理，但其他异常不清理。统一为：所有 send 异常路径都 `queue.resolve(correlationId)` [Critic H4]
-- [ ] 3.4 `feishu.ts`: reply 失败后指数退避重试 2 次（延迟 1s, 3s），仍失败则 log error [Explorer P1#8]
+- [x] 3.1 `director.ts`: 引入 generation ID（递增计数器），`listenOutput` 的 close handler 检查 generation，防止旧 readline close 事件重置新 Director 的 pendingCount [Critic M1 / Explorer P1#11]
+- [x] 3.2 `director.ts`: restart 加指数退避。记录最近重启时间，5 分钟内连续重启 >= 3 次则停止并 `process.exit(1)` 让 launchd 接管 [Critic M2]
+- [x] 3.3 `index.ts`: `enqueue` 和 `send` 的顺序修正 — send 失败时确保 queue 状态一致。当前 enqueue 在 send 之前，send 的 flushing 异常走 `queue.resolve()` 清理，但其他异常不清理。统一为：所有 send 异常路径都 `queue.resolve(correlationId)` [Critic H4]
+- [x] 3.4 `feishu.ts`: reply 失败后指数退避重试 2 次（延迟 1s, 3s），仍失败则 log error [Explorer P1#8]
 
 ### Phase 4: Observability
 
