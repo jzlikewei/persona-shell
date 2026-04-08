@@ -3,6 +3,9 @@ import type { Config } from './config.js';
 
 type MessageHandler = (text: string, messageId: string, chatId: string) => void;
 
+const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
+const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则强制重连
+
 export function createFeishuClient(config: Config['feishu']) {
   const client = new Lark.Client({
     appId: config.app_id,
@@ -10,9 +13,12 @@ export function createFeishuClient(config: Config['feishu']) {
   });
 
   const handlers: MessageHandler[] = [];
+  let lastActiveTime = Date.now();
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
   const eventDispatcher = new Lark.EventDispatcher({}).register({
     'im.message.receive_v1': async (data) => {
+      lastActiveTime = Date.now();
       const message = data.message;
       if (!message) return;
 
@@ -44,11 +50,46 @@ export function createFeishuClient(config: Config['feishu']) {
     },
   });
 
-  const wsClient = new Lark.WSClient({
+  let wsClient = new Lark.WSClient({
     appId: config.app_id,
     appSecret: config.app_secret,
     loggerLevel: Lark.LoggerLevel.info,
   });
+
+  function startWatchdog() {
+    if (watchdogTimer) clearInterval(watchdogTimer);
+    watchdogTimer = setInterval(() => {
+      const info = wsClient.getReconnectInfo();
+      const now = Date.now();
+      const sinceLastConnect = now - info.lastConnectTime;
+      const sdkGaveUp = info.nextConnectTime > 0 && info.nextConnectTime < now - WATCHDOG_INTERVAL;
+
+      if (sinceLastConnect > MAX_DISCONNECT_TIME && sdkGaveUp) {
+        console.warn(`[feishu] Watchdog: connection down for ${Math.round(sinceLastConnect / 1000)}s, SDK gave up. Forcing reconnect...`);
+        forceReconnect();
+      }
+    }, WATCHDOG_INTERVAL);
+  }
+
+  async function forceReconnect() {
+    try {
+      wsClient.close({ force: true });
+    } catch { /* ignore */ }
+
+    wsClient = new Lark.WSClient({
+      appId: config.app_id,
+      appSecret: config.app_secret,
+      loggerLevel: Lark.LoggerLevel.info,
+    });
+
+    try {
+      await wsClient.start({ eventDispatcher });
+      lastActiveTime = Date.now();
+      console.log('[feishu] Watchdog: reconnected successfully');
+    } catch (err) {
+      console.error('[feishu] Watchdog: reconnect failed, will retry next cycle', err);
+    }
+  }
 
   return {
     client,
@@ -56,7 +97,8 @@ export function createFeishuClient(config: Config['feishu']) {
 
     start() {
       wsClient.start({ eventDispatcher });
-      console.log('[feishu] WebSocket client started');
+      startWatchdog();
+      console.log('[feishu] WebSocket client started (watchdog enabled)');
     },
 
     onMessage(handler: MessageHandler) {
@@ -71,6 +113,7 @@ export function createFeishuClient(config: Config['feishu']) {
           msg_type: 'text',
         },
       });
+      lastActiveTime = Date.now();
     },
   };
 }
