@@ -90,6 +90,7 @@ export function startConsole(
 
   const server = Bun.serve({
     port,
+    hostname: '127.0.0.1',
     async fetch(req, server) {
       const url = new URL(req.url);
 

@@ -76,7 +76,7 @@ export function createFeishuClient(config: Config['feishu']) {
 
       if (sinceLastConnect > MAX_DISCONNECT_TIME && sdkGaveUp) {
         console.warn(`[feishu] Watchdog: connection down for ${Math.round(sinceLastConnect / 1000)}s, SDK gave up. Forcing reconnect...`);
-        forceReconnect();
+        forceReconnect().catch((err) => console.error('[feishu] Watchdog: forceReconnect error:', err));
       }
     }, WATCHDOG_INTERVAL);
   }
@@ -106,7 +106,9 @@ export function createFeishuClient(config: Config['feishu']) {
     wsClient,
 
     start() {
-      wsClient.start({ eventDispatcher });
+      wsClient.start({ eventDispatcher }).catch((err) => {
+        console.error('[feishu] WebSocket start failed:', err);
+      });
       startWatchdog();
       console.log('[feishu] WebSocket client started (watchdog enabled)');
     },

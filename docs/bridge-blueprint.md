@@ -25,12 +25,12 @@ persona-bridge 是飞书 ↔ Claude CLI Director 的桥接层。7 个文件、~1
 
 立即修复的安全和正确性问题。每项 5-20 行改动，无新功能。
 
-- [ ] 0.1 `console.ts`: `Bun.serve()` 绑定 `127.0.0.1`（当前默认 `0.0.0.0`），阻止非本机访问 [H1]
-- [ ] 0.2 `director.ts`: bootstrap 超时后保持 `flushing=true`，等迟来的 result 到达后丢弃再 `finishFlush()`。当前超时后立即 `finishFlush()` 导致迟来 result 被当正常响应发到飞书 [Explorer P0#2]
-- [ ] 0.3 `director.ts`: `writeRaw()` 开头加 `if (!this.writeHandle) throw new Error('pipe not open')`，替代 `this.writeHandle!` 非空断言 [M3]
-- [ ] 0.4 `director.ts`: `checkDailyReport` 中 `this.writeRaw(...)` 加 `.catch(err => console.error(...))`，防止 unhandled rejection [L6]
-- [ ] 0.5 `feishu.ts`: `start()` 中 `wsClient.start()` 加 await 或 `.catch()`；`forceReconnect()` 调用处加 `.catch()` [M5]
-- [ ] 0.6 `config.ts`: `expandHome` 改为只替换行首 `~/`：`p.startsWith('~/') || p === '~' ? homedir() + p.slice(1) : p` [L2]
+- [x] 0.1 `console.ts`: `Bun.serve()` 绑定 `127.0.0.1`（当前默认 `0.0.0.0`），阻止非本机访问 [H1]
+- [x] 0.2 `director.ts`: bootstrap 超时后保持 `flushing=true`，等迟来的 result 到达后丢弃再 `finishFlush()`。当前超时后立即 `finishFlush()` 导致迟来 result 被当正常响应发到飞书 [Explorer P0#2]
+- [x] 0.3 `director.ts`: `writeRaw()` 开头加 `if (!this.writeHandle) throw new Error('pipe not open')`，替代 `this.writeHandle!` 非空断言 [M3]
+- [x] 0.4 `director.ts`: `checkDailyReport` 中 `this.writeRaw(...)` 加 `.catch(err => console.error(...))`，防止 unhandled rejection [L6]
+- [x] 0.5 `feishu.ts`: `start()` 中 `wsClient.start()` 加 await 或 `.catch()`；`forceReconnect()` 调用处加 `.catch()` [M5]
+- [x] 0.6 `config.ts`: `expandHome` 改为只替换行首 `~/`：`p.startsWith('~/') || p === '~' ? homedir() + p.slice(1) : p` [L2]
 
 ### Phase 1: UX Quick Wins
 

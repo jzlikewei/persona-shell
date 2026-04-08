@@ -154,13 +154,14 @@ export class Director extends EventEmitter {
     if (!bootstrapOk) {
       console.warn('[director] FLUSH: bootstrap timeout, will discard late response');
       this.flushBootstrapResolve = null;
-      // Keep flushing=true — the late bootstrap result will be
-      // discarded by the result handler (flushing=true, both resolves null),
-      // which then sets flushing=false via finishFlush().
+      // Keep flushing=true — the late bootstrap result will arrive later and
+      // be caught by the result handler (flushing=true, both resolves null),
+      // which calls finishFlush() at that point. Do NOT finishFlush() here.
+      console.log('[director] FLUSH: waiting for late bootstrap response to arrive before finishing');
+    } else {
+      this.finishFlush();
+      console.log('[director] FLUSH: complete');
     }
-
-    this.finishFlush();
-    console.log('[director] FLUSH: complete');
     return true;
   }
 
@@ -244,12 +245,15 @@ export class Director extends EventEmitter {
   }
 
   private async writeRaw(content: string): Promise<void> {
+    if (!this.writeHandle) {
+      throw new Error('pipe not open');
+    }
     const payload = JSON.stringify({
       type: 'user',
       message: { role: 'user', content },
     }) + '\n';
 
-    await this.writeHandle!.write(payload);
+    await this.writeHandle.write(payload);
   }
 
   async stop(): Promise<void> {
@@ -308,7 +312,7 @@ export class Director extends EventEmitter {
     this.pendingCount++;
     this.writeRaw(
       `[系统] 日期已变更为 ${today}。请为 ${yesterday} 撰写日报，保存到 daily/${yesterday}.md。同时更新 daily/state.md 的状态。`
-    );
+    ).catch((err) => console.error('[director] Failed to send daily report request:', err));
   }
 
   private async restart(): Promise<void> {

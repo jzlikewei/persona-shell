@@ -28,7 +28,7 @@ export interface Config {
 }
 
 function expandHome(p: string): string {
-  return p.startsWith('~') ? p.replace('~', homedir()) : p;
+  return p.startsWith('~/') || p === '~' ? homedir() + p.slice(1) : p;
 }
 
 export function loadConfig(path?: string): Config {
