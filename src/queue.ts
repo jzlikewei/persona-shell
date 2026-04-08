@@ -149,7 +149,7 @@ export class MessageQueue {
   }
 
   private log(action: string, messageId: string, detail: string): void {
-    const timestamp = new Date().toISOString();
+    const timestamp = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }).replace(',', '');
     const line = `[${timestamp}] [${action}] [${messageId}] ${detail}\n`;
     try {
       appendFileSync(this.logPath, line);

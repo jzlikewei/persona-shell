@@ -162,8 +162,8 @@ export function createFeishuClient(config: Config['feishu']) {
       console.error('[feishu] reply failed after all retries:', lastErr);
     },
 
-    async sendMessage(chatId: string, text: string) {
-      await client.im.v1.message.create({
+    async sendMessage(chatId: string, text: string): Promise<string | null> {
+      const res = await client.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
         data: {
           receive_id: chatId,
@@ -172,6 +172,7 @@ export function createFeishuClient(config: Config['feishu']) {
         },
       });
       lastActiveTime = Date.now();
+      return res?.data?.message_id ?? null;
     },
 
     async addReaction(messageId: string, emojiType: string) {

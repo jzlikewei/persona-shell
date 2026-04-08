@@ -21,6 +21,13 @@ export interface Config {
     enabled: boolean;
     port: number;
   };
+  task: {
+    default_timeout_ms: number;
+  };
+  scheduler: {
+    enabled: boolean;
+    intervalMinutes: number;
+  };
   logging: {
     level: string;
     queue_log: string;
@@ -61,6 +68,13 @@ export function loadConfig(path?: string): Config {
     console: {
       enabled: con.enabled !== false,
       port: Number(con.port ?? 3000),
+    },
+    task: {
+      default_timeout_ms: Number(yaml.task?.default_timeout_minutes ?? 10) * 60_000,
+    },
+    scheduler: {
+      enabled: yaml.scheduler?.enabled !== false,
+      intervalMinutes: Number(yaml.scheduler?.interval_minutes ?? 30),
     },
     logging: {
       level: yaml.logging?.level ?? 'info',

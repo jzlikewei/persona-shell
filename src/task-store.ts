@@ -1,5 +1,5 @@
 /** SQLite data layer for the task system */
-import { Database } from 'bun:sqlite';
+import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { randomBytes } from 'crypto';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -104,7 +104,7 @@ export function getTask(id: string): Task | null {
 
 export function listTasks(filter?: { status?: string; role?: string; limit?: number }): Task[] {
   const conditions: string[] = [];
-  const params: unknown[] = [];
+  const params: SQLQueryBindings[] = [];
 
   if (filter?.status) {
     conditions.push('status = ?');
@@ -118,7 +118,7 @@ export function listTasks(filter?: { status?: string; role?: string; limit?: num
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = filter?.limit ?? 50;
   params.push(limit);
-  const rows = db.query(`SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT ?`).all(...(params as string[])) as Record<string, unknown>[];
+  const rows = db.query(`SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT ?`).all(...params) as Record<string, unknown>[];
   return rows.map(rowToTask);
 }
 
@@ -130,20 +130,20 @@ export function updateTask(id: string, update: Partial<Omit<Task, 'id'>>): void 
   ] as const;
 
   const sets: string[] = [];
-  const params: unknown[] = [];
+  const params: SQLQueryBindings[] = [];
 
   for (const key of allowed) {
     if (key in update) {
       sets.push(`${key} = ?`);
       const val = (update as Record<string, unknown>)[key];
-      params.push(key === 'extra' && val != null ? JSON.stringify(val) : val);
+      params.push((key === 'extra' && val != null ? JSON.stringify(val) : val) as SQLQueryBindings);
     }
   }
 
   if (sets.length === 0) return;
 
-  params.push(id);
-  db.run(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`, params as string[]);
+  params.push(id as SQLQueryBindings);
+  db.run(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
 export function cancelTask(id: string): boolean {

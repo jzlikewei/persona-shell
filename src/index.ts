@@ -3,13 +3,17 @@ import { Director } from './director.js';
 import { createFeishuClient } from './feishu.js';
 import { MessageQueue } from './queue.js';
 import { startConsole } from './console.js';
-import { startOutboxWatcher } from './outbox-watcher.js';
+import { TaskRunner, type TaskResult } from './task-runner.js';
+import { Scheduler } from './scheduler.js';
+import { updateTask, listTasks, createTask, getTask } from './task-store.js';
+import { writeFileSync } from 'fs';
+import { join } from 'path';
 
-// Prepend ISO timestamp to all console output
+// Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
   const original = console[method].bind(console);
   console[method] = (...args: unknown[]) => {
-    original(`[${new Date().toISOString()}]`, ...args);
+    original(`[${new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }).replace(',', '')}]`, ...args);
   };
 }
 
@@ -35,14 +39,121 @@ async function main() {
     );
   }
 
+  // 7.0: Write .mcp.json BEFORE director.start() so Claude Code discovers task MCP server on spawn
+  const mcpConfig = {
+    mcpServers: {
+      'persona-tasks': {
+        command: 'bun',
+        args: ['run', join(import.meta.dirname, 'task-mcp-server.ts')],
+        env: { SHELL_PORT: String(config.console.port) },
+      },
+    },
+  };
+  writeFileSync(join(config.director.persona_dir, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
+
   // Start director process
   await director.start();
 
-  // 6.1: Outbox watcher — notify Director when sub-role results arrive
-  startOutboxWatcher(config.director.persona_dir, director);
+  // 7.3: Task runner — subprocess lifecycle management
+  const taskRunner = new TaskRunner({
+    claudePath: config.director.claude_path,
+    personaDir: config.director.persona_dir,
+    defaultTimeoutMs: config.task.default_timeout_ms,
+  });
 
-  // 启动 Web 管理控制台
-  startConsole(director, queue, config);
+  // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + feishu notification
+  taskRunner.on('task-started', (taskId: string, spawnArgs: string[]) => {
+    updateTask(taskId, {
+      status: 'running',
+      started_at: new Date().toISOString(),
+      extra: { spawnArgs },
+    });
+  });
+
+  taskRunner.on('task-completed', async (result: TaskResult) => {
+    updateTask(result.taskId, {
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      duration_ms: result.durationMs,
+      cost_usd: result.costUsd ?? null,
+      result_file: result.resultFile ?? null,
+    });
+    // Send feishu notification first, capture messageId for Director's reply
+    const lastChatId = feishu.getLastChatId();
+    let notifyMsgId: string | undefined;
+    if (lastChatId) {
+      notifyMsgId = (await feishu.sendMessage(lastChatId, `✅ 后台任务完成: ${result.taskId}`)) ?? undefined;
+    }
+    director.notifyTaskDone(result.taskId, true, notifyMsgId).catch((err) => {
+      console.warn('[shell] Failed to notify Director of task completion:', err);
+    });
+  });
+
+  taskRunner.on('task-failed', async (result: TaskResult) => {
+    updateTask(result.taskId, {
+      status: 'failed',
+      completed_at: new Date().toISOString(),
+      error: result.error ?? 'unknown',
+      duration_ms: result.durationMs,
+      cost_usd: result.costUsd ?? null,
+    });
+
+    // 7.3.3: Retry if under max_retry — retry logic is here (Shell layer)
+    const task = getTask(result.taskId);
+    if (task && task.retry_count < task.max_retry && result.error !== 'cancelled') {
+      updateTask(result.taskId, { retry_count: task.retry_count + 1, status: 'dispatched' });
+      console.log(`[shell] Retrying task ${result.taskId} (attempt ${task.retry_count + 1}/${task.max_retry})`);
+      taskRunner.runTask({ taskId: result.taskId, role: task.role, prompt: task.prompt });
+      return;
+    }
+
+    const lastChatId = feishu.getLastChatId();
+    let notifyMsgId: string | undefined;
+    if (lastChatId) {
+      const isCancelled = result.error === 'cancelled';
+      const msg = isCancelled
+        ? `🚫 后台任务已取消: ${result.taskId}`
+        : `❌ 后台任务失败: ${result.taskId} — ${result.error}`;
+      notifyMsgId = (await feishu.sendMessage(lastChatId, msg)) ?? undefined;
+    }
+    director.notifyTaskDone(result.taskId, false, notifyMsgId).catch((err) => {
+      console.warn('[shell] Failed to notify Director of task failure:', err);
+    });
+  });
+
+  // 7.3.5: Director's response to task notifications — reply to the feishu notification message
+  director.on('system-response', async (reply: string, replyToMessageId: string) => {
+    try {
+      await feishu.reply(replyToMessageId, reply);
+      console.log(`[shell] System response replied to ${replyToMessageId}`);
+    } catch (err) {
+      console.warn('[shell] Failed to reply system response:', err);
+    }
+  });
+
+  // 启动 Web 管理控制台（含 Task API）
+  startConsole(director, queue, config, taskRunner);
+
+  // 7.4: Scheduler — setInterval-driven task automation
+  const scheduler = new Scheduler(
+    config.scheduler,
+    [], // jobs 暂时为空，后续从 config.yaml 读取
+    async (job) => {
+      const task = createTask({
+        type: 'cron',
+        role: job.role,
+        description: job.description,
+        prompt: job.prompt,
+      });
+      taskRunner.runTask({ taskId: task.id, role: task.role, prompt: task.prompt });
+      return task.id;
+    },
+    (role, type) => {
+      const active = listTasks({ role });
+      return active.some((t) => t.type === type && (t.status === 'running' || t.status === 'dispatched'));
+    },
+  );
+  scheduler.start();
 
   // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
   director.on('auto-flush-complete', () => {
@@ -101,7 +212,7 @@ async function main() {
 
     // /flush — manually flush Director context
     if (text.trim() === '/flush') {
-      await feishu.reply(messageId, '正在执行 FLUSH...');
+      feishu.addReaction(messageId, 'Typing').catch(() => {});
       const success = await director.flush();
       if (success) {
         await feishu.reply(messageId, 'FLUSH 完成，上下文已刷新');

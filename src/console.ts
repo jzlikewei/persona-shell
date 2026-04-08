@@ -3,6 +3,8 @@ import { join } from 'path';
 import type { Director } from './director.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
+import type { TaskRunner } from './task-runner.js';
+import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, type CreateTaskInput } from './task-store.js';
 
 // Shell 启动时间，用于计算 uptime
 const startedAt = Date.now();
@@ -15,6 +17,7 @@ export function startConsole(
   director: Director,
   queue: MessageQueue,
   config: Config,
+  taskRunner?: TaskRunner,
 ): void {
   if (!config.console.enabled) {
     console.log('[console] Web console disabled by config');
@@ -111,23 +114,67 @@ export function startConsole(
             return new Response('index.html not found', { status: 500 });
           }
         }
-        case '/api/flush': {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
-          const result = await handleCommand('flush');
-          return Response.json(result);
-        }
-        case '/api/esc': {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
-          const result = await handleCommand('esc');
-          return Response.json(result);
-        }
-        case '/api/restart': {
-          if (req.method !== 'POST') return new Response('Method not allowed', { status: 405 });
-          const result = await handleCommand('restart');
-          return Response.json(result);
-        }
-        default:
+        default: {
+          // POST /api/send — send arbitrary text to Director (bypass feishu)
+          if (url.pathname === '/api/send' && req.method === 'POST') {
+            const body = await req.json() as { text: string };
+            if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
+            try {
+              await director.send(body.text);
+              return Response.json({ ok: true, message: 'sent' });
+            } catch (err) {
+              return Response.json({ ok: false, message: String(err) }, { status: 500 });
+            }
+          }
+
+          if (url.pathname === '/api/flush' && req.method === 'POST') {
+            const result = await handleCommand('flush');
+            return Response.json(result);
+          }
+          if (url.pathname === '/api/esc' && req.method === 'POST') {
+            const result = await handleCommand('esc');
+            return Response.json(result);
+          }
+          if (url.pathname === '/api/restart' && req.method === 'POST') {
+            const result = await handleCommand('restart');
+            return Response.json(result);
+          }
+          // Task API routes
+          if (url.pathname === '/api/tasks' && req.method === 'POST') {
+            const body = await req.json() as CreateTaskInput;
+            if (!body.role || !body.prompt || !body.description) {
+              return Response.json({ error: 'role, description, prompt are required' }, { status: 400 });
+            }
+            const task = createTask(body);
+            if (taskRunner) {
+              taskRunner.runTask({
+                taskId: task.id,
+                role: task.role,
+                prompt: task.prompt,
+              });
+            }
+            return Response.json(task);
+          }
+          if (url.pathname === '/api/tasks' && req.method === 'GET') {
+            const status = url.searchParams.get('status') ?? undefined;
+            const role = url.searchParams.get('role') ?? undefined;
+            const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
+            return Response.json(listTasks({ status, role, limit }));
+          }
+          if (url.pathname.startsWith('/api/tasks/') && url.pathname.endsWith('/cancel') && req.method === 'POST') {
+            const taskId = url.pathname.slice('/api/tasks/'.length, -'/cancel'.length);
+            const ok = cancelTaskInDb(taskId);
+            if (ok && taskRunner) taskRunner.cancelTask(taskId);
+            return Response.json({ ok, taskId });
+          }
+          if (url.pathname.startsWith('/api/tasks/') && req.method === 'GET') {
+            const taskId = url.pathname.slice('/api/tasks/'.length);
+            const task = getTask(taskId);
+            if (!task) return Response.json({ error: 'not found' }, { status: 404 });
+            return Response.json(task);
+          }
           return new Response('Not found', { status: 404 });
+        }
       }
     },
     websocket: {

@@ -2,15 +2,17 @@ import { EventEmitter } from 'events';
 import { spawn, execSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, openSync, appendFileSync } from 'fs';
 import { open } from 'fs/promises';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
 import { saveState, loadState } from './state-store.js';
-import { countOutboxFiles } from './outbox-watcher.js';
+import { listTasks } from './task-store.js';
 
-/** 4.2: Director output sidecar log path */
-const DIRECTOR_OUTPUT_LOG = join(import.meta.dirname, '..', 'logs', 'director-output.log');
+/** Sidecar log paths — input (user→Director) and output (Director→user) */
+const DIRECTOR_LOG_DIR = join(import.meta.dirname, '..', 'logs');
+const DIRECTOR_INPUT_LOG = join(DIRECTOR_LOG_DIR, 'director-input.log');
+const DIRECTOR_OUTPUT_LOG = join(DIRECTOR_LOG_DIR, 'director-output.log');
 
 interface DirectorPersistedState {
   lastFlushAt: number;
@@ -30,6 +32,7 @@ export class Director extends EventEmitter {
   private lastFlushAt: number = Date.now();
   private lastInputTokens = 0;
   private pendingCount = 0;
+  private systemReplyQueue: string[] = [];
   private currentDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   private writingDailyReport = false;
   private flushCheckpointResolve: (() => void) | null = null;
@@ -39,6 +42,8 @@ export class Director extends EventEmitter {
   private generation = 0;
   /** 3.2: Recent restart timestamps for backoff detection */
   private restartTimestamps: number[] = [];
+  /** Flag to discard the next late response after flush timeout */
+  private discardNextResponse = false;
 
   constructor(config: Config['director']) {
     super();
@@ -107,6 +112,14 @@ export class Director extends EventEmitter {
     });
   }
 
+  /**
+   * Safety-net timeout for flush steps (drain / checkpoint / bootstrap).
+   * Each step waits for Claude Code to complete a full conversation turn,
+   * which can take minutes depending on context size.  This timeout only
+   * fires when something is genuinely wrong (process crash, hang).
+   */
+  private static readonly FLUSH_STEP_TIMEOUT = 5 * 60_000; // 5 minutes
+
   /** Kill current Director and restart with a fresh session (no --conversation-id) */
   async flush(): Promise<boolean> {
     if (this.flushing) {
@@ -114,10 +127,10 @@ export class Director extends EventEmitter {
       return false;
     }
 
-    // 6.2: Warn about unprocessed outbox files before flush
-    const outboxCount = countOutboxFiles(this.config.persona_dir);
-    if (outboxCount > 0) {
-      console.warn(`[director] FLUSH: ${outboxCount} unprocessed file(s) in outbox/ — new Director may miss context`);
+    // 7.x: Warn about running tasks before flush
+    const runningTasks = listTasks({ status: 'running' });
+    if (runningTasks.length > 0) {
+      console.warn(`[director] FLUSH: ${runningTasks.length} task(s) still running — new Director may miss results`);
     }
 
     // Wait for interrupt to complete if in progress
@@ -133,7 +146,7 @@ export class Director extends EventEmitter {
     // Drain: wait for in-flight messages to complete
     if (this.pendingCount > 0) {
       console.log(`[director] FLUSH: draining ${this.pendingCount} in-flight messages...`);
-      const drained = await this.waitForDrain(30_000);
+      const drained = await this.waitForDrain(Director.FLUSH_STEP_TIMEOUT);
       if (!drained) {
         console.warn('[director] FLUSH: drain timeout, aborting flush');
         this.flushing = false;
@@ -153,11 +166,12 @@ export class Director extends EventEmitter {
 
     const checkpointOk = await Promise.race([
       checkpointDone.then(() => true),
-      this.timeout(30_000).then(() => false),
+      this.timeout(Director.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!checkpointOk) {
       console.warn('[director] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset');
       this.flushCheckpointResolve = null;
+      this.discardNextResponse = true;
       // Fall through to kill+restart — don't abort, otherwise the
       // checkpoint message is still in-flight and its late response
       // would leak to users.
@@ -185,15 +199,13 @@ export class Director extends EventEmitter {
 
     const bootstrapOk = await Promise.race([
       bootstrapDone.then(() => true),
-      this.timeout(30_000).then(() => false),
+      this.timeout(Director.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!bootstrapOk) {
-      console.warn('[director] FLUSH: bootstrap timeout, will discard late response');
+      console.warn('[director] FLUSH: bootstrap timeout — forcing flush finish');
       this.flushBootstrapResolve = null;
-      // Keep flushing=true — the late bootstrap result will arrive later and
-      // be caught by the result handler (flushing=true, both resolves null),
-      // which calls finishFlush() at that point. Do NOT finishFlush() here.
-      console.log('[director] FLUSH: waiting for late bootstrap response to arrive before finishing');
+      this.discardNextResponse = true;
+      this.finishFlush();
     } else {
       this.finishFlush();
       console.log('[director] FLUSH: complete');
@@ -290,14 +302,31 @@ export class Director extends EventEmitter {
       message: { role: 'user', content },
     }) + '\n';
 
+    try {
+      if (!existsSync(DIRECTOR_LOG_DIR)) mkdirSync(DIRECTOR_LOG_DIR, { recursive: true });
+      appendFileSync(DIRECTOR_INPUT_LOG, payload);
+    } catch { /* best-effort logging */ }
+
     await this.writeHandle.write(payload);
   }
 
-  /** 6.1: Notify Director that a sub-role result has arrived in outbox */
-  async notifyOutbox(filename: string): Promise<void> {
+  /** 7.3.5: Notify Director that a managed task has completed or failed */
+  async notifyTaskDone(taskId: string, success: boolean, replyToMessageId?: string): Promise<void> {
     if (!this.writeHandle || this.flushing) return;
     this.pendingCount++;
-    await this.writeRaw(`[TASK_DONE] 后台任务完成，结果文件: outbox/${filename}。用 Read 工具查看内容。`);
+    if (replyToMessageId) {
+      this.systemReplyQueue.push(replyToMessageId);
+    }
+    const tag = success ? 'TASK_DONE' : 'TASK_FAILED';
+    const msg = success
+      ? `[${tag}] 后台任务 ${taskId} 已完成。调用 get_task MCP 工具查看详情。`
+      : `[${tag}] 后台任务 ${taskId} 失败。调用 get_task MCP 工具查看错误信息。`;
+    try {
+      await this.writeRaw(msg);
+    } catch {
+      this.pendingCount = Math.max(0, this.pendingCount - 1);
+      if (replyToMessageId) this.systemReplyQueue.pop();
+    }
   }
 
   async stop(): Promise<void> {
@@ -458,8 +487,7 @@ export class Director extends EventEmitter {
 
       // 4.2: Sidecar raw output to logs/director-output.log before parsing
       try {
-        const logDir = dirname(DIRECTOR_OUTPUT_LOG);
-        if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+        if (!existsSync(DIRECTOR_LOG_DIR)) mkdirSync(DIRECTOR_LOG_DIR, { recursive: true });
         appendFileSync(DIRECTOR_OUTPUT_LOG, line + '\n');
       } catch { /* best-effort logging */ }
 
@@ -519,14 +547,19 @@ export class Director extends EventEmitter {
                 console.log(`[director] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushBootstrapResolve();
                 this.flushBootstrapResolve = null;
-              } else if (this.flushing) {
-                // Late flush response (bootstrap timeout) — discard and end flush
-                console.log(`[director] FLUSH: discarding late response, ending flush`);
-                this.finishFlush();
               } else if (this.writingDailyReport) {
                 // Daily report response — don't emit to users
                 console.log(`[director] Daily report done: ${currentResponse.trim().slice(0, 100)}`);
                 this.writingDailyReport = false;
+              } else if (this.discardNextResponse) {
+                // Late response after flush timeout — discard silently
+                console.log(`[director] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
+                this.discardNextResponse = false;
+              } else if (this.systemReplyQueue.length > 0) {
+                // System message response (task notification) — emit with feishu messageId for reply
+                const replyTo = this.systemReplyQueue.shift()!;
+                console.log(`[director] System message response (replyTo=${replyTo}): ${currentResponse.trim().slice(0, 100)}`);
+                this.emit('system-response', currentResponse.trim(), replyTo);
               } else {
                 this.emit('response', currentResponse.trim());
               }

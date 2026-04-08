@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { spawn, type ChildProcess } from 'child_process';
-import { openSync, mkdirSync, existsSync } from 'fs';
+import { openSync, closeSync, mkdirSync, existsSync, readdirSync, readFileSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
 
@@ -24,6 +24,7 @@ export interface TaskResult {
   error?: string;
   durationMs: number;
   costUsd?: number;
+  spawnArgs?: string[];
 }
 
 interface RunningTask {
@@ -55,26 +56,61 @@ export class TaskRunner extends EventEmitter {
     const timeoutMs = input.timeoutMs ?? this.config.defaultTimeoutMs;
     const startedAt = Date.now();
 
-    const cmd = [
-      this.config.claudePath,
+    // Build args — same plugin loading as Director (personas + skills)
+    const personaDir = this.config.personaDir;
+    const personasDir = join(personaDir, 'personas');
+    const skillsDir = join(personaDir, 'skills');
+
+    const args = [
       '--print',
-      '--output-format stream-json',
+      '--output-format', 'stream-json',
       '--verbose',
       '--dangerously-skip-permissions',
-      '--bare',
-      `--add-dir "${this.config.personaDir}"`,
-      `-p "${input.prompt.replace(/"/g, '\\"')}"`,
-    ].join(' ');
+      '--add-dir', personaDir,
+      '--plugin-dir', personasDir,
+    ];
+
+    // Load skill plugin subdirectories
+    try {
+      for (const d of readdirSync(skillsDir, { withFileTypes: true })) {
+        if (d.isDirectory()) {
+          args.push('--plugin-dir', join(skillsDir, d.name));
+        }
+      }
+    } catch { /* skills dir may not exist */ }
+
+    // Inject role persona definition as prompt prefix (strip YAML frontmatter)
+    let fullPrompt = input.prompt;
+    const personaFile = join(personasDir, `${input.role}.md`);
+    try {
+      if (existsSync(personaFile)) {
+        let personaDef = readFileSync(personaFile, 'utf-8');
+        // Strip YAML frontmatter (--- ... ---)
+        const fmMatch = personaDef.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
+        if (fmMatch) personaDef = fmMatch[1];
+        if (personaDef.trim()) {
+          fullPrompt = `${personaDef.trim()}\n\n---\n\n${input.prompt}`;
+        }
+      }
+    } catch { /* persona file missing is ok */ }
+
+    args.push('-p', fullPrompt);
 
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
     const stderrPath = join(LOG_DIR, `task-${input.taskId}.stderr.log`);
     const stderrFd = openSync(stderrPath, 'a');
 
-    const child = spawn('sh', ['-c', cmd], {
+    const child = spawn(this.config.claudePath, args, {
       detached: true,
       stdio: ['ignore', 'pipe', stderrFd],
       cwd: this.config.personaDir,
     });
+
+    // Close parent's copy of stderr fd — child inherits its own copy
+    closeSync(stderrFd);
+
+    // Prevent unhandled 'error' event from crashing the Shell process
+    child.on('error', () => {});
 
     child.unref();
 
@@ -90,7 +126,7 @@ export class TaskRunner extends EventEmitter {
     }
 
     console.log(`[task-runner] Task ${input.taskId} started (role=${input.role}, pid=${child.pid}, timeout=${timeoutMs}ms)`);
-    this.emit('task-started', input.taskId);
+    this.emit('task-started', input.taskId, args);
 
     // Timeout protection
     const timer = setTimeout(() => {
@@ -99,12 +135,14 @@ export class TaskRunner extends EventEmitter {
 
     this.running.set(input.taskId, { pid: child.pid, timer, child, startedAt, timedOut: false });
 
-    // Parse stream-json stdout
+    // Parse stream-json stdout and log to file
     let costUsd: number | undefined;
+    const stdoutLogPath = join(LOG_DIR, `task-${input.taskId}.stdout.log`);
 
     const rl = createInterface({ input: child.stdout! });
     rl.on('line', (line) => {
       if (!line.trim()) return;
+      try { appendFileSync(stdoutLogPath, line + '\n'); } catch { /* best-effort */ }
       try {
         const event = JSON.parse(line);
         if (event.type === 'result' && event.cost_usd != null) {
