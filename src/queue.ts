@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { randomBytes } from 'crypto';
+import { saveState, loadState } from './state-store.js';
 
 export interface QueueItem {
   text: string;
@@ -29,6 +30,25 @@ export class MessageQueue {
     }
   }
 
+  /** Restore queue items from persisted state. Returns number of restored items. */
+  restoreFromState(): number {
+    const saved = loadState<QueueItem[]>('queue');
+    if (!saved || !Array.isArray(saved) || saved.length === 0) return 0;
+    for (const item of saved) {
+      if (item.correlationId && item.text) {
+        this.items.set(item.correlationId, item);
+      }
+    }
+    if (this.items.size > 0) {
+      this.log('RESTORE', '-', `restored ${this.items.size} items from state`);
+    }
+    return this.items.size;
+  }
+
+  private persist(): void {
+    saveState<QueueItem[]>('queue', Array.from(this.items.values()));
+  }
+
   /** 返回队列当前所有项的快照，供控制台使用 */
   getSnapshot(): Array<{
     text: string;
@@ -50,6 +70,7 @@ export class MessageQueue {
     const correlationId = generateCorrelationId();
     const entry: QueueItem = { ...item, timestamp: Date.now(), correlationId };
     this.items.set(correlationId, entry);
+    this.persist();
     this.log('ENQUEUE', entry.messageId, `cid=${correlationId} ${item.text.slice(0, 100)}`);
     return correlationId;
   }
@@ -59,6 +80,7 @@ export class MessageQueue {
     const item = this.items.get(correlationId);
     if (item) {
       this.items.delete(correlationId);
+      this.persist();
       this.log('RESOLVE', item.messageId, `cid=${correlationId}`);
     }
     return item;
@@ -74,6 +96,7 @@ export class MessageQueue {
     }
     if (oldest) {
       oldest.cancelled = true;
+      this.persist();
       this.log('CANCEL', oldest.messageId, `cid=${oldest.correlationId}`);
     }
     return oldest;
@@ -81,6 +104,7 @@ export class MessageQueue {
 
   /** Resolve the oldest message, skipping and discarding cancelled items */
   resolveOldest(): QueueItem | undefined {
+    let modified = false;
     while (this.items.size > 0) {
       let oldest: QueueItem | undefined;
       for (const item of this.items.values()) {
@@ -88,9 +112,10 @@ export class MessageQueue {
           oldest = item;
         }
       }
-      if (!oldest) return undefined;
+      if (!oldest) break;
 
       this.items.delete(oldest.correlationId);
+      modified = true;
 
       if (oldest.cancelled) {
         this.log('DISCARD_CANCELLED', oldest.messageId, `cid=${oldest.correlationId}`);
@@ -98,8 +123,10 @@ export class MessageQueue {
       }
 
       this.log('RESOLVE_OLDEST', oldest.messageId, `cid=${oldest.correlationId}`);
+      this.persist();
       return oldest;
     }
+    if (modified) this.persist();
     return undefined;
   }
 

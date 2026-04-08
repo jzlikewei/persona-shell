@@ -6,6 +6,12 @@ import { join } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
+import { saveState, loadState } from './state-store.js';
+
+interface DirectorPersistedState {
+  lastFlushAt: number;
+  lastInputTokens: number;
+}
 
 export class Director extends EventEmitter {
   private config: Config['director'];
@@ -32,6 +38,22 @@ export class Director extends EventEmitter {
     this.pipeIn = join(config.pipe_dir, 'director-in');
     this.pipeOut = join(config.pipe_dir, 'director-out');
     this.sessionFile = join(config.pipe_dir, 'director-session');
+  }
+
+  /** Restore persisted state (lastFlushAt, lastInputTokens). Returns restored data or null. */
+  restoreState(): DirectorPersistedState | null {
+    const saved = loadState<DirectorPersistedState>('director');
+    if (!saved) return null;
+    if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
+    if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
+    return saved;
+  }
+
+  private persistState(): void {
+    saveState<DirectorPersistedState>('director', {
+      lastFlushAt: this.lastFlushAt,
+      lastInputTokens: this.lastInputTokens,
+    });
   }
 
   async start(): Promise<void> {
@@ -169,6 +191,7 @@ export class Director extends EventEmitter {
     this.lastFlushAt = Date.now();
     this.lastInputTokens = 0;
     this.flushing = false;
+    this.persistState();
   }
 
   get isFlushing(): boolean {
@@ -431,6 +454,7 @@ export class Director extends EventEmitter {
             // Track input_tokens from usage
             if (event.usage?.input_tokens) {
               this.lastInputTokens = event.usage.input_tokens;
+              this.persistState();
             }
 
             this.pendingCount = Math.max(0, this.pendingCount - 1);

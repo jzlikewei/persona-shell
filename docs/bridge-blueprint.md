@@ -46,11 +46,11 @@ persona-bridge 是飞书 ↔ Claude CLI Director 的桥接层。7 个文件、~1
 
 Bridge 重启后恢复关键状态，解决"重启归零"问题。
 
-- [ ] 2.1 创建 `src/state-store.ts`：简单的 JSON 文件读写模块。`save(key, data)` / `load(key)` → 读写 `state/{key}.json`。写入用 write-rename 模式保证原子性
-- [ ] 2.2 `director.ts`: `lastFlushAt` 和 `lastInputTokens` 在变更时持久化到 `state/director.json`；启动时恢复
-- [ ] 2.3 `queue.ts`: 队列变更（enqueue/resolve/cancel）时持久化到 `state/queue.json`；启动时恢复未完成的消息
-- [ ] 2.4 `index.ts` / `director.ts`: Bridge 启动时从 state 恢复后，日志打印恢复摘要（恢复了几条队列消息、lastFlushAt 距今多久等）
-- [ ] 2.5 `.gitignore`: 添加 `state/` 目录排除
+- [x] 2.1 创建 `src/state-store.ts`：简单的 JSON 文件读写模块。`save(key, data)` / `load(key)` → 读写 `state/{key}.json`。写入用 write-rename 模式保证原子性
+- [x] 2.2 `director.ts`: `lastFlushAt` 和 `lastInputTokens` 在变更时持久化到 `state/director.json`；启动时恢复
+- [x] 2.3 `queue.ts`: 队列变更（enqueue/resolve/cancel）时持久化到 `state/queue.json`；启动时恢复未完成的消息
+- [x] 2.4 `index.ts` / `director.ts`: Bridge 启动时从 state 恢复后，日志打印恢复摘要（恢复了几条队列消息、lastFlushAt 距今多久等）
+- [x] 2.5 `.gitignore`: 添加 `state/` 目录排除
 
 ### Phase 3: Resilience Fixes
 

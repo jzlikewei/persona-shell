@@ -19,6 +19,21 @@ async function main() {
   const feishu = createFeishuClient(config.feishu);
   const startTime = Date.now();
 
+  // 2.3/2.4: Restore queue state from disk
+  const restoredQueueCount = queue.restoreFromState();
+  if (restoredQueueCount > 0) {
+    console.log(`[bridge] Restored ${restoredQueueCount} queued message(s) from state`);
+  }
+
+  // 2.2/2.4: Restore director state from disk
+  const restoredDirector = director.restoreState();
+  if (restoredDirector) {
+    const flushAgoSec = Math.floor((Date.now() - restoredDirector.lastFlushAt) / 1000);
+    console.log(
+      `[bridge] Restored director state: lastFlushAt=${flushAgoSec}s ago, lastInputTokens=${restoredDirector.lastInputTokens}`
+    );
+  }
+
   // Start director process
   await director.start();
 
