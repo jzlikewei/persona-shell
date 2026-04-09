@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { randomBytes } from 'crypto';
-import { saveState, loadState } from './state-store.js';
+import { getState, setState } from './task-store.js';
 
 export interface QueueItem {
   text: string;
@@ -32,7 +32,7 @@ export class MessageQueue {
 
   /** Restore queue items from persisted state. Returns number of restored items. */
   restoreFromState(): number {
-    const saved = loadState<QueueItem[]>('queue');
+    const saved = getState<QueueItem[]>('queue');
     if (!saved || !Array.isArray(saved) || saved.length === 0) return 0;
     for (const item of saved) {
       if (item.correlationId && item.text) {
@@ -46,7 +46,7 @@ export class MessageQueue {
   }
 
   private persist(): void {
-    saveState<QueueItem[]>('queue', Array.from(this.items.values()));
+    setState<QueueItem[]>('queue', Array.from(this.items.values()));
   }
 
   /** 返回队列当前所有项的快照，供控制台使用 */

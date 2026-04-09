@@ -94,6 +94,13 @@ export class TaskRunner extends EventEmitter {
       }
     } catch { /* persona file missing is ok */ }
 
+    // Inject output path — deterministic, Shell knows where to find the result
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    const outboxDir = join(personaDir, 'outbox', today);
+    if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true });
+    const resultFile = join(outboxDir, `${input.taskId}.md`);
+    fullPrompt += `\n\n[系统指令] 将输出结果保存到 ${resultFile}`;
+
     args.push('-p', fullPrompt);
 
     if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
@@ -181,7 +188,7 @@ export class TaskRunner extends EventEmitter {
         success,
         durationMs,
         costUsd,
-        ...(success ? {} : { error: `exit code ${code}` }),
+        ...(success ? { resultFile: resultFile } : { error: `exit code ${code}` }),
       };
 
       console.log(`[task-runner] Task ${input.taskId} ${success ? 'completed' : 'failed'} (duration=${durationMs}ms, code=${code})`);

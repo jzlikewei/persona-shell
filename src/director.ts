@@ -6,8 +6,7 @@ import { join } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
-import { saveState, loadState } from './state-store.js';
-import { listTasks } from './task-store.js';
+import { getState, setState, listTasks } from './task-store.js';
 
 /** Sidecar log paths — input (user→Director) and output (Director→user) */
 const DIRECTOR_LOG_DIR = join(import.meta.dirname, '..', 'logs');
@@ -55,7 +54,7 @@ export class Director extends EventEmitter {
 
   /** Restore persisted state (lastFlushAt, lastInputTokens). Returns restored data or null. */
   restoreState(): DirectorPersistedState | null {
-    const saved = loadState<DirectorPersistedState>('director');
+    const saved = getState<DirectorPersistedState>('director');
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
@@ -63,7 +62,7 @@ export class Director extends EventEmitter {
   }
 
   private persistState(): void {
-    saveState<DirectorPersistedState>('director', {
+    setState<DirectorPersistedState>('director', {
       lastFlushAt: this.lastFlushAt,
       lastInputTokens: this.lastInputTokens,
     });

@@ -1,14 +1,11 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
 import type { Config } from './config.js';
+import { getState, setState } from './task-store.js';
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
 
 const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
-const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则强制重连
-const STATE_DIR = join(import.meta.dirname, '..', 'state');
-const LAST_CHAT_FILE = join(STATE_DIR, 'last-chat-id');
+const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则自杀重启
 
 export function createFeishuClient(config: Config['feishu']) {
   const client = new Lark.Client({
@@ -17,8 +14,6 @@ export function createFeishuClient(config: Config['feishu']) {
   });
 
   const handlers: MessageHandler[] = [];
-  /** 4.1: Alert handlers for disconnect/reconnect notifications */
-  const alertHandlers: Array<(message: string) => void> = [];
   let lastActiveTime = Date.now();
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -31,20 +26,14 @@ export function createFeishuClient(config: Config['feishu']) {
       const { chat_id, message_id, content } = message;
       if (!chat_id || !message_id || !content) return;
 
-      // Persist chat_id for restart notification
-      try {
-        if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
-        writeFileSync(LAST_CHAT_FILE, chat_id);
-      } catch { /* ok */ }
+      // Persist chat_id to DB
+      setState('lastChatId', chat_id);
 
       const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
 
-      // Non-text messages: pass through with empty text so handler can reply
       if (msgType !== 'text') {
         for (const handler of handlers) {
-          try {
-            await handler('', message_id, chat_id, msgType);
-          } catch (err) {
+          try { await handler('', message_id, chat_id, msgType); } catch (err) {
             console.error('[feishu] Handler error:', err);
           }
         }
@@ -57,9 +46,7 @@ export function createFeishuClient(config: Config['feishu']) {
         if (!text) return;
 
         for (const handler of handlers) {
-          try {
-            await handler(text, message_id, chat_id, msgType);
-          } catch (err) {
+          try { await handler(text, message_id, chat_id, msgType); } catch (err) {
             console.error('[feishu] Handler error:', err);
           }
         }
@@ -69,7 +56,7 @@ export function createFeishuClient(config: Config['feishu']) {
     },
   });
 
-  let wsClient = new Lark.WSClient({
+  const wsClient = new Lark.WSClient({
     appId: config.app_id,
     appSecret: config.app_secret,
     loggerLevel: Lark.LoggerLevel.info,
@@ -84,35 +71,12 @@ export function createFeishuClient(config: Config['feishu']) {
       const sdkGaveUp = info.nextConnectTime > 0 && info.nextConnectTime < now - WATCHDOG_INTERVAL;
 
       if (sinceLastConnect > MAX_DISCONNECT_TIME && sdkGaveUp) {
-        console.warn(`[feishu] Watchdog: connection down for ${Math.round(sinceLastConnect / 1000)}s, SDK gave up. Forcing reconnect...`);
-        // 4.1: Notify alert handlers about disconnection
-        const alertMsg = `⚠️ 飞书连接断开超过 ${Math.round(sinceLastConnect / 1000)}s，正在重连...`;
-        for (const handler of alertHandlers) {
-          try { handler(alertMsg); } catch { /* ignore */ }
-        }
-        forceReconnect().catch((err) => console.error('[feishu] Watchdog: forceReconnect error:', err));
+        const downSec = Math.round(sinceLastConnect / 1000);
+        console.error(`[feishu] Watchdog: connection down for ${downSec}s. Exiting for launchd restart.`);
+        setState('exitReason', { reason: 'feishu_disconnect', downSeconds: downSec, at: new Date().toISOString() });
+        process.exit(0);
       }
     }, WATCHDOG_INTERVAL);
-  }
-
-  async function forceReconnect() {
-    try {
-      wsClient.close({ force: true });
-    } catch { /* ignore */ }
-
-    wsClient = new Lark.WSClient({
-      appId: config.app_id,
-      appSecret: config.app_secret,
-      loggerLevel: Lark.LoggerLevel.info,
-    });
-
-    try {
-      await wsClient.start({ eventDispatcher });
-      lastActiveTime = Date.now();
-      console.log('[feishu] Watchdog: reconnected successfully');
-    } catch (err) {
-      console.error('[feishu] Watchdog: reconnect failed, will retry next cycle', err);
-    }
   }
 
   return {
@@ -131,23 +95,14 @@ export function createFeishuClient(config: Config['feishu']) {
       handlers.push(handler);
     },
 
-    /** 4.1: Register handler for system alerts (disconnection, etc.) */
-    onAlert(handler: (message: string) => void) {
-      alertHandlers.push(handler);
-    },
-
     async reply(messageId: string, text: string) {
-      // 3.4: Retry with exponential backoff (1s, 3s) on failure
       const delays = [1000, 3000];
       let lastErr: unknown;
       for (let attempt = 0; attempt <= delays.length; attempt++) {
         try {
           await client.im.v1.message.reply({
             path: { message_id: messageId },
-            data: {
-              content: JSON.stringify({ text }),
-              msg_type: 'text',
-            },
+            data: { content: JSON.stringify({ text }), msg_type: 'text' },
           });
           lastActiveTime = Date.now();
           return;
@@ -165,11 +120,7 @@ export function createFeishuClient(config: Config['feishu']) {
     async sendMessage(chatId: string, text: string): Promise<string | null> {
       const res = await client.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
-        data: {
-          receive_id: chatId,
-          content: JSON.stringify({ text }),
-          msg_type: 'text',
-        },
+        data: { receive_id: chatId, content: JSON.stringify({ text }), msg_type: 'text' },
       });
       lastActiveTime = Date.now();
       return res?.data?.message_id ?? null;
@@ -183,11 +134,7 @@ export function createFeishuClient(config: Config['feishu']) {
     },
 
     getLastChatId(): string | null {
-      try {
-        return readFileSync(LAST_CHAT_FILE, 'utf-8').trim() || null;
-      } catch {
-        return null;
-      }
+      return getState<string>('lastChatId');
     },
   };
 }

@@ -5,7 +5,7 @@ import { MessageQueue } from './queue.js';
 import { startConsole } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
 import { Scheduler } from './scheduler.js';
-import { updateTask, listTasks, createTask, getTask } from './task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, deleteState } from './task-store.js';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -175,19 +175,6 @@ async function main() {
     }
   });
 
-  // 4.1: Feishu disconnection alert — sent after reconnection succeeds
-  feishu.onAlert((message: string) => {
-    const lastChatId = feishu.getLastChatId();
-    if (lastChatId) {
-      // Delay slightly — reconnection may still be in progress
-      setTimeout(() => {
-        feishu.sendMessage(lastChatId, message).catch((err) => {
-          console.warn('[shell] Failed to send feishu alert:', err);
-        });
-      }, 5000);
-    }
-  });
-
   // Feishu message → queue → director
   feishu.onMessage(async (text, messageId, chatId, msgType) => {
     // 1.3: Non-text message feedback
@@ -323,16 +310,23 @@ async function main() {
 
   console.log('[shell] Persona Shell started');
 
-  // Notify restart success
+  // Startup notification — check exit reason and send appropriate message
   const lastChatId = feishu.getLastChatId();
   if (lastChatId) {
-    // Delay to let WS connect first
+    const exitReason = getState<{ reason: string; downSeconds?: number; at?: string }>('exitReason');
+    deleteState('exitReason');
+
+    let startupMsg = 'Shell 已重启 ✓';
+    if (exitReason?.reason === 'feishu_disconnect') {
+      startupMsg = `Shell 已重启 ✓（上次因飞书断连 ${exitReason.downSeconds}s 自动重启）`;
+    }
+
     setTimeout(async () => {
       try {
-        await feishu.sendMessage(lastChatId, 'Shell 已重启 ✓');
-        console.log('[shell] Restart notification sent');
+        await feishu.sendMessage(lastChatId, startupMsg);
+        console.log('[shell] Startup notification sent');
       } catch (err) {
-        console.warn('[shell] Failed to send restart notification:', err);
+        console.warn('[shell] Failed to send startup notification:', err);
       }
     }, 3000);
   }

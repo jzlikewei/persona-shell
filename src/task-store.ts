@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   extra        TEXT
 )`;
 
+const CREATE_STATE_TABLE = `
+CREATE TABLE IF NOT EXISTS state (
+  key   TEXT PRIMARY KEY,
+  value TEXT
+)`;
+
 function generateId(): string {
   return randomBytes(8).toString('hex');
 }
@@ -71,6 +77,7 @@ function openDb(): Database {
   const db = new Database(DB_PATH);
   db.run('PRAGMA journal_mode = WAL');
   db.run(CREATE_TABLE);
+  db.run(CREATE_STATE_TABLE);
   return db;
 }
 
@@ -160,4 +167,23 @@ export function getOutboxDir(personaDir: string): string {
   const dir = join(personaDir, 'outbox', date);
   ensureDir(dir);
   return dir;
+}
+
+// --- State key-value store (replaces state-store.ts + file-based state) ---
+
+export function getState<T>(key: string): T | null {
+  const row = db.query('SELECT value FROM state WHERE key = ?').get(key) as { value: string } | null;
+  if (!row) return null;
+  try { return JSON.parse(row.value) as T; } catch { return null; }
+}
+
+export function setState<T>(key: string, data: T): void {
+  db.run(
+    'INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?',
+    [key, JSON.stringify(data), JSON.stringify(data)],
+  );
+}
+
+export function deleteState(key: string): void {
+  db.run('DELETE FROM state WHERE key = ?', [key]);
 }
