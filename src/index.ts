@@ -2,7 +2,7 @@ import { loadConfig } from './config.js';
 import { Director } from './director.js';
 import { createFeishuClient } from './feishu.js';
 import { MessageQueue } from './queue.js';
-import { startConsole } from './console.js';
+import { startConsole, type MetricsCollector } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
 import { Scheduler } from './scheduler.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState } from './task-store.js';
@@ -23,6 +23,31 @@ async function main() {
   const director = new Director(config.director);
   const feishu = createFeishuClient(config.feishu);
   const startTime = Date.now();
+
+  // --- In-memory metrics collector ---
+  const metrics: MetricsCollector = {
+    recentMessages: [],
+    recentErrors: [],
+    today: { date: '', messagesProcessed: 0, totalResponseMs: 0, totalCostUsd: 0 },
+
+    addMessage(msg) {
+      this.recentMessages.push(msg);
+      if (this.recentMessages.length > 30) this.recentMessages.shift();
+    },
+
+    addError(message: string) {
+      this.recentErrors.push({ message, timestamp: Date.now() });
+      if (this.recentErrors.length > 20) this.recentErrors.shift();
+    },
+
+    getToday() {
+      const todayStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+      if (this.today.date !== todayStr) {
+        this.today = { date: todayStr, messagesProcessed: 0, totalResponseMs: 0, totalCostUsd: 0 };
+      }
+      return this.today;
+    },
+  };
 
   // 2.3/2.4: Restore queue state from disk
   const restoredQueueCount = queue.restoreFromState();
@@ -132,7 +157,7 @@ async function main() {
   });
 
   // 启动 Web 管理控制台（含 Task API）
-  startConsole(director, queue, config, taskRunner);
+  startConsole(director, queue, config, taskRunner, feishu, metrics);
 
   // 7.4: Scheduler — setInterval-driven task automation
   const scheduler = new Scheduler(
@@ -167,6 +192,7 @@ async function main() {
 
   // 4.1: Alert notification — forward Director and system alerts to feishu
   director.on('alert', (message: string) => {
+    metrics.addError(message);
     const lastChatId = feishu.getLastChatId();
     if (lastChatId) {
       feishu.sendMessage(lastChatId, message).catch((err) => {
@@ -253,6 +279,7 @@ async function main() {
     });
 
     console.log(`[shell] Received message: ${text.slice(0, 50)}...`);
+    metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
     const correlationId = queue.enqueue({ text, messageId, chatId });
     queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
     try {
@@ -264,6 +291,7 @@ async function main() {
         await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
       } else {
         console.error(`[shell] send failed, queue item cleaned:`, err);
+        metrics.addError(`Send failed: ${String(err).slice(0, 200)}`);
         await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
       }
     }
@@ -283,18 +311,32 @@ async function main() {
     const elapsedSec = (elapsedMs / 1000).toFixed(1);
     const replyWithTiming = `${reply}\n\n(耗时 ${elapsedSec}s)`;
 
+    // Track outgoing message and update daily stats
+    metrics.addMessage({ direction: 'out', preview: reply.slice(0, 80), timestamp: Date.now(), responseSec: elapsedMs / 1000 });
+    // Update the corresponding 'in' message with responseSec
+    const inMsg = [...metrics.recentMessages].reverse().find(
+      (m) => m.direction === 'in' && !m.responseSec
+    );
+    if (inMsg) inMsg.responseSec = elapsedMs / 1000;
+    // Update daily stats
+    const today = metrics.getToday();
+    today.messagesProcessed++;
+    today.totalResponseMs += elapsedMs;
+
     try {
       await feishu.reply(item.messageId, replyWithTiming);
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
       console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
+      metrics.addError(`Reply failed: ${String(err).slice(0, 200)}`);
       console.error(`[shell] Failed to reply:`, err);
     }
   });
 
   director.on('close', async () => {
     console.error('[shell] Director closed unexpectedly');
+    metrics.addError('Director closed unexpectedly');
     // 4.1: Notify before exit
     const lastChatId = feishu.getLastChatId();
     if (lastChatId) {

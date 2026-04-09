@@ -136,5 +136,17 @@ export function createFeishuClient(config: Config['feishu']) {
     getLastChatId(): string | null {
       return getState<string>('lastChatId');
     },
+
+    getConnectionStatus(): 'connected' | 'disconnected' {
+      const now = Date.now();
+      // If we received a message within the last 5 minutes, consider connected
+      if (now - lastActiveTime < 5 * 60_000) return 'connected';
+      // Otherwise check SDK reconnect info
+      try {
+        const info = wsClient.getReconnectInfo();
+        if (info.lastConnectTime && now - info.lastConnectTime < 5 * 60_000) return 'connected';
+      } catch { /* SDK may not be ready */ }
+      return 'disconnected';
+    },
   };
 }

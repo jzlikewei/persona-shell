@@ -37,6 +37,14 @@ export class Director extends EventEmitter {
   private flushCheckpointResolve: (() => void) | null = null;
   private flushBootstrapResolve: (() => void) | null = null;
   private drainResolve: (() => void) | null = null;
+  /** Current message being processed — for dashboard display */
+  private currentMessagePreview: string | null = null;
+  private currentMessageStartedAt: number | null = null;
+  /** Daily message counter (resets at midnight Shanghai time) */
+  private messagesProcessedToday = 0;
+  private currentCountDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  /** Accumulated cost from result events */
+  private totalCostUsd = 0;
   /** 3.1: Generation counter — incremented on each listenOutput call to prevent stale close handlers */
   private generation = 0;
   /** 3.2: Recent restart timestamps for backoff detection */
@@ -234,7 +242,31 @@ export class Director extends EventEmitter {
     lastInputTokens: number;
     lastFlushAt: number;
     flushContextLimit: number;
+    activityState: 'idle' | 'processing' | 'flushing' | 'restarting';
+    currentMessagePreview: string | null;
+    currentMessageStartedAt: number | null;
+    messagesProcessedToday: number;
+    totalCostUsd: number;
   } {
+    // Reset daily counter if date changed
+    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    if (today !== this.currentCountDate) {
+      this.messagesProcessedToday = 0;
+      this.totalCostUsd = 0;
+      this.currentCountDate = today;
+    }
+
+    let activityState: 'idle' | 'processing' | 'flushing' | 'restarting';
+    if (this.flushing) {
+      activityState = 'flushing';
+    } else if (this.interrupted) {
+      activityState = 'restarting';
+    } else if (this.pendingCount > 0) {
+      activityState = 'processing';
+    } else {
+      activityState = 'idle';
+    }
+
     return {
       alive: this.isDirectorAlive(),
       pid: this.readPid(),
@@ -245,6 +277,11 @@ export class Director extends EventEmitter {
       lastInputTokens: this.lastInputTokens,
       lastFlushAt: this.lastFlushAt,
       flushContextLimit: this.config.flush_context_limit,
+      activityState,
+      currentMessagePreview: this.currentMessagePreview,
+      currentMessageStartedAt: this.currentMessageStartedAt,
+      messagesProcessedToday: this.messagesProcessedToday,
+      totalCostUsd: this.totalCostUsd,
     };
   }
 
@@ -278,6 +315,10 @@ export class Director extends EventEmitter {
     if (this.flushing) {
       throw new Error('Director is flushing');
     }
+
+    // Track current message for dashboard
+    this.currentMessagePreview = message.slice(0, 50);
+    this.currentMessageStartedAt = Date.now();
 
     // Inject time sync as message prefix (not a separate writeRaw call)
     let content = message;
@@ -445,7 +486,8 @@ export class Director extends EventEmitter {
       .map((d) => `--plugin-dir "${join(skillsDir, d.name)}"`)
       .join(' ');
 
-    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --add-dir "${personaDir}" --plugin-dir "${personasDir}" ${skillPluginDirs}`;
+    const mcpConfigPath = join(personaDir, '.mcp.json');
+    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --effort max --mcp-config "${mcpConfigPath}" --add-dir "${personaDir}" --plugin-dir "${personasDir}" ${skillPluginDirs}`;
 
     // Resume previous session if available
     const savedSession = this.readSession();
@@ -532,6 +574,20 @@ export class Director extends EventEmitter {
               this.lastInputTokens = event.usage.input_tokens;
               this.persistState();
             }
+
+            // Track cost from result events
+            if (typeof event.cost_usd === 'number') {
+              this.totalCostUsd += event.cost_usd;
+            }
+
+            // Increment daily message counter for user-facing responses
+            if (!this.flushing && !this.writingDailyReport && !this.discardNextResponse) {
+              this.messagesProcessedToday++;
+            }
+
+            // Clear current message tracking
+            this.currentMessagePreview = null;
+            this.currentMessageStartedAt = null;
 
             this.pendingCount = Math.max(0, this.pendingCount - 1);
 

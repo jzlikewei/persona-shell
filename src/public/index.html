@@ -4,257 +4,996 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Persona Console</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5/css/xterm.min.css" />
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1e2e; }
-    #terminal { width: 100%; height: 100%; }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --base: #1e1e2e;
+      --mantle: #181825;
+      --crust: #11111b;
+      --surface0: #313244;
+      --surface1: #45475a;
+      --surface2: #585b70;
+      --overlay0: #6c7086;
+      --overlay1: #7f849c;
+      --text: #cdd6f4;
+      --subtext0: #a6adc8;
+      --subtext1: #bac2de;
+      --green: #a6e3a1;
+      --red: #f38ba8;
+      --yellow: #f9e2af;
+      --blue: #89b4fa;
+      --teal: #94e2d5;
+      --mauve: #cba6f7;
+      --peach: #fab387;
+      --lavender: #b4befe;
+      --rosewater: #f5e0dc;
+
+      --font-mono: 'SF Mono', 'Menlo', 'Consolas', 'JetBrains Mono', monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --gap: 14px;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--base);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: var(--gap);
+      gap: var(--gap);
+    }
+
+    /* ── Status Bar ── */
+    #status-bar {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 10px 20px;
+      background: var(--surface0);
+      border-radius: var(--radius);
+      flex-shrink: 0;
+      font-size: 13px;
+    }
+
+    .si { display: flex; align-items: center; gap: 6px; }
+    .si-label { color: var(--overlay1); }
+    .si-value { font-family: var(--font-mono); font-size: 12px; }
+
+    .dot-indicator {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .dot-indicator.green  { background: var(--green);  box-shadow: 0 0 8px rgba(166,227,161,.5); }
+    .dot-indicator.yellow { background: var(--yellow); box-shadow: 0 0 8px rgba(249,226,175,.4); }
+    .dot-indicator.red    { background: var(--red);    box-shadow: 0 0 8px rgba(243,139,168,.4); }
+    .dot-indicator.off    { background: var(--overlay0); }
+
+    .spacer { flex: 1; }
+
+    .queue-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 2px 10px;
+      border-radius: 10px;
+      background: rgba(249,226,175,.12);
+      color: var(--yellow);
+    }
+
+    /* ── Cards Grid ── */
+    #cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--gap);
+      flex-shrink: 0;
+    }
+
+    .card {
+      background: var(--surface0);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+    }
+
+    .card-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: var(--overlay1);
+      margin-bottom: 12px;
+      font-weight: 600;
+    }
+
+    /* ── Activity Card ── */
+    .act-state {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .act-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+    .act-dot.idle       { background: var(--overlay0); }
+    .act-dot.processing { background: var(--green); animation: pulse 1.5s ease-in-out infinite; }
+    .act-dot.flushing   { background: var(--yellow); animation: pulse 1.5s ease-in-out infinite; }
+    .act-dot.restarting { background: var(--peach); animation: pulse 1.5s ease-in-out infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: .4; transform: scale(.75); }
+    }
+
+    .act-label {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .act-preview {
+      color: var(--subtext0);
+      font-size: 13px;
+      margin-top: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .act-elapsed {
+      font-family: var(--font-mono);
+      color: var(--overlay1);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    /* ── Context Card ── */
+    .ctx-bar-wrap {
+      height: 8px;
+      background: var(--surface1);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+
+    .ctx-bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width .6s ease, background .4s ease;
+      min-width: 0;
+    }
+
+    .ctx-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-family: var(--font-mono);
+      font-size: 13px;
+    }
+
+    .ctx-tokens { color: var(--subtext0); }
+    .ctx-pct { font-weight: 700; }
+    .ctx-flush {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--overlay1);
+      margin-top: 8px;
+    }
+
+    /* ── Stats Card ── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      font-weight: 700;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--overlay1);
+      margin-top: 2px;
+    }
+
+    /* ── Operations Card ── */
+    .ops-btns {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .btn {
+      padding: 7px 18px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+      line-height: 1;
+    }
+    .btn:hover { opacity: .85; }
+    .btn:active { transform: scale(.96); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+    .btn-flush   { background: var(--blue);   color: var(--crust); }
+    .btn-esc     { background: var(--yellow); color: var(--crust); }
+    .btn-restart { background: var(--red);    color: var(--crust); }
+
+    .send-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .send-row input {
+      flex: 1;
+      padding: 8px 12px;
+      background: var(--surface1);
+      border: 1px solid var(--surface2);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .send-row input:focus { border-color: var(--blue); }
+    .send-row input::placeholder { color: var(--overlay0); }
+
+    .send-row .btn-send {
+      padding: 8px 14px;
+      background: var(--mauve);
+      color: var(--crust);
+      border: none;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .15s;
+      line-height: 1;
+    }
+    .send-row .btn-send:hover { opacity: .85; }
+
+    /* ── Bottom Section ── */
+    #bottom {
+      display: grid;
+      grid-template-columns: 3fr 2fr;
+      gap: var(--gap);
+      flex: 1;
+      min-height: 0;
+    }
+
+    .panel {
+      background: var(--surface0);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .panel-scroll {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+    }
+
+    .panel-scroll::-webkit-scrollbar { width: 5px; }
+    .panel-scroll::-webkit-scrollbar-track { background: transparent; }
+    .panel-scroll::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+
+    /* ── Messages ── */
+    .msg-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .msg-row + .msg-row { margin-top: 2px; }
+    .msg-row.in { background: rgba(137,180,250,.05); }
+
+    .msg-dir {
+      font-family: var(--font-mono);
+      flex-shrink: 0;
+      width: 18px;
+      text-align: center;
+      font-size: 12px;
+    }
+    .msg-dir.in  { color: var(--blue); }
+    .msg-dir.out { color: var(--green); }
+
+    .msg-text {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--subtext1);
+    }
+
+    .msg-meta {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--overlay0);
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+
+    /* ── Tasks ── */
+    .tasks-sum {
+      display: flex;
+      gap: 14px;
+      margin-bottom: 10px;
+      font-size: 12px;
+    }
+    .tasks-sum span { font-family: var(--font-mono); }
+
+    .task-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 8px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .task-row + .task-row { margin-top: 2px; }
+
+    .task-badge {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 1px 7px;
+      border-radius: 4px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .3px;
+      flex-shrink: 0;
+    }
+    .task-badge.running   { background: rgba(166,227,161,.12); color: var(--green); }
+    .task-badge.completed { background: rgba(137,180,250,.12); color: var(--blue); }
+    .task-badge.failed    { background: rgba(243,139,168,.12); color: var(--red); }
+    .task-badge.cancelled { background: rgba(166,173,200,.12); color: var(--subtext0); }
+    .task-badge.pending   { background: rgba(249,226,175,.12); color: var(--yellow); }
+
+    .task-role {
+      font-family: var(--font-mono);
+      color: var(--mauve);
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+
+    .task-desc {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--subtext1);
+    }
+
+    .task-dur {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--overlay0);
+      flex-shrink: 0;
+    }
+
+    .task-running-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--green);
+      animation: pulse 1.5s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+
+    /* ── Errors Section ── */
+    #errors-section {
+      background: rgba(243,139,168,.06);
+      border: 1px solid rgba(243,139,168,.15);
+      border-radius: var(--radius);
+      padding: 12px 20px;
+      flex-shrink: 0;
+    }
+    #errors-section.hidden { display: none; }
+
+    .err-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      padding: 3px 0;
+    }
+    .err-icon { color: var(--yellow); flex-shrink: 0; }
+    .err-text { color: var(--red); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .err-time { font-family: var(--font-mono); font-size: 11px; color: var(--overlay0); flex-shrink: 0; }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      padding: 10px 20px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      transform: translateY(-16px);
+      opacity: 0;
+      transition: all .25s ease;
+      z-index: 500;
+      pointer-events: none;
+      max-width: 360px;
+      word-break: break-word;
+    }
+    #toast.show { transform: translateY(0); opacity: 1; pointer-events: auto; }
+    #toast.ok  { background: var(--green); color: var(--crust); }
+    #toast.err { background: var(--red);   color: var(--crust); }
+
+    /* ── Connecting Overlay ── */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 14px;
+      background: rgba(30,30,46,.92);
+      z-index: 1000;
+      backdrop-filter: blur(4px);
+    }
+    #overlay.hidden { display: none; }
+
+    .spinner {
+      width: 28px; height: 28px;
+      border: 3px solid var(--surface2);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .overlay-text { color: var(--subtext0); font-size: 14px; }
+
+    /* ── Empty state ── */
+    .empty { color: var(--overlay0); font-size: 13px; text-align: center; padding: 20px 0; }
+
+    /* ── Responsive ── */
+    @media (max-width: 1000px) {
+      #cards { grid-template-columns: 1fr; }
+      #bottom { grid-template-columns: 1fr; }
+      #status-bar { flex-wrap: wrap; gap: 10px; }
+    }
   </style>
 </head>
 <body>
-  <div id="terminal"></div>
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5/lib/xterm.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-  <script>
-    // ── 初始化 xterm ──
-    const term = new Terminal({
-      cursorBlink: false,
-      disableStdin: true,
-      fontFamily: '"SF Mono", "Menlo", "Consolas", monospace',
-      fontSize: 14,
-      theme: {
-        background: '#1e1e2e',
-        foreground: '#cdd6f4',
-        cursor: '#1e1e2e',
-        green: '#a6e3a1',
-        red: '#f38ba8',
-        yellow: '#f9e2af',
-        blue: '#89b4fa',
-        cyan: '#94e2d5',
-        white: '#cdd6f4',
-        brightBlack: '#585b70',
+
+<div id="toast"></div>
+
+<div id="overlay">
+  <div class="spinner"></div>
+  <div class="overlay-text">正在连接...</div>
+</div>
+
+<div id="app">
+
+  <!-- Status Bar -->
+  <header id="status-bar">
+    <div class="si">
+      <div class="dot-indicator off" id="sb-dot"></div>
+      <span class="si-value" id="sb-status">—</span>
+    </div>
+    <div class="si">
+      <span class="si-label">Feishu:</span>
+      <span class="si-value" id="sb-feishu">—</span>
+    </div>
+    <div class="si">
+      <span class="si-label">Director:</span>
+      <span class="si-value" id="sb-director">—</span>
+    </div>
+    <div class="si" id="sb-queue-wrap" style="display:none">
+      <span class="queue-badge" id="sb-queue"></span>
+    </div>
+    <div class="spacer"></div>
+    <div class="si">
+      <span class="si-label">Uptime:</span>
+      <span class="si-value" id="sb-uptime">—</span>
+    </div>
+  </header>
+
+  <!-- Cards -->
+  <div id="cards">
+
+    <!-- Activity -->
+    <section class="card">
+      <div class="card-title">Activity</div>
+      <div class="act-state">
+        <div class="act-dot idle" id="act-dot"></div>
+        <span class="act-label" id="act-label">Idle</span>
+      </div>
+      <div class="act-preview" id="act-preview"></div>
+      <div class="act-elapsed" id="act-elapsed"></div>
+    </section>
+
+    <!-- Context Window -->
+    <section class="card">
+      <div class="card-title">Context Window</div>
+      <div class="ctx-bar-wrap">
+        <div class="ctx-bar-fill" id="ctx-bar" style="width:0;background:var(--green)"></div>
+      </div>
+      <div class="ctx-row">
+        <span class="ctx-tokens" id="ctx-tokens">— / — tokens</span>
+        <span class="ctx-pct" id="ctx-pct" style="color:var(--green)">0%</span>
+      </div>
+      <div class="ctx-flush" id="ctx-flush">Last flush: —</div>
+    </section>
+
+    <!-- Today's Stats -->
+    <section class="card">
+      <div class="card-title">Today's Stats</div>
+      <div class="stats-grid">
+        <div>
+          <div class="stat-value" id="st-msgs">0</div>
+          <div class="stat-label">消息处理</div>
+        </div>
+        <div>
+          <div class="stat-value" id="st-avg">0s</div>
+          <div class="stat-label">平均响应</div>
+        </div>
+        <div>
+          <div class="stat-value" id="st-cost">$0</div>
+          <div class="stat-label">费用</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Operations -->
+    <section class="card">
+      <div class="card-title">Operations</div>
+      <div class="ops-btns">
+        <button class="btn btn-flush" onclick="doCmd('flush')">Flush</button>
+        <button class="btn btn-esc" onclick="doCmd('esc')">Esc</button>
+        <button class="btn btn-restart" onclick="confirmRestart()">Restart</button>
+      </div>
+      <div class="send-row">
+        <input type="text" id="send-input" placeholder="Send to Director..." onkeydown="if(event.key==='Enter')doSend()" />
+        <button class="btn-send" onclick="doSend()">&#10132;</button>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Bottom: Messages + Tasks -->
+  <div id="bottom">
+
+    <section class="panel">
+      <div class="card-title">Recent Messages</div>
+      <div class="panel-scroll" id="msg-list"></div>
+    </section>
+
+    <section class="panel">
+      <div class="card-title">Tasks</div>
+      <div class="tasks-sum" id="tasks-sum"></div>
+      <div class="panel-scroll" id="tasks-list"></div>
+    </section>
+
+  </div>
+
+  <!-- Errors (conditional) -->
+  <section id="errors-section" class="hidden">
+    <div class="card-title" style="color:var(--red)">Errors</div>
+    <div id="errors-list"></div>
+  </section>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Helpers ──────────────────────────────────────────────
+
+  function formatDuration(ms) {
+    if (ms == null || ms < 0) return '0s';
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + 'm ' + (s % 60) + 's';
+    var h = Math.floor(m / 60);
+    return h + 'h ' + (m % 60) + 'm';
+  }
+
+  function formatTimeAgo(ts) {
+    if (!ts) return '—';
+    var diff = Date.now() - ts;
+    if (diff < 0) diff = 0;
+    if (diff < 5000) return 'just now';
+    if (diff < 60000) return Math.floor(diff / 1000) + 's ago';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+    return Math.floor(diff / 86400000) + 'd ago';
+  }
+
+  function formatTimeAgoMs(ms) {
+    if (ms == null) return '—';
+    if (ms < 5000) return 'just now';
+    if (ms < 60000) return Math.floor(ms / 1000) + 's ago';
+    if (ms < 3600000) return Math.floor(ms / 60000) + 'm ago';
+    if (ms < 86400000) return Math.floor(ms / 3600000) + 'h ago';
+    return Math.floor(ms / 86400000) + 'd ago';
+  }
+
+  function formatNumber(n) {
+    if (n == null) return '—';
+    return n.toLocaleString('en-US');
+  }
+
+  function formatTokens(n) {
+    if (n == null || n === 0) return '0';
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (n >= 1000) return Math.round(n / 1000) + 'k';
+    return String(n);
+  }
+
+  function formatCost(usd) {
+    if (usd == null || usd === 0) return '$0';
+    return '$' + usd.toFixed(2);
+  }
+
+  function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── State ────────────────────────────────────────────────
+
+  var data = null;         // normalized status data
+  var lastRecvAt = 0;      // when we last received a status
+  var wsConnected = false;
+  var ws = null;
+  var restartPending = false;
+
+  // ── DOM refs ─────────────────────────────────────────────
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ── Normalize: support both old and new data format ─────
+
+  function normalize(raw) {
+    // New format — has `system` key
+    if (raw.system) return raw;
+
+    // Old format from current console.ts: { director, queue, shell }
+    var dir = raw.director || {};
+    var q   = raw.queue || [];
+    var sh  = raw.shell || {};
+
+    var limit  = dir.flushContextLimit || 0;
+    var tokens = dir.lastInputTokens || 0;
+    var pct    = limit > 0 ? (tokens / limit) * 100 : 0;
+    var flushing = !!dir.flushing;
+    var pending  = dir.pendingCount || 0;
+
+    var state = 'idle';
+    if (flushing) state = 'flushing';
+    else if (pending > 0) state = 'processing';
+
+    return {
+      system: {
+        status: dir.alive ? 'healthy' : 'error',
+        uptime: sh.uptime || 0,
+        feishu: dir.alive ? 'connected' : 'unknown',
+        directorAlive: !!dir.alive,
       },
-    });
+      activity: {
+        state: state,
+        currentMessage: null,
+      },
+      context: {
+        tokens: tokens,
+        limit: limit,
+        percent: Math.round(pct * 10) / 10,
+        lastFlushAgoMs: dir.lastFlushAt ? (Date.now() - dir.lastFlushAt) : null,
+      },
+      metrics: {
+        today: { messagesProcessed: 0, avgResponseSec: 0, totalCostUsd: 0 },
+        recentMessages: [],
+        recentErrors: [],
+      },
+      queue: q.map(function (item) {
+        return {
+          correlationId: item.correlationId || '',
+          preview: (item.text || '').slice(0, 60),
+          timestamp: item.timestamp,
+          cancelled: !!item.cancelled,
+        };
+      }),
+      tasks: { summary: { running: 0, completed: 0, failed: 0 }, recent: [] },
+    };
+  }
 
-    const fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(document.getElementById('terminal'));
-    fitAddon.fit();
-    window.addEventListener('resize', () => fitAddon.fit());
+  // ── WebSocket ────────────────────────────────────────────
 
-    // ── ANSI 颜色辅助 ──
-    const ESC = '\x1b[';
-    const RESET = ESC + '0m';
-    const BOLD = ESC + '1m';
-    const DIM = ESC + '2m';
-    const GREEN = ESC + '32m';
-    const RED = ESC + '31m';
-    const YELLOW = ESC + '33m';
-    const BLUE = ESC + '34m';
-    const CYAN = ESC + '36m';
-    const WHITE = ESC + '37m';
+  function connect() {
+    var url = 'ws://' + location.host;
+    ws = new WebSocket(url);
 
-    // ── 状态 ──
-    let lastStatus = null;
-    let feedbackMsg = '';
-    let feedbackTimer = null;
+    ws.onopen = function () {
+      wsConnected = true;
+      $('overlay').classList.add('hidden');
+    };
 
-    // ── WebSocket ──
-    const wsUrl = 'ws://' + location.host;
-    let ws = null;
+    ws.onclose = function () {
+      wsConnected = false;
+      $('overlay').classList.remove('hidden');
+      setTimeout(connect, 2000);
+    };
 
-    function connect() {
-      ws = new WebSocket(wsUrl);
-      ws.onopen = function() { console.log('[console] WebSocket connected'); };
-      ws.onclose = function() {
-        console.log('[console] WebSocket disconnected, reconnecting in 2s...');
-        setTimeout(connect, 2000);
-      };
-      ws.onerror = function(e) { console.error('[console] WebSocket error:', e); };
-      ws.onmessage = function(e) {
-        try {
-          const msg = JSON.parse(e.data);
-          if (msg.type === 'status') {
-            lastStatus = msg.data;
-            render();
-          } else if (msg.type === 'command_result') {
-            showFeedback(msg.ok
-              ? GREEN + '✓ ' + msg.command + ': ' + msg.message + RESET
-              : RED + '✗ ' + msg.command + ': ' + msg.message + RESET
-            );
-          }
-        } catch(err) { /* 忽略解析错误 */ }
-      };
-    }
-    connect();
+    ws.onerror = function () {};
 
-    function sendCommand(cmd) {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'command', command: cmd }));
-      }
-    }
-
-    // ── 键盘监听 ──
-    term.onKey(function(ev) {
-      var k = ev.domEvent.key.toLowerCase();
-      if (k === 'f') sendCommand('flush');
-      else if (k === 'e') sendCommand('esc');
-      else if (k === 'r') sendCommand('restart');
-    });
-
-    // ── 反馈信息 ──
-    function showFeedback(msg) {
-      feedbackMsg = msg;
-      if (feedbackTimer) clearTimeout(feedbackTimer);
-      feedbackTimer = setTimeout(function() {
-        feedbackMsg = '';
-        render();
-      }, 2000);
-      render();
-    }
-
-    // ── 工具函数 ──
-    function formatDuration(ms) {
-      if (ms < 0) return '0s';
-      var s = Math.floor(ms / 1000);
-      if (s < 60) return s + 's';
-      var m = Math.floor(s / 60);
-      if (m < 60) return m + 'm ' + (s % 60) + 's';
-      var h = Math.floor(m / 60);
-      return h + 'h ' + (m % 60) + 'm';
-    }
-
-    function formatNumber(n) {
-      return n.toLocaleString('en-US');
-    }
-
-    function renderProgressBar(ratio, width) {
-      var filled = Math.round(ratio * width);
-      var empty = width - filled;
-      var color = GREEN;
-      if (ratio > 0.95) color = RED;
-      else if (ratio > 0.8) color = YELLOW;
-      return color + repeat('█', filled) + DIM + repeat('░', empty) + RESET;
-    }
-
-    function repeat(ch, n) {
-      var s = '';
-      for (var i = 0; i < n; i++) s += ch;
-      return s;
-    }
-
-    // 填充到固定宽度（plainLen 是不含 ANSI 转义的纯文本长度）
-    function pad(text, plainLen, width) {
-      var padding = Math.max(0, width - plainLen);
-      return text + repeat(' ', padding);
-    }
-
-    // ── TUI 渲染 ──
-    function render() {
-      if (!lastStatus) return;
-
-      var d = lastStatus.director;
-      var q = lastStatus.queue;
-      var b = lastStatus.shell;
-      var now = Date.now();
-      var W = Math.max(term.cols, 60);
-      var inner = W - 4; // 边框内宽度
-
-      var lines = [];
-
-      // 顶部边框
-      lines.push(CYAN + '┌─ Persona Console ' + repeat('─', Math.max(0, inner - 18)) + '┐' + RESET);
-      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
-
-      // Director 状态
-      var aliveIcon = d.alive ? GREEN + '●' + RESET : RED + '●' + RESET;
-      var aliveText = d.alive ? GREEN + 'ALIVE' + RESET : RED + 'DEAD' + RESET;
-      var pidStr = d.pid ? 'pid=' + d.pid : 'pid=N/A';
-      var sessStr = d.sessionId ? 'session=' + d.sessionId.slice(0, 8) + '...' : 'session=N/A';
-      var dirLine = '  Director: ' + aliveIcon + ' ' + aliveText + '  ' + DIM + pidStr + '  ' + sessStr + RESET;
-      var dirPlain = '  Director: ● ' + (d.alive ? 'ALIVE' : 'DEAD') + '  ' + pidStr + '  ' + sessStr;
-      lines.push(CYAN + '│' + RESET + pad(dirLine, dirPlain.length, inner) + CYAN + '│' + RESET);
-
-      // Token 进度条
-      var tokenRatio = d.flushContextLimit > 0 ? d.lastInputTokens / d.flushContextLimit : 0;
-      var barWidth = Math.min(20, inner - 40);
-      var bar = renderProgressBar(Math.min(tokenRatio, 1), barWidth);
-      var tokenText = formatNumber(d.lastInputTokens) + ' / ' + formatNumber(d.flushContextLimit);
-      var tokenLine = '  Tokens:   ' + bar + '  ' + WHITE + tokenText + RESET;
-      var tokenPlain = '  Tokens:   ' + repeat('X', barWidth) + '  ' + tokenText;
-      lines.push(CYAN + '│' + RESET + pad(tokenLine, tokenPlain.length, inner) + CYAN + '│' + RESET);
-
-      // Flush 信息
-      var flushAgo = formatDuration(now - d.lastFlushAt);
-      var flushLine = '  Flush:    ' + DIM + flushAgo + ' ago' + RESET + (d.flushing ? '  ' + YELLOW + '[FLUSHING...]' + RESET : '');
-      var flushPlain = '  Flush:    ' + flushAgo + ' ago' + (d.flushing ? '  [FLUSHING...]' : '');
-      lines.push(CYAN + '│' + RESET + pad(flushLine, flushPlain.length, inner) + CYAN + '│' + RESET);
-
-      // 队列
-      var pendingLabel = d.pendingCount === 0 ? GREEN + '0 pending' + RESET : YELLOW + d.pendingCount + ' pending' + RESET;
-      var queueLine = '  Queue:    ' + pendingLabel;
-      var queuePlain = '  Queue:    ' + d.pendingCount + ' pending';
-      lines.push(CYAN + '│' + RESET + pad(queueLine, queuePlain.length, inner) + CYAN + '│' + RESET);
-
-      // Uptime
-      var uptimeStr = formatDuration(b.uptime);
-      var uptimeLine = '  Uptime:   ' + DIM + uptimeStr + RESET;
-      var uptimePlain = '  Uptime:   ' + uptimeStr;
-      lines.push(CYAN + '│' + RESET + pad(uptimeLine, uptimePlain.length, inner) + CYAN + '│' + RESET);
-
-      // Memory
-      var memMB = (b.memory / 1024 / 1024).toFixed(1);
-      var memLine = '  Memory:   ' + DIM + memMB + ' MB' + RESET;
-      var memPlain = '  Memory:   ' + memMB + ' MB';
-      lines.push(CYAN + '│' + RESET + pad(memLine, memPlain.length, inner) + CYAN + '│' + RESET);
-
-      // 空行
-      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
-
-      // 队列详情区
-      var qSecTitle = '  ── Queue ' + repeat('─', Math.max(0, inner - 12));
-      lines.push(CYAN + '│' + RESET + DIM + qSecTitle.slice(0, inner) + RESET + CYAN + '│' + RESET);
-
-      if (q.length === 0) {
-        var emptyLine = '  ' + DIM + '(empty)' + RESET;
-        lines.push(CYAN + '│' + RESET + pad(emptyLine, 9, inner) + CYAN + '│' + RESET);
-      } else {
-        for (var i = 0; i < q.length; i++) {
-          var item = q[i];
-          var ago = formatDuration(now - item.timestamp);
-          var cancelTag = item.cancelled ? ' ' + RED + '[cancelled]' + RESET : '';
-          var cidShort = item.correlationId.length > 16 ? item.correlationId.slice(0, 16) + '...' : item.correlationId;
-          var textPreview = item.text.length > 30 ? item.text.slice(0, 30) + '...' : item.text;
-          var itemLine = '  [' + cidShort + '] "' + textPreview + '"  ' + DIM + ago + ' ago' + RESET + cancelTag;
-          var itemPlain = '  [' + cidShort + '] "' + textPreview + '"  ' + ago + ' ago' + (item.cancelled ? ' [cancelled]' : '');
-          lines.push(CYAN + '│' + RESET + pad(itemLine, itemPlain.length, inner) + CYAN + '│' + RESET);
+    ws.onmessage = function (ev) {
+      try {
+        var msg = JSON.parse(ev.data);
+        if (msg.type === 'status') {
+          data = normalize(msg.data);
+          lastRecvAt = Date.now();
+          render();
+        } else if (msg.type === 'command_result') {
+          showToast(msg.message || msg.command, msg.ok);
+          if (msg.command === 'restart') restartPending = false;
         }
-      }
+      } catch (e) { /* ignore */ }
+    };
+  }
 
-      // 空行
-      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
+  // ── Commands ─────────────────────────────────────────────
 
-      // 快捷键
-      var kSecTitle = '  ── Keys ' + repeat('─', Math.max(0, inner - 11));
-      lines.push(CYAN + '│' + RESET + DIM + kSecTitle.slice(0, inner) + RESET + CYAN + '│' + RESET);
-      var keysLine = '  ' + BOLD + '[f]' + RESET + ' Flush   ' + BOLD + '[e]' + RESET + ' Esc   ' + BOLD + '[r]' + RESET + ' Restart';
-      var keysPlain = '  [f] Flush   [e] Esc   [r] Restart';
-      lines.push(CYAN + '│' + RESET + pad(keysLine, keysPlain.length, inner) + CYAN + '│' + RESET);
+  window.doCmd = function (cmd) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'command', command: cmd }));
+  };
 
-      // 反馈信息
-      if (feedbackMsg) {
-        lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
-        var fbPlain = feedbackMsg.replace(/\x1b\[[0-9;]*m/g, '');
-        lines.push(CYAN + '│' + RESET + pad('  ' + feedbackMsg, fbPlain.length + 2, inner) + CYAN + '│' + RESET);
-      }
+  window.confirmRestart = function () {
+    if (restartPending) return;
+    if (!confirm('确定要重启 Director 吗？')) return;
+    restartPending = true;
+    window.doCmd('restart');
+  };
 
-      // 空行 + 底部边框
-      lines.push(CYAN + '│' + RESET + repeat(' ', inner) + CYAN + '│' + RESET);
-      lines.push(CYAN + '└' + repeat('─', inner) + '┘' + RESET);
-
-      // 清屏并写入
-      term.write('\x1b[2J\x1b[H' + lines.join('\r\n'));
+  window.doSend = async function () {
+    var input = $('send-input');
+    var text = (input.value || '').trim();
+    if (!text) return;
+    input.value = '';
+    try {
+      var res = await fetch('/api/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text }),
+      });
+      var body = await res.json();
+      showToast(body.message || 'Sent', !!body.ok);
+    } catch (err) {
+      showToast('发送失败: ' + err.message, false);
     }
-  </script>
+  };
+
+  // ── Toast ────────────────────────────────────────────────
+
+  var toastTimer = null;
+  function showToast(message, ok) {
+    var el = $('toast');
+    el.textContent = message;
+    el.className = (ok ? 'ok' : 'err') + ' show';
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.classList.remove('show'); }, 3000);
+  }
+
+  // ── Render ───────────────────────────────────────────────
+
+  function render() {
+    if (!data) return;
+
+    var sys  = data.system   || {};
+    var act  = data.activity || {};
+    var ctx  = data.context  || {};
+    var met  = data.metrics  || {};
+    var today = met.today    || {};
+    var msgs = met.recentMessages || [];
+    var errs = met.recentErrors   || [];
+    var queue = data.queue   || [];
+    var tasks = data.tasks   || {};
+    var tSum  = tasks.summary || {};
+    var tList = tasks.recent  || [];
+
+    // ── Status bar
+    var dot = $('sb-dot');
+    var statusText = $('sb-status');
+    dot.className = 'dot-indicator';
+    if (sys.status === 'healthy') {
+      dot.classList.add('green');
+      statusText.textContent = 'Healthy';
+      statusText.style.color = 'var(--green)';
+    } else if (sys.status === 'degraded') {
+      dot.classList.add('yellow');
+      statusText.textContent = 'Degraded';
+      statusText.style.color = 'var(--yellow)';
+    } else {
+      dot.classList.add('red');
+      statusText.textContent = 'Error';
+      statusText.style.color = 'var(--red)';
+    }
+
+    var feishuEl = $('sb-feishu');
+    feishuEl.textContent = sys.feishu === 'connected' ? 'Connected' : (sys.feishu || '—');
+    feishuEl.style.color = sys.feishu === 'connected' ? 'var(--green)' : 'var(--overlay1)';
+
+    var dirEl = $('sb-director');
+    dirEl.textContent = sys.directorAlive ? 'Alive' : 'Dead';
+    dirEl.style.color = sys.directorAlive ? 'var(--green)' : 'var(--red)';
+
+    $('sb-uptime').textContent = formatDuration(sys.uptime);
+
+    // Queue badge
+    var qWrap = $('sb-queue-wrap');
+    if (queue.length > 0) {
+      qWrap.style.display = '';
+      $('sb-queue').textContent = queue.length + ' in queue';
+    } else {
+      qWrap.style.display = 'none';
+    }
+
+    // ── Activity
+    var adot = $('act-dot');
+    adot.className = 'act-dot ' + (act.state || 'idle');
+
+    var stateLabels = { idle: 'Idle', processing: 'Processing', flushing: 'Flushing', restarting: 'Restarting' };
+    var stateColors = { idle: 'var(--subtext0)', processing: 'var(--green)', flushing: 'var(--yellow)', restarting: 'var(--peach)' };
+    var label = $('act-label');
+    label.textContent = stateLabels[act.state] || act.state || 'Idle';
+    label.style.color = stateColors[act.state] || 'var(--subtext0)';
+
+    var prev = $('act-preview');
+    var elap = $('act-elapsed');
+    if (act.currentMessage && act.state === 'processing') {
+      prev.textContent = '"' + (act.currentMessage.preview || '') + '"';
+      var elapsed = (act.currentMessage.elapsedMs || 0) + (Date.now() - lastRecvAt);
+      elap.textContent = formatDuration(elapsed) + ' elapsed';
+    } else {
+      prev.textContent = '';
+      elap.textContent = '';
+    }
+
+    // ── Context
+    var pct = ctx.percent || 0;
+    var barColor = pct > 95 ? 'var(--red)' : pct > 80 ? 'var(--yellow)' : 'var(--green)';
+    var bar = $('ctx-bar');
+    bar.style.width = Math.min(pct, 100) + '%';
+    bar.style.background = barColor;
+
+    $('ctx-tokens').textContent = formatTokens(ctx.tokens) + ' / ' + formatTokens(ctx.limit) + ' tokens';
+    var pctEl = $('ctx-pct');
+    pctEl.textContent = pct.toFixed(1) + '%';
+    pctEl.style.color = barColor;
+
+    $('ctx-flush').textContent = 'Last flush: ' + (ctx.lastFlushAgoMs != null ? formatTimeAgoMs(ctx.lastFlushAgoMs) : '—');
+
+    // ── Stats
+    $('st-msgs').textContent = formatNumber(today.messagesProcessed || 0);
+    $('st-avg').textContent = (today.avgResponseSec != null ? today.avgResponseSec.toFixed(1) + 's' : '0s');
+    $('st-cost').textContent = formatCost(today.totalCostUsd);
+
+    // ── Messages
+    var mlEl = $('msg-list');
+    if (msgs.length === 0) {
+      mlEl.innerHTML = '<div class="empty">暂无消息</div>';
+    } else {
+      var html = '';
+      for (var i = 0; i < msgs.length; i++) {
+        var m = msgs[i];
+        var isIn = m.direction === 'in';
+        var arrow = isIn ? '←' : '→';
+        var cls = isIn ? 'in' : 'out';
+        var meta = '';
+        if (isIn && m.responseSec != null) {
+          meta = m.responseSec.toFixed(1) + 's';
+        } else if (m.timestamp) {
+          meta = formatTimeAgo(m.timestamp);
+        }
+        html += '<div class="msg-row ' + (isIn ? 'in' : '') + '">'
+          + '<span class="msg-dir ' + cls + '">' + arrow + '</span>'
+          + '<span class="msg-text">' + escapeHtml(m.preview) + '</span>'
+          + '<span class="msg-meta">' + escapeHtml(meta) + '</span>'
+          + '</div>';
+      }
+      mlEl.innerHTML = html;
+    }
+
+    // ── Tasks
+    var tsEl = $('tasks-sum');
+    var running   = tSum.running   || 0;
+    var completed = tSum.completed || 0;
+    var failed    = tSum.failed    || 0;
+    if (running || completed || failed) {
+      tsEl.innerHTML =
+        '<span style="color:var(--green)">' + running + ' running</span>' +
+        '<span style="color:var(--blue)">' + completed + ' completed</span>' +
+        '<span style="color:var(--red)">' + failed + ' failed</span>';
+    } else {
+      tsEl.innerHTML = '';
+    }
+
+    var tlEl = $('tasks-list');
+    if (tList.length === 0) {
+      tlEl.innerHTML = '<div class="empty">暂无任务</div>';
+    } else {
+      var thtml = '';
+      for (var j = 0; j < tList.length; j++) {
+        var t = tList[j];
+        var st = t.status || 'pending';
+        var dur = '';
+        if (t.durationMs != null) dur = formatDuration(t.durationMs);
+        else if (t.createdAt) dur = formatDuration(Date.now() - new Date(t.createdAt).getTime());
+        thtml += '<div class="task-row">';
+        if (st === 'running') thtml += '<div class="task-running-dot"></div>';
+        thtml += '<span class="task-badge ' + st + '">' + escapeHtml(st) + '</span>'
+          + '<span class="task-role">' + escapeHtml(t.role) + '</span>'
+          + '<span class="task-desc">' + escapeHtml(t.description) + '</span>'
+          + '<span class="task-dur">' + escapeHtml(dur) + '</span>'
+          + '</div>';
+      }
+      tlEl.innerHTML = thtml;
+    }
+
+    // ── Errors
+    var errSection = $('errors-section');
+    if (errs.length === 0) {
+      errSection.classList.add('hidden');
+    } else {
+      errSection.classList.remove('hidden');
+      var ehtml = '';
+      for (var k = 0; k < errs.length; k++) {
+        var e = errs[k];
+        ehtml += '<div class="err-row">'
+          + '<span class="err-icon">&#9888;</span>'
+          + '<span class="err-text">' + escapeHtml(e.message) + '</span>'
+          + '<span class="err-time">' + formatTimeAgo(e.timestamp) + '</span>'
+          + '</div>';
+      }
+      $('errors-list').innerHTML = ehtml;
+    }
+  }
+
+  // ── Elapsed time live-updater (runs every second) ───────
+
+  setInterval(function () {
+    if (!data || !data.activity) return;
+    var act = data.activity;
+    if (act.state === 'processing' && act.currentMessage) {
+      var elapsed = (act.currentMessage.elapsedMs || 0) + (Date.now() - lastRecvAt);
+      var el = $('act-elapsed');
+      if (el) el.textContent = formatDuration(elapsed) + ' elapsed';
+    }
+  }, 1000);
+
+  // ── Boot ─────────────────────────────────────────────────
+
+  connect();
+
+})();
+</script>
 </body>
 </html>
