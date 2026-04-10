@@ -17,6 +17,8 @@ interface DirectorPersistedState {
   lastFlushAt: number;
   lastInputTokens: number;
   contextWindow: number;
+  /** The date (YYYY-MM-DD) for which a daily report was last requested */
+  dailyReportDate?: string;
 }
 
 export class Director extends EventEmitter {
@@ -33,8 +35,9 @@ export class Director extends EventEmitter {
   private lastInputTokens = 0;
   private pendingCount = 0;
   private systemReplyQueue: string[] = [];
-  private currentDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   private writingDailyReport = false;
+  /** The date for which a daily report was last successfully requested (persisted) */
+  private dailyReportDate: string = '';
   private flushCheckpointResolve: (() => void) | null = null;
   private flushBootstrapResolve: (() => void) | null = null;
   private drainResolve: (() => void) | null = null;
@@ -63,13 +66,14 @@ export class Director extends EventEmitter {
     this.sessionFile = join(config.pipe_dir, 'director-session');
   }
 
-  /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow). Returns restored data or null. */
+  /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow, dailyReportDate). Returns restored data or null. */
   restoreState(): DirectorPersistedState | null {
     const saved = getState<DirectorPersistedState>('director');
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
     if (typeof saved.contextWindow === 'number') this.contextWindow = saved.contextWindow;
+    if (typeof saved.dailyReportDate === 'string') this.dailyReportDate = saved.dailyReportDate;
     return saved;
   }
 
@@ -78,6 +82,7 @@ export class Director extends EventEmitter {
       lastFlushAt: this.lastFlushAt,
       lastInputTokens: this.lastInputTokens,
       contextWindow: this.contextWindow,
+      dailyReportDate: this.dailyReportDate,
     });
   }
 
@@ -433,21 +438,41 @@ export class Director extends EventEmitter {
     }
   }
 
-  private checkDailyReport(): void {
+  /** Check if daily report is needed for yesterday. Safe to call from timer.
+   *  Uses persisted dailyReportDate to survive restarts. */
+  checkDailyReport(): void {
     if (this.flushing || this.writingDailyReport) return;
+    if (!this.writeHandle) return; // Director not connected
 
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-    if (today === this.currentDate) return;
 
-    const yesterday = this.currentDate;
-    this.currentDate = today;
+    // Already sent daily report request for today (i.e., yesterday's report)
+    if (this.dailyReportDate === today) return;
 
-    console.log(`[director] Date changed: ${yesterday} → ${today}, requesting daily report...`);
+    // On first run of the day (or after restart), compute yesterday
+    const yesterday = this.getYesterday();
+
+    console.log(`[director] Daily report check: requesting report for ${yesterday}`);
     this.writingDailyReport = true;
+    this.dailyReportDate = today;
+    this.persistState();
     this.pendingCount++;
     this.writeRaw(
       `[系统] 日期已变更为 ${today}。请为 ${yesterday} 撰写日报，保存到 daily/${yesterday}.md。同时更新 daily/state.md 的状态。`
-    ).catch((err) => console.error('[director] Failed to send daily report request:', err));
+    ).catch((err) => {
+      console.error('[director] Failed to send daily report request:', err);
+      this.pendingCount = Math.max(0, this.pendingCount - 1);
+      this.writingDailyReport = false;
+      // Reset so it retries next tick
+      this.dailyReportDate = '';
+      this.persistState();
+    });
+  }
+
+  private getYesterday(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   }
 
   private async restart(): Promise<void> {
@@ -659,7 +684,6 @@ export class Director extends EventEmitter {
             // Check if auto-flush is needed (after emitting response)
             if (!this.flushing) {
               this.checkFlush();
-              this.checkDailyReport();
             }
             break;
         }

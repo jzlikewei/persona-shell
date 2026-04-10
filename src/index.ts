@@ -180,6 +180,16 @@ async function main() {
   );
   scheduler.start();
 
+  // Daily report timer — check every 30 minutes if yesterday's report needs to be written.
+  // Persisted state survives restarts, so this won't duplicate requests.
+  setInterval(() => {
+    director.checkDailyReport();
+  }, 30 * 60_000);
+  // Also check once shortly after startup (give Director time to connect)
+  setTimeout(() => {
+    director.checkDailyReport();
+  }, 30_000);
+
   // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
   director.on('auto-flush-complete', () => {
     const lastChatId = feishu.getLastChatId();
