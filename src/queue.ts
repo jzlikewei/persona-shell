@@ -41,7 +41,9 @@ export class MessageQueue {
     let skipped = 0;
     for (const item of saved) {
       if (item.correlationId && item.text) {
-        if (now - item.timestamp > MAX_AGE_MS) {
+        // Guard: treat missing/invalid timestamp as stale (NaN > number is always false)
+        const age = now - item.timestamp;
+        if (!Number.isFinite(age) || age > MAX_AGE_MS) {
           skipped++;
           continue;
         }
@@ -151,6 +153,18 @@ export class MessageQueue {
       }
     }
     return oldest;
+  }
+
+  /** Clear all items from the queue (e.g., after flush when orphaned items can never be resolved).
+   *  Returns the cleared items for notification purposes. */
+  clearAll(): QueueItem[] {
+    const items = Array.from(this.items.values());
+    if (items.length > 0) {
+      this.items.clear();
+      this.persist();
+      this.log('CLEAR_ALL', '-', `cleared ${items.length} orphaned items`);
+    }
+    return items;
   }
 
   get length(): number {

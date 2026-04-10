@@ -16,6 +16,7 @@ const DIRECTOR_OUTPUT_LOG = join(DIRECTOR_LOG_DIR, 'director-output.log');
 interface DirectorPersistedState {
   lastFlushAt: number;
   lastInputTokens: number;
+  contextWindow: number;
 }
 
 export class Director extends EventEmitter {
@@ -45,6 +46,8 @@ export class Director extends EventEmitter {
   private currentCountDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   /** Accumulated cost from result events */
   private totalCostUsd = 0;
+  /** Context window size from modelUsage (e.g. 1000000 for claude-opus) */
+  private contextWindow = 0;
   /** 3.1: Generation counter — incremented on each listenOutput call to prevent stale close handlers */
   private generation = 0;
   /** 3.2: Recent restart timestamps for backoff detection */
@@ -60,12 +63,13 @@ export class Director extends EventEmitter {
     this.sessionFile = join(config.pipe_dir, 'director-session');
   }
 
-  /** Restore persisted state (lastFlushAt, lastInputTokens). Returns restored data or null. */
+  /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow). Returns restored data or null. */
   restoreState(): DirectorPersistedState | null {
     const saved = getState<DirectorPersistedState>('director');
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
+    if (typeof saved.contextWindow === 'number') this.contextWindow = saved.contextWindow;
     return saved;
   }
 
@@ -73,6 +77,7 @@ export class Director extends EventEmitter {
     setState<DirectorPersistedState>('director', {
       lastFlushAt: this.lastFlushAt,
       lastInputTokens: this.lastInputTokens,
+      contextWindow: this.contextWindow,
     });
   }
 
@@ -93,6 +98,7 @@ export class Director extends EventEmitter {
     ]);
 
     this.writeHandle = writeHandle;
+    this.sessionId = this.readSession();
     console.log('[director] Pipes connected');
 
     this.listenOutput(readHandle);
@@ -160,6 +166,10 @@ export class Director extends EventEmitter {
         return false;
       }
     }
+
+    // Clear orphaned queue items — after drain, any remaining items will never
+    // get a response because the Director session is about to be destroyed.
+    this.emit('flush-drain-complete');
 
     // Step 1 - Checkpoint: ask Director to save state
     console.log('[director] FLUSH: starting checkpoint...');
@@ -242,6 +252,7 @@ export class Director extends EventEmitter {
     lastInputTokens: number;
     lastFlushAt: number;
     flushContextLimit: number;
+    contextWindow: number;
     activityState: 'idle' | 'processing' | 'flushing' | 'restarting';
     currentMessagePreview: string | null;
     currentMessageStartedAt: number | null;
@@ -277,6 +288,7 @@ export class Director extends EventEmitter {
       lastInputTokens: this.lastInputTokens,
       lastFlushAt: this.lastFlushAt,
       flushContextLimit: this.config.flush_context_limit,
+      contextWindow: this.contextWindow,
       activityState,
       currentMessagePreview: this.currentMessagePreview,
       currentMessageStartedAt: this.currentMessageStartedAt,
@@ -569,14 +581,26 @@ export class Director extends EventEmitter {
               break;
             }
 
-            // Track input_tokens from usage (include cached tokens for true context size)
+            // Track input_tokens from usage — estimate per-turn context size
+            // usage is cumulative across all API turns; divide by num_turns for a reasonable estimate
             if (event.usage) {
               const totalInput = (event.usage.input_tokens ?? 0)
                 + (event.usage.cache_creation_input_tokens ?? 0)
                 + (event.usage.cache_read_input_tokens ?? 0);
-              if (totalInput > 0) {
-                this.lastInputTokens = totalInput;
+              const numTurns = event.num_turns ?? 1;
+              if (totalInput > 0 && numTurns > 0) {
+                this.lastInputTokens = Math.round(totalInput / numTurns);
                 this.persistState();
+              }
+            }
+
+            // Extract contextWindow from modelUsage (real model context limit)
+            if (event.modelUsage && typeof event.modelUsage === 'object') {
+              for (const model of Object.values(event.modelUsage) as Array<Record<string, unknown>>) {
+                if (typeof model?.contextWindow === 'number' && model.contextWindow > 0) {
+                  this.contextWindow = model.contextWindow as number;
+                  break;
+                }
               }
             }
 
@@ -621,7 +645,7 @@ export class Director extends EventEmitter {
                 console.log(`[director] System message response (replyTo=${replyTo}): ${currentResponse.trim().slice(0, 100)}`);
                 this.emit('system-response', currentResponse.trim(), replyTo);
               } else {
-                this.emit('response', currentResponse.trim());
+                this.emit('response', currentResponse.trim(), event.duration_ms);
               }
               currentResponse = '';
             }

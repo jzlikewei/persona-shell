@@ -58,6 +58,16 @@ launchctl stop  com.persona.shell
 bun run uninstall-service
 ```
 
+## Console API（运维）
+
+Shell 在 `http://localhost:3000` 提供生命周期管理 API，仅限运维手动操作，不对 Director 暴露。
+
+```bash
+curl -X POST localhost:3000/api/flush     # 刷新 Director 上下文
+curl -X POST localhost:3000/api/esc       # 取消当前处理中的消息
+curl -X POST localhost:3000/api/restart   # 重启 Director 进程
+```
+
 ## 架构
 
 ```

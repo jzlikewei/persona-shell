@@ -190,6 +190,15 @@ async function main() {
     }
   });
 
+  // Clear orphaned queue items after flush drain — these items will never get
+  // a response because the Director session is about to be destroyed.
+  director.on('flush-drain-complete', () => {
+    const orphaned = queue.clearAll();
+    if (orphaned.length > 0) {
+      console.log(`[shell] Cleared ${orphaned.length} orphaned queue items after flush drain`);
+    }
+  });
+
   // 4.1: Alert notification — forward Director and system alerts to feishu
   director.on('alert', (message: string) => {
     metrics.addError(message);
@@ -248,9 +257,10 @@ async function main() {
       const s = director.getStatus();
       const uptime = Math.floor((Date.now() - startTime) / 1000);
       const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
+      const contextLimit = s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit;
       const lines = [
         `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-        `📊 Tokens: ${s.lastInputTokens.toLocaleString()} / ${s.flushContextLimit.toLocaleString()}`,
+        `📊 Tokens: ${s.lastInputTokens.toLocaleString()} / ${contextLimit.toLocaleString()}`,
         `📬 Pending: ${s.pendingCount} | Queue: ${queue.length}`,
         `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
         `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
@@ -298,7 +308,7 @@ async function main() {
   });
 
   // Director response → resolve oldest → reply feishu
-  director.on('response', async (reply: string) => {
+  director.on('response', async (reply: string, durationMs?: number) => {
     const item = queue.resolveOldest();
 
     if (!item) {
@@ -306,8 +316,11 @@ async function main() {
       return;
     }
 
-    // 4.3: Calculate message processing elapsed time
-    const elapsedMs = Date.now() - item.timestamp;
+    // 4.3: Use duration_ms from Claude CLI result event (actual processing time),
+    // falling back to queue timestamp arithmetic if unavailable
+    const elapsedMs = (typeof durationMs === 'number' && durationMs > 0)
+      ? durationMs
+      : Date.now() - item.timestamp;
     const elapsedSec = (elapsedMs / 1000).toFixed(1);
     const replyWithTiming = `${reply}\n\n(耗时 ${elapsedSec}s)`;
 

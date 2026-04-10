@@ -1,10 +1,156 @@
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { Director } from './director.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 import type { TaskRunner } from './task-runner.js';
 import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, type CreateTaskInput } from './task-store.js';
+
+/** Director log paths — must match director.ts */
+const LOG_DIR = join(import.meta.dirname, '..', 'logs');
+const INPUT_LOG = join(LOG_DIR, 'director-input.log');
+const OUTPUT_LOG = join(LOG_DIR, 'director-output.log');
+
+interface ConversationMessage {
+  direction: 'in' | 'out';
+  content: string;
+  sessionId?: string;
+  timestamp?: number;
+}
+
+interface SessionInfo {
+  sessionId: string;
+  messageCount: number;
+  firstMessageAt?: string;
+  lastMessageAt?: string;
+}
+
+/** Parse director logs to reconstruct conversation messages */
+function parseConversationLog(limit: number, sessionFilter?: string): ConversationMessage[] {
+  const messages: ConversationMessage[] = [];
+
+  // Parse input log — each line is {"type":"user","message":{"role":"user","content":"..."}}
+  const inputs: string[] = [];
+  if (existsSync(INPUT_LOG)) {
+    try {
+      const raw = readFileSync(INPUT_LOG, 'utf-8');
+      for (const line of raw.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const evt = JSON.parse(line);
+          if (evt?.type === 'user' && evt.message?.content) {
+            inputs.push(evt.message.content);
+          }
+        } catch { /* skip malformed lines */ }
+      }
+    } catch { /* file read error */ }
+  }
+
+  // Parse output log — extract result events with response text + session_id
+  // Only keep result events that have actual response text (skip intermediate tool-use results)
+  const outputs: Array<{ text: string; sessionId?: string }> = [];
+  if (existsSync(OUTPUT_LOG)) {
+    try {
+      const raw = readFileSync(OUTPUT_LOG, 'utf-8');
+      let pendingText = '';
+      let lastSessionId: string | undefined;
+
+      for (const line of raw.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const evt = JSON.parse(line);
+          if (evt.type === 'assistant' && evt.message?.content) {
+            const content = evt.message.content;
+            if (typeof content === 'string') {
+              pendingText += content;
+            } else if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block.type === 'text') pendingText += block.text;
+              }
+            }
+          } else if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
+            lastSessionId = evt.session_id;
+          } else if (evt.type === 'result') {
+            if (evt.session_id) lastSessionId = evt.session_id;
+            const resultText = pendingText || (typeof evt.result === 'string' ? evt.result : '');
+            // Only collect results with actual text — skip empty intermediate tool-use results
+            if (resultText) {
+              outputs.push({ text: resultText, sessionId: lastSessionId });
+            }
+            pendingText = '';
+          }
+        } catch { /* skip malformed lines */ }
+      }
+    } catch { /* file read error */ }
+  }
+
+  // Tail-aligned pairing: most recent input corresponds to most recent output.
+  // Output log may have started recording before input log, so early outputs are orphans.
+  const outputOffset = Math.max(0, outputs.length - inputs.length);
+
+  // Orphan outputs (no matching input)
+  for (let i = 0; i < outputOffset; i++) {
+    const o = outputs[i];
+    if (sessionFilter && o.sessionId && o.sessionId !== sessionFilter) continue;
+    messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId });
+  }
+
+  // Paired input/output
+  for (let i = 0; i < inputs.length; i++) {
+    const oIdx = outputOffset + i;
+    const sessionId = oIdx < outputs.length ? outputs[oIdx].sessionId : undefined;
+    if (sessionFilter && sessionId && sessionId !== sessionFilter) continue;
+
+    messages.push({ direction: 'in', content: inputs[i], sessionId });
+    if (oIdx < outputs.length) {
+      messages.push({ direction: 'out', content: outputs[oIdx].text, sessionId: outputs[oIdx].sessionId });
+    }
+  }
+
+  // Return most recent first, limited
+  return messages.slice(-limit).reverse();
+}
+
+/** Extract unique session IDs from director output log */
+function parseSessions(): SessionInfo[] {
+  const sessionMap = new Map<string, { count: number; first?: string; last?: string }>();
+
+  if (!existsSync(OUTPUT_LOG)) return [];
+
+  try {
+    const raw = readFileSync(OUTPUT_LOG, 'utf-8');
+    let currentSession: string | undefined;
+
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const evt = JSON.parse(line);
+        if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
+          currentSession = evt.session_id;
+        }
+        if (evt.type === 'result') {
+          const sid = evt.session_id || currentSession;
+          if (!sid) continue;
+          currentSession = sid;
+
+          const entry = sessionMap.get(sid) || { count: 0 };
+          entry.count++;
+          const timestamp = new Date().toISOString(); // approximate
+          if (!entry.first) entry.first = timestamp;
+          entry.last = timestamp;
+          sessionMap.set(sid, entry);
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  } catch { /* file read error */ }
+
+  return Array.from(sessionMap.entries()).map(([sessionId, info]) => ({
+    sessionId,
+    messageCount: info.count,
+    firstMessageAt: info.first,
+    lastMessageAt: info.last,
+  })).sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
+}
 
 // Shell 启动时间，用于计算 uptime
 const startedAt = Date.now();
@@ -67,9 +213,10 @@ export function startConsole(
       };
     }
 
-    // Context
-    const tokenPercent = ds.flushContextLimit > 0
-      ? Math.round((ds.lastInputTokens / ds.flushContextLimit) * 100)
+    // Context — use contextWindow from modelUsage as denominator (falls back to flushContextLimit)
+    const contextLimit = ds.contextWindow > 0 ? ds.contextWindow : ds.flushContextLimit;
+    const tokenPercent = contextLimit > 0
+      ? Math.round((ds.lastInputTokens / contextLimit) * 100)
       : 0;
 
     // Metrics
@@ -112,11 +259,12 @@ export function startConsole(
           uptime: now - startedAt,
           feishu: feishuStatus,
           directorAlive: ds.alive,
+          sessionId: ds.sessionId,
         },
         activity,
         context: {
           tokens: ds.lastInputTokens,
-          limit: ds.flushContextLimit,
+          limit: contextLimit,
           percent: tokenPercent,
           lastFlushAgoMs: now - ds.lastFlushAt,
         },
@@ -232,6 +380,15 @@ export function startConsole(
             const result = await handleCommand('restart');
             return Response.json(result);
           }
+          // Message history and session APIs
+          if (url.pathname === '/api/messages' && req.method === 'GET') {
+            const limit = Number(url.searchParams.get('limit') ?? 100);
+            const sessionId = url.searchParams.get('sessionId') ?? undefined;
+            return Response.json(parseConversationLog(limit, sessionId));
+          }
+          if (url.pathname === '/api/sessions' && req.method === 'GET') {
+            return Response.json(parseSessions());
+          }
           // Task API routes
           if (url.pathname === '/api/tasks' && req.method === 'POST') {
             const body = await req.json() as CreateTaskInput;
@@ -253,6 +410,18 @@ export function startConsole(
             const role = url.searchParams.get('role') ?? undefined;
             const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
             return Response.json(listTasks({ status, role, limit }));
+          }
+          if (url.pathname.startsWith('/api/tasks/') && url.pathname.endsWith('/output') && req.method === 'GET') {
+            const taskId = url.pathname.slice('/api/tasks/'.length, -'/output'.length);
+            const task = getTask(taskId);
+            if (!task) return Response.json({ error: 'task not found' }, { status: 404 });
+            if (!task.result_file) return Response.json({ error: 'no result file' }, { status: 404 });
+            try {
+              const content = readFileSync(task.result_file, 'utf-8');
+              return Response.json({ content, path: task.result_file });
+            } catch {
+              return Response.json({ error: 'result file not readable' }, { status: 404 });
+            }
           }
           if (url.pathname.startsWith('/api/tasks/') && url.pathname.endsWith('/cancel') && req.method === 'POST') {
             const taskId = url.pathname.slice('/api/tasks/'.length, -'/cancel'.length);
