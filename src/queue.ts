@@ -30,18 +30,31 @@ export class MessageQueue {
     }
   }
 
-  /** Restore queue items from persisted state. Returns number of restored items. */
+  /** Restore queue items from persisted state. Returns number of restored items.
+   *  Skips items older than 5 minutes — after Shell restart, Director has moved on
+   *  and those messages are orphans. */
   restoreFromState(): number {
     const saved = getState<QueueItem[]>('queue');
     if (!saved || !Array.isArray(saved) || saved.length === 0) return 0;
+    const MAX_AGE_MS = 5 * 60_000; // 5 minutes
+    const now = Date.now();
+    let skipped = 0;
     for (const item of saved) {
       if (item.correlationId && item.text) {
+        if (now - item.timestamp > MAX_AGE_MS) {
+          skipped++;
+          continue;
+        }
         this.items.set(item.correlationId, item);
       }
+    }
+    if (skipped > 0) {
+      this.log('RESTORE', '-', `skipped ${skipped} stale items (older than 5m)`);
     }
     if (this.items.size > 0) {
       this.log('RESTORE', '-', `restored ${this.items.size} items from state`);
     }
+    this.persist(); // Clean up stale items from disk
     return this.items.size;
   }
 

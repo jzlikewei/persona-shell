@@ -569,10 +569,15 @@ export class Director extends EventEmitter {
               break;
             }
 
-            // Track input_tokens from usage
-            if (event.usage?.input_tokens) {
-              this.lastInputTokens = event.usage.input_tokens;
-              this.persistState();
+            // Track input_tokens from usage (include cached tokens for true context size)
+            if (event.usage) {
+              const totalInput = (event.usage.input_tokens ?? 0)
+                + (event.usage.cache_creation_input_tokens ?? 0)
+                + (event.usage.cache_read_input_tokens ?? 0);
+              if (totalInput > 0) {
+                this.lastInputTokens = totalInput;
+                this.persistState();
+              }
             }
 
             // Track cost from result events

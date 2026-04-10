@@ -763,13 +763,16 @@
 
   window.doCmd = function (cmd) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    var confirmMsgs = {
+      flush: '确定要刷新 Director 上下文吗？当前对话进度会被 checkpoint 后重置。',
+      esc: '确定要取消队列中最早的消息吗？',
+      restart: '确定要重启 Director 吗？进行中的处理会中断。',
+    };
+    if (confirmMsgs[cmd] && !confirm(confirmMsgs[cmd])) return;
     ws.send(JSON.stringify({ type: 'command', command: cmd }));
   };
 
   window.confirmRestart = function () {
-    if (restartPending) return;
-    if (!confirm('确定要重启 Director 吗？')) return;
-    restartPending = true;
     window.doCmd('restart');
   };
 
