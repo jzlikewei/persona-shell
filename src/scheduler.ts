@@ -7,9 +7,14 @@ export interface SchedulerConfig {
 
 export interface SchedulerCallbacks {
   listEnabledJobs: () => CronJob[];
-  executeJob: (job: CronJob) => Promise<string | null>;
+  // spawn_role: 创建子角色进程（原 executeJob）
+  executeSpawnRole: (job: CronJob) => Promise<string | null>;
   isOverlapping: (role: string) => boolean;
   markJobRun: (jobId: string) => void;
+  // director_msg: 给 Director 发系统消息
+  executeDirectorMsg: (job: CronJob) => Promise<void>;
+  // shell_action: 执行 Shell 内部动作
+  executeShellAction: (job: CronJob) => Promise<void>;
 }
 
 const TICK_INTERVAL_MS = 60_000; // 60 seconds
@@ -54,19 +59,45 @@ export class Scheduler {
     for (const job of jobs) {
       if (!shouldRun(job.schedule, job.last_run_at)) continue;
 
-      if (this.callbacks.isOverlapping(job.role)) {
-        console.log(`[scheduler] Skipping ${job.name}: previous run still active`);
-        continue;
-      }
+      const actionType = job.action_type ?? 'spawn_role';
 
       try {
-        const taskId = await this.callbacks.executeJob(job);
-        if (taskId) {
-          this.callbacks.markJobRun(job.id);
-          console.log(`[scheduler] Created task ${taskId} for ${job.name}`);
+        switch (actionType) {
+          case 'spawn_role': {
+            // spawn_role 需要 overlap 检测（子进程可能长时间运行）
+            if (this.callbacks.isOverlapping(job.role)) {
+              console.log(`[scheduler] Skipping ${job.name}: previous run still active`);
+              continue;
+            }
+            const taskId = await this.callbacks.executeSpawnRole(job);
+            if (taskId) {
+              this.callbacks.markJobRun(job.id);
+              console.log(`[scheduler] Created task ${taskId} for ${job.name}`);
+            }
+            break;
+          }
+
+          case 'director_msg': {
+            // director_msg 直接发消息给 Director，无需 overlap 检测
+            await this.callbacks.executeDirectorMsg(job);
+            this.callbacks.markJobRun(job.id);
+            console.log(`[scheduler] Sent director message for ${job.name}`);
+            break;
+          }
+
+          case 'shell_action': {
+            // shell_action 执行内部动作，无需 overlap 检测
+            await this.callbacks.executeShellAction(job);
+            this.callbacks.markJobRun(job.id);
+            console.log(`[scheduler] Executed shell action for ${job.name}`);
+            break;
+          }
+
+          default:
+            console.warn(`[scheduler] Unknown action_type '${actionType}' for ${job.name}`);
         }
       } catch (err) {
-        console.error(`[scheduler] Failed to create task for ${job.name}:`, err);
+        console.error(`[scheduler] Failed to execute ${job.name} (${actionType}):`, err);
       }
     }
   }

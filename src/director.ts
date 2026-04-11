@@ -17,8 +17,6 @@ interface DirectorPersistedState {
   lastFlushAt: number;
   lastInputTokens: number;
   contextWindow: number;
-  /** The date (YYYY-MM-DD) for which a daily report was last requested */
-  dailyReportDate?: string;
 }
 
 export class Director extends EventEmitter {
@@ -35,10 +33,9 @@ export class Director extends EventEmitter {
   private lastInputTokens = 0;
   private pendingCount = 0;
   private systemReplyQueue: string[] = [];
-  private writingDailyReport = false;
+  /** 系统消息（cron director_msg 等）的待处理计数，响应会被吸收不转发用户 */
+  private systemMessagePending = 0;
   private bootstrapping = false;
-  /** The date for which a daily report was last successfully requested (persisted) */
-  private dailyReportDate: string = '';
   private flushCheckpointResolve: (() => void) | null = null;
   private flushBootstrapResolve: (() => void) | null = null;
   private drainResolve: (() => void) | null = null;
@@ -67,14 +64,13 @@ export class Director extends EventEmitter {
     this.sessionFile = join(config.pipe_dir, 'director-session');
   }
 
-  /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow, dailyReportDate). Returns restored data or null. */
+  /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow). Returns restored data or null. */
   restoreState(): DirectorPersistedState | null {
     const saved = getState<DirectorPersistedState>('director');
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
     if (typeof saved.contextWindow === 'number') this.contextWindow = saved.contextWindow;
-    if (typeof saved.dailyReportDate === 'string') this.dailyReportDate = saved.dailyReportDate;
     return saved;
   }
 
@@ -83,7 +79,6 @@ export class Director extends EventEmitter {
       lastFlushAt: this.lastFlushAt,
       lastInputTokens: this.lastInputTokens,
       contextWindow: this.contextWindow,
-      dailyReportDate: this.dailyReportDate,
     });
   }
 
@@ -363,6 +358,14 @@ export class Director extends EventEmitter {
     await this.writeRaw(content);
   }
 
+  /** 发送系统消息给 Director（如 cron director_msg），响应会被吸收不转发给用户 */
+  async sendSystemMessage(msg: string): Promise<void> {
+    if (!this.writeHandle || this.flushing) return;
+    this.systemMessagePending++;
+    this.pendingCount++;
+    await this.writeRaw(msg);
+  }
+
   private async writeRaw(content: string): Promise<void> {
     if (!this.writeHandle) {
       throw new Error('pipe not open');
@@ -449,50 +452,6 @@ export class Director extends EventEmitter {
         this.emit('alert', `⚠️ 自动 FLUSH 异常: ${String(err).slice(0, 200)}`);
       });
     }
-  }
-
-  /** Check if daily report is needed for yesterday. Safe to call from timer.
-   *  Triggers at or after 03:00 Asia/Shanghai. If 03:00 is missed (e.g. machine off),
-   *  triggers on the next heartbeat after boot.
-   *  Uses persisted dailyReportDate to survive restarts. */
-  checkDailyReport(): void {
-    if (this.flushing || this.writingDailyReport) return;
-    if (!this.writeHandle) return; // Director not connected
-
-    const now = new Date();
-    const today = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-
-    // Already sent daily report request for today (i.e., yesterday's report)
-    if (this.dailyReportDate === today) return;
-
-    // Only trigger at or after 03:00 Asia/Shanghai
-    const shanghaiHour = parseInt(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false }), 10);
-    if (shanghaiHour < 3) return;
-
-    // On first run of the day (or after restart), compute yesterday
-    const yesterday = this.getYesterday();
-
-    console.log(`[director] Daily report check: requesting report for ${yesterday}`);
-    this.writingDailyReport = true;
-    this.dailyReportDate = today;
-    this.persistState();
-    this.pendingCount++;
-    this.writeRaw(
-      `[系统] 日期已变更为 ${today}。请为 ${yesterday} 撰写日报，保存到 daily/${yesterday}.md。同时更新 daily/state.md 的状态。`
-    ).catch((err) => {
-      console.error('[director] Failed to send daily report request:', err);
-      this.pendingCount = Math.max(0, this.pendingCount - 1);
-      this.writingDailyReport = false;
-      // Reset so it retries next tick
-      this.dailyReportDate = '';
-      this.persistState();
-    });
-  }
-
-  private getYesterday(): string {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   }
 
   private async restart(): Promise<void> {
@@ -664,7 +623,7 @@ export class Director extends EventEmitter {
             }
 
             // Increment daily message counter for user-facing responses
-            if (!this.flushing && !this.writingDailyReport && !this.discardNextResponse) {
+            if (!this.flushing && this.systemMessagePending <= 0 && !this.discardNextResponse) {
               this.messagesProcessedToday++;
             }
 
@@ -685,10 +644,10 @@ export class Director extends EventEmitter {
                 console.log(`[director] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushBootstrapResolve();
                 this.flushBootstrapResolve = null;
-              } else if (this.writingDailyReport) {
-                // Daily report response — don't emit to users
-                console.log(`[director] Daily report done: ${currentResponse.trim().slice(0, 100)}`);
-                this.writingDailyReport = false;
+              } else if (this.systemMessagePending > 0) {
+                // 系统消息响应（cron director_msg 等）— 吸收，不转发用户
+                console.log(`[director] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
+                this.systemMessagePending--;
               } else if (this.discardNextResponse) {
                 // Late response after flush timeout — discard silently
                 console.log(`[director] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);

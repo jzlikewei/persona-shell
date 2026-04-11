@@ -54,15 +54,18 @@ const TOOLS = [
   },
   {
     name: 'create_cron_job',
-    description: '创建定时 cron job（持久化到 SQLite，由 Scheduler 自动触发）',
+    description: '创建定时 cron job（持久化到 SQLite，由 Scheduler 自动触发）。支持三种 action 类型：spawn_role（默认，spawn 子角色进程）、director_msg（给 Director 发系统消息）、shell_action（执行 Shell 内部动作）',
     inputSchema: {
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Job 名称' },
-        role: { type: 'string', description: '角色名 (explorer / critic / cron-builder)' },
+        role: { type: 'string', description: '角色名 (explorer / critic / cron-builder)，action_type=director_msg 时可填 "system"' },
         description: { type: 'string', description: '简短描述' },
-        prompt: { type: 'string', description: '完整 prompt' },
+        prompt: { type: 'string', description: '完整 prompt（action_type=spawn_role 时使用）' },
         schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00"' },
+        action_type: { type: 'string', description: '动作类型: "spawn_role"(默认) | "director_msg" | "shell_action"', enum: ['spawn_role', 'director_msg', 'shell_action'] },
+        message: { type: 'string', description: 'action_type=director_msg 时的消息内容，支持 {today} {yesterday} 模板变量' },
+        action_name: { type: 'string', description: 'action_type=shell_action 时的动作名，如 "check_feishu"' },
       },
       required: ['name', 'role', 'description', 'prompt', 'schedule'],
     },
@@ -155,6 +158,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         description: args.description,
         prompt: args.prompt,
         schedule: args.schedule,
+        action_type: args.action_type,
+        message: args.message,
+        action_name: args.action_name,
       });
     case 'list_cron_jobs':
       return callShell('GET', '/api/cron-jobs');

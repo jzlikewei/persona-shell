@@ -5,7 +5,7 @@ import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
 import { Scheduler } from './scheduler.js';
-import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob } from './task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob } from './task-store.js';
 import { writeFileSync } from 'fs';
 import { join, extname } from 'path';
 
@@ -181,7 +181,7 @@ async function main() {
     config.scheduler,
     {
       listEnabledJobs: () => listCronJobs({ enabled: true }),
-      executeJob: async (job) => {
+      executeSpawnRole: async (job) => {
         const task = createTask({
           type: 'cron',
           role: job.role,
@@ -199,19 +199,46 @@ async function main() {
       markJobRun: (jobId) => {
         updateCronJob(jobId, { last_run_at: new Date().toISOString() });
       },
+      executeDirectorMsg: async (job) => {
+        // 模板变量替换：{today} {yesterday}
+        let msg = job.message ?? '';
+        const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+        msg = msg.replace(/\{today\}/g, today).replace(/\{yesterday\}/g, yesterday);
+        await director.sendSystemMessage(msg);
+      },
+      executeShellAction: async (job) => {
+        switch (job.action_name) {
+          case 'check_feishu':
+            console.log('[scheduler] shell_action: check_feishu (reserved)');
+            break;
+          case 'check_flush':
+            console.log('[scheduler] shell_action: check_flush (reserved)');
+            break;
+          default:
+            console.warn(`[scheduler] Unknown shell_action: ${job.action_name}`);
+        }
+      },
     },
   );
   scheduler.start();
 
-  // Daily report timer — check every 30 minutes if yesterday's report needs to be written.
-  // Persisted state survives restarts, so this won't duplicate requests.
-  setInterval(() => {
-    director.checkDailyReport();
-  }, 30 * 60_000);
-  // Also check once shortly after startup (give Director time to connect)
-  setTimeout(() => {
-    director.checkDailyReport();
-  }, 30_000);
+  // 内置 cron job：日报生成（迁移自 director.checkDailyReport）
+  const existingDailyReport = listCronJobs().find((j) => j.name === 'daily-report');
+  if (!existingDailyReport) {
+    createCronJob({
+      name: 'daily-report',
+      role: 'system',
+      description: '每日日报生成',
+      prompt: '',
+      schedule: 'daily 03:00',
+      action_type: 'director_msg',
+      message: '[系统] 日期已变更为 {today}。请为 {yesterday} 撰写日报，保存到 daily/{yesterday}.md。同时更新 daily/state.md 的状态。',
+    });
+    console.log('[shell] Seeded built-in cron job: daily-report');
+  }
 
   // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
   director.on('auto-flush-complete', () => {

@@ -73,7 +73,10 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   enabled     INTEGER NOT NULL DEFAULT 1,
   last_run_at TEXT,
   created_at  TEXT NOT NULL,
-  updated_at  TEXT NOT NULL
+  updated_at  TEXT NOT NULL,
+  action_type TEXT NOT NULL DEFAULT 'spawn_role',
+  message     TEXT,
+  action_name TEXT
 )`;
 
 function generateId(): string {
@@ -93,7 +96,25 @@ function openDb(): Database {
   db.run(CREATE_TABLE);
   db.run(CREATE_STATE_TABLE);
   db.run(CREATE_CRON_JOBS_TABLE);
+  // Schema 迁移：为已有 cron_jobs 表添加新列（action_type, message, action_name）
+  migrateCronJobsTable(db);
   return db;
+}
+
+/** 安全地为 cron_jobs 表添加新列，已存在则跳过 */
+function migrateCronJobsTable(db: Database): void {
+  const columns = db.query("PRAGMA table_info(cron_jobs)").all() as Array<{ name: string }>;
+  const existing = new Set(columns.map((c) => c.name));
+
+  if (!existing.has('action_type')) {
+    db.run("ALTER TABLE cron_jobs ADD COLUMN action_type TEXT NOT NULL DEFAULT 'spawn_role'");
+  }
+  if (!existing.has('message')) {
+    db.run("ALTER TABLE cron_jobs ADD COLUMN message TEXT");
+  }
+  if (!existing.has('action_name')) {
+    db.run("ALTER TABLE cron_jobs ADD COLUMN action_name TEXT");
+  }
 }
 
 function rowToTask(row: Record<string, unknown>): Task {
@@ -205,6 +226,8 @@ export function deleteState(key: string): void {
 
 // --- Cron Jobs CRUD ---
 
+export type CronActionType = 'spawn_role' | 'director_msg' | 'shell_action';
+
 export interface CronJob {
   id: string;
   name: string;
@@ -216,6 +239,9 @@ export interface CronJob {
   last_run_at: string | null;
   created_at: string;
   updated_at: string;
+  action_type: CronActionType;
+  message: string | null;
+  action_name: string | null;
 }
 
 export interface CreateCronJobInput {
@@ -225,12 +251,18 @@ export interface CreateCronJobInput {
   prompt: string;
   schedule: string;
   enabled?: boolean;
+  action_type?: CronActionType;
+  message?: string;
+  action_name?: string;
 }
 
 function rowToCronJob(row: Record<string, unknown>): CronJob {
   return {
     ...row,
     enabled: row.enabled === 1,
+    action_type: (row.action_type as CronActionType) ?? 'spawn_role',
+    message: (row.message as string) ?? null,
+    action_name: (row.action_name as string) ?? null,
   } as CronJob;
 }
 
@@ -238,11 +270,14 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const id = generateId();
   const now = new Date().toISOString();
   const enabled = input.enabled !== false ? 1 : 0;
+  const actionType = input.action_type ?? 'spawn_role';
+  const message = input.message ?? null;
+  const actionName = input.action_name ?? null;
 
   db.run(
-    `INSERT INTO cron_jobs (id, name, role, description, prompt, schedule, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.name, input.role, input.description, input.prompt, input.schedule, enabled, now, now],
+    `INSERT INTO cron_jobs (id, name, role, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName],
   );
 
   return getCronJob(id)!;
@@ -263,7 +298,7 @@ export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
 }
 
 export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
-  const allowed = ['name', 'role', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at'] as const;
+  const allowed = ['name', 'role', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 
