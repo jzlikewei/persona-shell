@@ -97,6 +97,20 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  {
+    name: 'send_attachment',
+    description: '发送文件或图片给用户。Shell 自动处理上传和投递，Director 不需要关心投递渠道。当前仅支持图片格式（.png, .jpg, .jpeg, .gif, .webp）。文件大小限制 10MB。',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        path: {
+          type: 'string',
+          description: '本地文件路径（支持 /tmp/ 和 ~/.persona/outbox/ 下的文件）',
+        },
+      },
+      required: ['path'],
+    },
+  },
 ];
 
 async function callShell(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -148,6 +162,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return callShell('DELETE', `/api/cron-jobs/${args.id}`);
     case 'toggle_cron_job':
       return callShell('POST', `/api/cron-jobs/${args.id}/toggle`);
+    case 'send_attachment':
+      return callShell('POST', '/api/send-attachment', { path: args.path });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

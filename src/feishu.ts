@@ -1,6 +1,10 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { readFileSync, statSync } from 'fs';
 import type { Config } from './config.js';
 import { getState, setState } from './task-store.js';
+
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
 
@@ -147,6 +151,88 @@ export function createFeishuClient(config: Config['feishu']) {
         if (info.lastConnectTime && now - info.lastConnectTime < 5 * 60_000) return 'connected';
       } catch { /* SDK may not be ready */ }
       return 'disconnected';
+    },
+
+    async uploadImage(imageData: Buffer): Promise<string> {
+      const res = await client.im.v1.image.create({
+        data: { image_type: 'message', image: imageData },
+      });
+      const imageKey = res?.image_key;
+      if (!imageKey) throw new Error('Upload failed: no image_key returned');
+      return imageKey;
+    },
+
+    async sendImage(chatId: string, imageKey: string): Promise<string | null> {
+      const res = await client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          content: JSON.stringify({ image_key: imageKey }),
+          msg_type: 'image',
+        },
+      });
+      lastActiveTime = Date.now();
+      return res?.data?.message_id ?? null;
+    },
+
+    async replyImage(messageId: string, imageKey: string): Promise<void> {
+      const delays = [1000, 3000];
+      let lastErr: unknown;
+      for (let attempt = 0; attempt <= delays.length; attempt++) {
+        try {
+          await client.im.v1.message.reply({
+            path: { message_id: messageId },
+            data: {
+              content: JSON.stringify({ image_key: imageKey }),
+              msg_type: 'image',
+            },
+          });
+          lastActiveTime = Date.now();
+          return;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < delays.length) {
+            console.warn(`[feishu] replyImage attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms...`, err);
+            await new Promise((r) => setTimeout(r, delays[attempt]));
+          }
+        }
+      }
+      console.error('[feishu] replyImage failed after all retries:', lastErr);
+      throw lastErr;
+    },
+
+    async uploadAndSendImage(chatId: string, filePath: string): Promise<string | null> {
+      const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+      if (!IMAGE_EXTENSIONS.has(ext)) {
+        throw new Error(`Unsupported image format: ${ext}`);
+      }
+      const stat = statSync(filePath);
+      if (stat.size > MAX_IMAGE_SIZE) {
+        throw new Error(`Image too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB (max 10MB)`);
+      }
+      if (stat.size === 0) {
+        throw new Error('Image file is empty');
+      }
+      const imageData = readFileSync(filePath);
+      const imageKey = await this.uploadImage(imageData);
+      return this.sendImage(chatId, imageKey);
+    },
+
+    async uploadAndReplyImage(messageId: string, filePath: string): Promise<void> {
+      const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+      if (!IMAGE_EXTENSIONS.has(ext)) {
+        throw new Error(`Unsupported image format: ${ext}`);
+      }
+      const stat = statSync(filePath);
+      if (stat.size > MAX_IMAGE_SIZE) {
+        throw new Error(`Image too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB (max 10MB)`);
+      }
+      if (stat.size === 0) {
+        throw new Error('Image file is empty');
+      }
+      const imageData = readFileSync(filePath);
+      const imageKey = await this.uploadImage(imageData);
+      await this.replyImage(messageId, imageKey);
     },
   };
 }
