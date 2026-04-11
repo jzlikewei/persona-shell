@@ -577,6 +577,7 @@ export function startConsole(
                 taskId: task.id,
                 role: task.role,
                 prompt: task.prompt,
+                description: task.description,
               });
             }
             return Response.json(task);

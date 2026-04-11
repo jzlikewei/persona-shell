@@ -111,11 +111,13 @@ async function main() {
       cost_usd: result.costUsd ?? null,
       result_file: result.resultFile ?? null,
     });
+    const task = getTask(result.taskId);
+    const desc = task?.description ?? result.taskId;
     // Send feishu notification first, capture messageId for Director's reply
     const lastChatId = feishu.getLastChatId();
     let notifyMsgId: string | undefined;
     if (lastChatId) {
-      notifyMsgId = (await feishu.sendMessage(lastChatId, `✅ 后台任务完成: ${result.taskId}`)) ?? undefined;
+      notifyMsgId = (await feishu.sendMessage(lastChatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
     }
     director.notifyTaskDone(result.taskId, true, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task completion:', err);
@@ -136,17 +138,18 @@ async function main() {
     if (task && task.retry_count < task.max_retry && result.error !== 'cancelled') {
       updateTask(result.taskId, { retry_count: task.retry_count + 1, status: 'dispatched' });
       console.log(`[shell] Retrying task ${result.taskId} (attempt ${task.retry_count + 1}/${task.max_retry})`);
-      taskRunner.runTask({ taskId: result.taskId, role: task.role, prompt: task.prompt });
+      taskRunner.runTask({ taskId: result.taskId, role: task.role, prompt: task.prompt, description: task.description });
       return;
     }
 
     const lastChatId = feishu.getLastChatId();
     let notifyMsgId: string | undefined;
     if (lastChatId) {
+      const desc = task?.description ?? result.taskId;
       const isCancelled = result.error === 'cancelled';
       const msg = isCancelled
-        ? `🚫 后台任务已取消: ${result.taskId}`
-        : `❌ 后台任务失败: ${result.taskId} — ${result.error}`;
+        ? `🚫 后台任务「${desc}」(${result.taskId}) 已取消`
+        : `❌ 后台任务「${desc}」(${result.taskId}) 失败 — ${result.error}`;
       notifyMsgId = (await feishu.sendMessage(lastChatId, msg)) ?? undefined;
     }
     director.notifyTaskDone(result.taskId, false, notifyMsgId).catch((err) => {
@@ -192,7 +195,7 @@ async function main() {
           prompt: job.prompt,
           extra: { cronJobId: job.id },
         });
-        taskRunner.runTask({ taskId: task.id, role: task.role, prompt: task.prompt });
+        taskRunner.runTask({ taskId: task.id, role: task.role, prompt: task.prompt, description: task.description });
         return task.id;
       },
       isOverlapping: (role) => {

@@ -1,6 +1,5 @@
 /** SQLite data layer for the task system */
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
-import { randomBytes } from 'crypto';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -79,8 +78,36 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   action_name TEXT
 )`;
 
-function generateId(): string {
-  return randomBytes(8).toString('hex');
+/** 生成语义化 Task ID: T-MMdd-HH-NNN */
+function generateTaskId(db: Database): string {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(5).replace('-', '');
+  const hour = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: '2-digit', hour12: false }).format(now).padStart(2, '0');
+  const prefix = `T-${dateStr}-${hour}`;
+
+  const row = db.query("SELECT id FROM tasks WHERE id LIKE ? ORDER BY id DESC LIMIT 1").get(`${prefix}-%`) as { id: string } | null;
+  let seq = 1;
+  if (row) {
+    const lastSeq = parseInt(row.id.split('-').pop() ?? '0', 10);
+    seq = lastSeq + 1;
+  }
+  return `${prefix}-${String(seq).padStart(3, '0')}`;
+}
+
+/** 生成语义化 Cron Job ID: C-MMdd-HH-NNN */
+function generateCronId(db: Database): string {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(5).replace('-', '');
+  const hour = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: '2-digit', hour12: false }).format(now).padStart(2, '0');
+  const prefix = `C-${dateStr}-${hour}`;
+
+  const row = db.query("SELECT id FROM cron_jobs WHERE id LIKE ? ORDER BY id DESC LIMIT 1").get(`${prefix}-%`) as { id: string } | null;
+  let seq = 1;
+  if (row) {
+    const lastSeq = parseInt(row.id.split('-').pop() ?? '0', 10);
+    seq = lastSeq + 1;
+  }
+  return `${prefix}-${String(seq).padStart(3, '0')}`;
 }
 
 function ensureDir(dir: string): void {
@@ -127,7 +154,7 @@ function rowToTask(row: Record<string, unknown>): Task {
 const db = openDb();
 
 export function createTask(input: CreateTaskInput): Task {
-  const id = generateId();
+  const id = generateTaskId(db);
   const now = new Date().toISOString();
   const extra = input.extra ? JSON.stringify(input.extra) : null;
 
@@ -267,7 +294,7 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
 }
 
 export function createCronJob(input: CreateCronJobInput): CronJob {
-  const id = generateId();
+  const id = generateCronId(db);
   const now = new Date().toISOString();
   const enabled = input.enabled !== false ? 1 : 0;
   const actionType = input.action_type ?? 'spawn_role';

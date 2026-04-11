@@ -15,6 +15,7 @@ export interface RunTaskInput {
   taskId: string;
   role: string;
   prompt: string;
+  description?: string;
   timeoutMs?: number;
 }
 
@@ -58,11 +59,15 @@ export class TaskRunner extends EventEmitter {
     const startedAt = Date.now();
     const personaDir = this.config.personaDir;
 
-    // 构建 prompt：注入 resultFile 路径指令
+    // 构建产出文件名：用描述语义化，保留 ID 保证唯一
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
     const outboxDir = join(personaDir, 'outbox', today);
     if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true });
-    const resultFile = join(outboxDir, `${input.taskId}.md`);
+    const safeName = input.description
+      ? input.description.replace(/[/\\]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 50)
+      : '';
+    const fileName = safeName ? `${input.taskId}_${safeName}.md` : `${input.taskId}.md`;
+    const resultFile = join(outboxDir, fileName);
     const fullPrompt = `${input.prompt}\n\n[系统指令] 将输出结果保存到 ${resultFile}`;
 
     const { child, args } = spawnPersona({
