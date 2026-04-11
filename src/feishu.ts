@@ -184,16 +184,12 @@ export function createFeishuClient(config: Config['feishu']) {
       console.log(`[feishu] raw ${msgType} content: ${content}`);
       if (mentions?.length) console.log(`[feishu] mentions: ${JSON.stringify(mentions)}`);
 
-      /** Replace @_user_N placeholders with real names, strip bot mentions. */
+      /** Replace @_user_N placeholders with real names. */
       const stripMentions = (text: string): string => {
         if (!mentions?.length) return text;
         for (const m of mentions) {
           if (!m.key) continue;
-          if (m.mentioned_type === 'bot') {
-            // Remove bot mention entirely
-            text = text.replace(m.key, '').trim();
-          } else if (m.name) {
-            // Replace user mention placeholder with real name
+          if (m.name) {
             text = text.replace(m.key, `@${m.name}`);
           }
         }
