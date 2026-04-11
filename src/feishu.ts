@@ -19,31 +19,39 @@ const FILE_TYPE_MAP: Record<string, "opus" | "mp4" | "pdf" | "doc" | "xls" | "pp
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
 
+type Mention = { id?: { open_id?: string }; name?: string };
+
 /** Extract plain text from feishu post (rich text) message content.
  *  Post format: { title?, content: [[{tag, text?, href?}, ...], ...] }
- *  Supports: text, a (link), at (mention). Paragraphs joined by \n. */
-function extractPostText(parsed: Record<string, unknown>): string {
+ *  or nested under locale key: { zh_cn: { title?, content: [...] } }
+ *  Supports: text, a (link), at (mention), img (alt text). Paragraphs joined by \n. */
+function extractPostText(parsed: Record<string, unknown>, mentions?: Mention[]): string {
   const parts: string[] = [];
 
-  // Title
-  const title = (parsed.title as string) ?? '';
-  if (title) parts.push(title);
-
-  // Content can be nested under a locale key (zh_cn, en_us, etc.) or directly
+  // Content can be nested under a locale key (zh_cn, en_us, etc.) or directly at top level
   let postBody = parsed.content as unknown[][] | undefined;
+  let title = parsed.title as string | undefined;
   if (!postBody) {
-    // Try locale keys
     for (const key of Object.keys(parsed)) {
       const val = parsed[key] as Record<string, unknown> | undefined;
       if (val && typeof val === 'object' && 'content' in val) {
         postBody = val.content as unknown[][];
-        if (!parts.length && val.title) parts.push(val.title as string);
+        title = title || (val.title as string | undefined);
         break;
       }
     }
   }
 
+  if (title) parts.push(title);
   if (!postBody || !Array.isArray(postBody)) return parts.join('\n');
+
+  // Build a lookup map from user_id → real name via mentions array
+  const mentionMap = new Map<string, string>();
+  if (mentions) {
+    for (const m of mentions) {
+      if (m.id?.open_id && m.name) mentionMap.set(m.id.open_id, m.name);
+    }
+  }
 
   for (const paragraph of postBody) {
     if (!Array.isArray(paragraph)) continue;
@@ -58,11 +66,16 @@ function extractPostText(parsed: Record<string, unknown>): string {
           if (n.text && n.href) line.push(`${n.text}(${n.href})`);
           else if (n.text) line.push(n.text as string);
           break;
-        case 'at':
-          if (n.user_name) line.push(`@${n.user_name}`);
+        case 'at': {
+          // Resolve real name from mentions; fall back to user_name if available
+          const userId = n.user_id as string | undefined;
+          const realName = userId ? mentionMap.get(userId) : undefined;
+          const displayName = realName || (n.user_name as string | undefined);
+          if (displayName) line.push(`@${displayName}`);
           break;
+        }
         case 'img':
-          line.push('[图片]');
+          line.push(n.alt_text ? `[图片: ${n.alt_text}]` : '[图片]');
           break;
         case 'media':
           line.push('[媒体]');
@@ -74,6 +87,52 @@ function extractPostText(parsed: Record<string, unknown>): string {
 
   return parts.join('\n');
 }
+
+/** Fetch a message by ID and extract its plain text (for quote-reply context). */
+async function fetchMessageText(client: Lark.Client, messageId: string): Promise<string> {
+  try {
+    const res = await client.im.v1.message.get({
+      path: { message_id: messageId },
+    });
+    const items = (res?.data as any)?.items as any[] | undefined;
+    if (!items?.length) return '';
+
+    const msg = items[0];
+    const msgType = msg.msg_type as string;
+    const rawContent = msg.body?.content as string | undefined;
+    if (!rawContent) return '';
+
+    const parsed = JSON.parse(rawContent);
+
+    if (msgType === 'text') {
+      let text: string = parsed.text || '';
+      // Resolve @_user_xxx placeholders using mentions
+      const mentions = msg.mentions as Mention[] | undefined;
+      if (mentions?.length) {
+        for (const m of mentions) {
+          if (m.id?.open_id) text = text.replace(`@_user_${m.id.open_id}`, m.name ? `@${m.name}` : '');
+        }
+      }
+      return text.trim();
+    }
+
+    if (msgType === 'post') {
+      return extractPostText(parsed);
+    }
+
+    if (msgType === 'image') return '[图片]';
+    if (msgType === 'file') return '[文件]';
+    if (msgType === 'audio') return '[语音]';
+    return '';
+  } catch (err) {
+    console.error(`[feishu] fetchMessageText ${messageId} failed:`, err);
+    return '';
+  }
+}
+
+// LRU message deduplication (200 entries)
+const processedMessageIds = new Set<string>();
+const MAX_DEDUP_SIZE = 200;
 
 const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
 const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则自杀重启
@@ -97,19 +156,56 @@ export function createFeishuClient(config: Config['feishu']) {
       const { chat_id, message_id, content } = message;
       if (!chat_id || !message_id || !content) return;
 
+      // LRU message deduplication — prevent duplicate processing on WebSocket reconnect
+      if (processedMessageIds.has(message_id)) {
+        console.log(`[feishu] duplicate message ${message_id}, skipped`);
+        return;
+      }
+      processedMessageIds.add(message_id);
+      if (processedMessageIds.size > MAX_DEDUP_SIZE) {
+        const first = processedMessageIds.values().next().value as string;
+        processedMessageIds.delete(first);
+      }
+
       // Persist chat_id to DB
       setState('lastChatId', chat_id);
 
       const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
+      const mentions = (message as Record<string, unknown>).mentions as Mention[] | undefined;
+      const parentId = (message as Record<string, unknown>).parent_id as string | undefined;
+
+      /** Strip @bot mention placeholders from text using the mentions array. */
+      const stripMentions = (text: string): string => {
+        if (!mentions?.length) return text;
+        for (const m of mentions) {
+          if (m.id?.open_id) text = text.replace(`@_user_${m.id.open_id}`, '').trim();
+          if (m.name) text = text.replace(new RegExp(`@${m.name}`, 'g'), '').trim();
+        }
+        return text;
+      };
+
+      /** Prepend quoted message content as blockquote if this is a reply. */
+      const prependQuote = async (text: string): Promise<string> => {
+        if (!parentId) return text;
+        const quoted = await fetchMessageText(client, parentId);
+        if (!quoted) return text;
+        const quotedBlock = quoted.split('\n').map(l => `> ${l}`).join('\n');
+        console.log(`[feishu] prepended quoted message ${parentId}`);
+        return `${quotedBlock}\n\n${text}`.trim();
+      };
 
       if (msgType === 'text') {
         try {
           const parsed = JSON.parse(content);
-          const text = parsed.text as string;
+          let text = parsed.text as string;
+          if (!text) return;
+
+          text = stripMentions(text);
+          text = await prependQuote(text);
           if (!text) return;
 
           for (const handler of handlers) {
-            try { await handler(text, message_id, chat_id, msgType); } catch (err) {
+            try { await handler(text, message_id, chat_id, 'text'); } catch (err) {
               console.error('[feishu] Handler error:', err);
             }
           }
@@ -122,7 +218,11 @@ export function createFeishuClient(config: Config['feishu']) {
       if (msgType === 'post') {
         try {
           const parsed = JSON.parse(content);
-          const text = extractPostText(parsed);
+          let text = extractPostText(parsed, mentions);
+          if (!text) return;
+
+          text = stripMentions(text);
+          text = await prependQuote(text);
           if (!text) return;
 
           for (const handler of handlers) {
