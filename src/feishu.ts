@@ -1,10 +1,21 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { readFileSync, statSync } from 'fs';
+import { extname, basename } from 'path';
 import type { Config } from './config.js';
 import { getState, setState } from './task-store.js';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30MB
+
+const FILE_TYPE_MAP: Record<string, "opus" | "mp4" | "pdf" | "doc" | "xls" | "ppt" | "stream"> = {
+  '.opus': 'opus', '.ogg': 'opus',
+  '.mp4': 'mp4', '.mov': 'mp4',
+  '.pdf': 'pdf',
+  '.doc': 'doc', '.docx': 'doc',
+  '.xls': 'xls', '.xlsx': 'xls',
+  '.ppt': 'ppt', '.pptx': 'ppt',
+};
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
 
@@ -233,6 +244,75 @@ export function createFeishuClient(config: Config['feishu']) {
       const imageData = readFileSync(filePath);
       const imageKey = await this.uploadImage(imageData);
       await this.replyImage(messageId, imageKey);
+    },
+
+    async uploadFile(filePath: string): Promise<string> {
+      const ext = extname(filePath).toLowerCase();
+      const fileType = FILE_TYPE_MAP[ext] ?? 'stream';
+      const fileName = basename(filePath);
+      const stat = statSync(filePath);
+      if (stat.size > MAX_FILE_SIZE) {
+        throw new Error(`File too large: ${(stat.size / 1024 / 1024).toFixed(1)}MB (max 30MB)`);
+      }
+      if (stat.size === 0) {
+        throw new Error('File is empty');
+      }
+      const fileData = readFileSync(filePath);
+      const res = await client.im.v1.file.create({
+        data: { file_type: fileType, file_name: fileName, file: fileData },
+      });
+      const fileKey = res?.file_key;
+      if (!fileKey) throw new Error('Upload failed: no file_key returned');
+      return fileKey;
+    },
+
+    async sendFile(chatId: string, fileKey: string, fileName: string): Promise<string | null> {
+      const res = await client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: {
+          receive_id: chatId,
+          content: JSON.stringify({ file_key: fileKey, file_name: fileName }),
+          msg_type: 'file',
+        },
+      });
+      lastActiveTime = Date.now();
+      return res?.data?.message_id ?? null;
+    },
+
+    async replyFile(messageId: string, fileKey: string, fileName: string): Promise<void> {
+      const delays = [1000, 3000];
+      let lastErr: unknown;
+      for (let attempt = 0; attempt <= delays.length; attempt++) {
+        try {
+          await client.im.v1.message.reply({
+            path: { message_id: messageId },
+            data: {
+              content: JSON.stringify({ file_key: fileKey, file_name: fileName }),
+              msg_type: 'file',
+            },
+          });
+          lastActiveTime = Date.now();
+          return;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < delays.length) {
+            console.warn(`[feishu] replyFile attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms...`, err);
+            await new Promise((r) => setTimeout(r, delays[attempt]));
+          }
+        }
+      }
+      console.error('[feishu] replyFile failed after all retries:', lastErr);
+      throw lastErr;
+    },
+
+    async uploadAndSendFile(chatId: string, filePath: string): Promise<string | null> {
+      const fileKey = await this.uploadFile(filePath);
+      return this.sendFile(chatId, fileKey, basename(filePath));
+    },
+
+    async uploadAndReplyFile(messageId: string, filePath: string): Promise<void> {
+      const fileKey = await this.uploadFile(filePath);
+      await this.replyFile(messageId, fileKey, basename(filePath));
     },
   };
 }

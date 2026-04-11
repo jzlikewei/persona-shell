@@ -255,6 +255,8 @@ export function startConsole(
     getLastChatId: () => string | null;
     uploadAndSendImage: (chatId: string, filePath: string) => Promise<string | null>;
     uploadAndReplyImage: (messageId: string, filePath: string) => Promise<void>;
+    uploadAndSendFile: (chatId: string, filePath: string) => Promise<string | null>;
+    uploadAndReplyFile: (messageId: string, filePath: string) => Promise<void>;
   },
   metrics?: MetricsCollector,
 ): void {
@@ -470,12 +472,10 @@ export function startConsole(
               return Response.json({ error: 'File is empty' }, { status: 400 });
             }
 
-            // Only support image formats for now
+            // Determine if image or file by extension
             const ext = extname(resolved).toLowerCase();
             const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
-            if (!imageExts.has(ext)) {
-              return Response.json({ error: `Unsupported file type: ${ext}. Only images are supported.` }, { status: 400 });
-            }
+            const isImage = imageExts.has(ext);
 
             if (!feishu) {
               return Response.json({ error: 'Feishu client not available' }, { status: 503 });
@@ -484,14 +484,22 @@ export function startConsole(
             try {
               // Determine reply vs send: check if queue has a pending item
               const pendingItem = queue.peek();
-              if (pendingItem) {
-                await feishu.uploadAndReplyImage(pendingItem.messageId, resolved);
-              } else {
-                const lastChatId = feishu.getLastChatId();
-                if (!lastChatId) {
-                  return Response.json({ error: 'No active chat to send to' }, { status: 400 });
+              if (isImage) {
+                if (pendingItem) {
+                  await feishu.uploadAndReplyImage(pendingItem.messageId, resolved);
+                } else {
+                  const lastChatId = feishu.getLastChatId();
+                  if (!lastChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
+                  await feishu.uploadAndSendImage(lastChatId, resolved);
                 }
-                await feishu.uploadAndSendImage(lastChatId, resolved);
+              } else {
+                if (pendingItem) {
+                  await feishu.uploadAndReplyFile(pendingItem.messageId, resolved);
+                } else {
+                  const lastChatId = feishu.getLastChatId();
+                  if (!lastChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
+                  await feishu.uploadAndSendFile(lastChatId, resolved);
+                }
               }
               return Response.json({ success: true });
             } catch (err) {
