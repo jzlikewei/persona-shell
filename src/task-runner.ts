@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
-import { spawn, type ChildProcess } from 'child_process';
-import { openSync, closeSync, mkdirSync, existsSync, readdirSync, readFileSync, appendFileSync } from 'fs';
+import { type ChildProcess } from 'child_process';
+import { mkdirSync, existsSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
+import { spawnPersona } from './persona-process.js';
 
 export interface TaskRunnerConfig {
   claudePath: string;
@@ -55,77 +56,26 @@ export class TaskRunner extends EventEmitter {
 
     const timeoutMs = input.timeoutMs ?? this.config.defaultTimeoutMs;
     const startedAt = Date.now();
-
-    // Build args — same plugin loading as Director (personas + skills)
     const personaDir = this.config.personaDir;
-    const personasDir = join(personaDir, 'personas');
-    const skillsDir = join(personaDir, 'skills');
 
-    const args = [
-      '--print',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--dangerously-skip-permissions',
-      '--add-dir', personaDir,
-      '--plugin-dir', personasDir,
-    ];
-
-    // Append system prompt files: soul + meta
-    const soulFile = join(personaDir, 'soul.md');
-    const metaFile = join(personaDir, 'meta.md');
-    if (existsSync(soulFile)) args.push('--append-system-prompt-file', soulFile);
-    if (existsSync(metaFile)) args.push('--append-system-prompt-file', metaFile);
-
-    // Load skill plugin subdirectories
-    try {
-      for (const d of readdirSync(skillsDir, { withFileTypes: true })) {
-        if (d.isDirectory()) {
-          args.push('--plugin-dir', join(skillsDir, d.name));
-        }
-      }
-    } catch { /* skills dir may not exist */ }
-
-    // Inject role persona definition as prompt prefix (strip YAML frontmatter)
-    let fullPrompt = input.prompt;
-    const personaFile = join(personasDir, `${input.role}.md`);
-    try {
-      if (existsSync(personaFile)) {
-        let personaDef = readFileSync(personaFile, 'utf-8');
-        // Strip YAML frontmatter (--- ... ---)
-        const fmMatch = personaDef.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
-        if (fmMatch) personaDef = fmMatch[1];
-        if (personaDef.trim()) {
-          fullPrompt = `${personaDef.trim()}\n\n---\n\n${input.prompt}`;
-        }
-      }
-    } catch { /* persona file missing is ok */ }
-
-    // Inject output path — deterministic, Shell knows where to find the result
+    // 构建 prompt：注入 resultFile 路径指令
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
     const outboxDir = join(personaDir, 'outbox', today);
     if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true });
     const resultFile = join(outboxDir, `${input.taskId}.md`);
-    fullPrompt += `\n\n[系统指令] 将输出结果保存到 ${resultFile}`;
+    const fullPrompt = `${input.prompt}\n\n[系统指令] 将输出结果保存到 ${resultFile}`;
 
-    args.push('-p', fullPrompt);
-
-    if (!existsSync(LOG_DIR)) mkdirSync(LOG_DIR, { recursive: true });
-    const stderrPath = join(LOG_DIR, `task-${input.taskId}.stderr.log`);
-    const stderrFd = openSync(stderrPath, 'a');
-
-    const child = spawn(this.config.claudePath, args, {
-      detached: true,
-      stdio: ['ignore', 'pipe', stderrFd],
-      cwd: this.config.personaDir,
+    const { child, args } = spawnPersona({
+      role: input.role,
+      personaDir,
+      claudePath: this.config.claudePath,
+      mode: 'background',
+      prompt: fullPrompt,
+      stderrPath: join(LOG_DIR, `task-${input.taskId}.stderr.log`),
     });
 
-    // Close parent's copy of stderr fd — child inherits its own copy
-    closeSync(stderrFd);
-
-    // Prevent unhandled 'error' event from crashing the Shell process
+    // 防止未处理的 error 事件导致 Shell 进程崩溃
     child.on('error', () => {});
-
-    child.unref();
 
     if (!child.pid) {
       const result: TaskResult = {

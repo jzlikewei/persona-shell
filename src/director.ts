@@ -1,12 +1,13 @@
 import { EventEmitter } from 'events';
-import { spawn, execSync } from 'child_process';
-import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, unlinkSync, openSync, appendFileSync } from 'fs';
+import { execSync } from 'child_process';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
 import { open } from 'fs/promises';
 import { join } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
 import { getState, setState, listTasks } from './task-store.js';
+import { spawnPersona } from './persona-process.js';
 
 /** Sidecar log paths — input (user→Director) and output (Director→user) */
 const DIRECTOR_LOG_DIR = join(import.meta.dirname, '..', 'logs');
@@ -493,46 +494,26 @@ export class Director extends EventEmitter {
 
   private spawnDirector(): void {
     const personaDir = this.config.persona_dir;
-    const personasDir = join(personaDir, 'personas');
-    const skillsDir = join(personaDir, 'skills');
-
-    // Collect all skill subdirectories as plugin dirs
-    const skillPluginDirs = readdirSync(skillsDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => `--plugin-dir "${join(skillsDir, d.name)}"`)
-      .join(' ');
-
     const mcpConfigPath = join(personaDir, '.mcp.json');
-    const soulFile = join(personaDir, 'soul.md');
-    const metaFile = join(personaDir, 'meta.md');
-    const directorPersonaFile = join(personasDir, 'director.md');
 
-    let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --effort max --mcp-config "${mcpConfigPath}" --add-dir "${personaDir}" --plugin-dir "${personasDir}" ${skillPluginDirs}`;
-
-    // Append system prompt files: soul + meta + director persona
-    if (existsSync(soulFile)) cmd += ` --append-system-prompt-file "${soulFile}"`;
-    if (existsSync(metaFile)) cmd += ` --append-system-prompt-file "${metaFile}"`;
-    if (existsSync(directorPersonaFile)) cmd += ` --append-system-prompt-file "${directorPersonaFile}"`;
-
-    // Resume previous session if available
     const savedSession = this.readSession();
     if (savedSession) {
-      cmd += ` --resume ${savedSession}`;
       console.log(`[director] Resuming session: ${savedSession}`);
     } else {
       console.log('[director] Starting new session');
     }
 
-    const stderrPath = join(this.config.pipe_dir, 'director-stderr.log');
-    const stderrFd = openSync(stderrPath, 'a');
-
-    const child = spawn('sh', ['-c', `${cmd} < "${this.pipeIn}" > "${this.pipeOut}"`], {
-      detached: true,
-      stdio: ['ignore', 'ignore', stderrFd],
-      cwd: personaDir,
+    const { child } = spawnPersona({
+      role: 'director',
+      personaDir,
+      claudePath: this.config.claude_path,
+      mode: 'foreground',
+      mcpConfigPath,
+      sessionId: savedSession ?? undefined,
+      pipeIn: this.pipeIn,
+      pipeOut: this.pipeOut,
+      stderrPath: join(this.config.pipe_dir, 'director-stderr.log'),
     });
-
-    child.unref();
 
     if (child.pid) {
       writeFileSync(this.config.pid_file, String(child.pid));
