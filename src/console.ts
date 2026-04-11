@@ -1,5 +1,6 @@
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, existsSync, statSync } from 'fs';
+import { join, resolve, extname } from 'path';
+import { homedir } from 'os';
 import type { Director } from './director.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
@@ -152,6 +153,81 @@ function parseSessions(): SessionInfo[] {
   })).sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
 }
 
+/** Parsed log entry from task stdout */
+interface TaskLogEntry {
+  line: number;
+  type: 'system' | 'text' | 'tool_use' | 'tool_result' | 'result' | 'thinking';
+  content: string;
+  meta?: Record<string, unknown>;
+}
+
+/** Parse a task's stdout log into structured entries for the web console */
+function parseTaskLog(taskId: string, afterLine: number): { entries: TaskLogEntry[]; totalLines: number } {
+  const logPath = join(LOG_DIR, `task-${taskId}.stdout.log`);
+  if (!existsSync(logPath)) return { entries: [], totalLines: 0 };
+
+  let raw: string;
+  try { raw = readFileSync(logPath, 'utf-8'); } catch { return { entries: [], totalLines: 0 }; }
+
+  const allLines = raw.split('\n');
+  const entries: TaskLogEntry[] = [];
+
+  for (let i = afterLine; i < allLines.length; i++) {
+    const lineText = allLines[i].trim();
+    if (!lineText) continue;
+
+    let evt: any;
+    try { evt = JSON.parse(lineText); } catch { continue; }
+
+    if (evt.type === 'system') {
+      if (evt.subtype === 'init') {
+        entries.push({ line: i, type: 'system', content: `Session: ${evt.session_id?.slice(0, 12) ?? '?'}`, meta: { session_id: evt.session_id } });
+      }
+      continue;
+    }
+
+    if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+      for (const block of evt.message.content) {
+        if (block.type === 'text' && block.text) {
+          entries.push({ line: i, type: 'text', content: block.text });
+        } else if (block.type === 'thinking' && block.thinking) {
+          entries.push({ line: i, type: 'thinking', content: block.thinking });
+        } else if (block.type === 'tool_use') {
+          const input = block.input as Record<string, unknown> | undefined;
+          const trimmed: Record<string, unknown> = {};
+          if (input) {
+            for (const [k, v] of Object.entries(input)) {
+              trimmed[k] = typeof v === 'string' && v.length > 500 ? v.slice(0, 500) + '…' : v;
+            }
+          }
+          entries.push({ line: i, type: 'tool_use', content: block.name ?? 'unknown', meta: { id: block.id, input: trimmed } });
+        }
+      }
+      continue;
+    }
+
+    if (evt.type === 'user' && Array.isArray(evt.message?.content)) {
+      for (const block of evt.message.content) {
+        if (block.type === 'tool_result') {
+          const rc = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+          entries.push({ line: i, type: 'tool_result', content: rc.length > 500 ? rc.slice(0, 500) + '…' : rc, meta: { is_error: !!block.is_error } });
+        }
+      }
+      continue;
+    }
+
+    if (evt.type === 'result') {
+      entries.push({
+        line: i, type: 'result',
+        content: evt.subtype === 'success' ? 'Completed' : (evt.subtype ?? 'done'),
+        meta: { duration_ms: evt.duration_ms, cost_usd: evt.total_cost_usd, num_turns: evt.num_turns },
+      });
+    }
+  }
+
+  return { entries, totalLines: allLines.length };
+}
+
 // Shell 启动时间，用于计算 uptime
 const startedAt = Date.now();
 
@@ -174,7 +250,12 @@ export function startConsole(
   queue: MessageQueue,
   config: Config,
   taskRunner?: TaskRunner,
-  feishu?: { getConnectionStatus: () => 'connected' | 'disconnected' },
+  feishu?: {
+    getConnectionStatus: () => 'connected' | 'disconnected';
+    getLastChatId: () => string | null;
+    uploadAndSendImage: (chatId: string, filePath: string) => Promise<string | null>;
+    uploadAndReplyImage: (messageId: string, filePath: string) => Promise<void>;
+  },
   metrics?: MetricsCollector,
 ): void {
   if (!config.console.enabled) {
@@ -368,6 +449,57 @@ export function startConsole(
             }
           }
 
+          // POST /api/send-attachment — send image file to user via feishu
+          if (url.pathname === '/api/send-attachment' && req.method === 'POST') {
+            const body = await req.json() as { path: string };
+            if (!body.path) return Response.json({ error: 'path is required' }, { status: 400 });
+
+            // Path security: only allow /tmp/ and ~/.persona/outbox/
+            const resolved = resolve(body.path);
+            const allowedPrefixes = ['/tmp/', resolve(homedir(), '.persona/outbox/')];
+            if (!allowedPrefixes.some(prefix => resolved.startsWith(prefix))) {
+              return Response.json({ error: `Path not allowed: ${resolved}` }, { status: 403 });
+            }
+
+            // File existence and size check
+            if (!existsSync(resolved)) {
+              return Response.json({ error: `File not found: ${resolved}` }, { status: 404 });
+            }
+            const stat = statSync(resolved);
+            if (stat.size === 0) {
+              return Response.json({ error: 'File is empty' }, { status: 400 });
+            }
+
+            // Only support image formats for now
+            const ext = extname(resolved).toLowerCase();
+            const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+            if (!imageExts.has(ext)) {
+              return Response.json({ error: `Unsupported file type: ${ext}. Only images are supported.` }, { status: 400 });
+            }
+
+            if (!feishu) {
+              return Response.json({ error: 'Feishu client not available' }, { status: 503 });
+            }
+
+            try {
+              // Determine reply vs send: check if queue has a pending item
+              const pendingItem = queue.peek();
+              if (pendingItem) {
+                await feishu.uploadAndReplyImage(pendingItem.messageId, resolved);
+              } else {
+                const lastChatId = feishu.getLastChatId();
+                if (!lastChatId) {
+                  return Response.json({ error: 'No active chat to send to' }, { status: 400 });
+                }
+                await feishu.uploadAndSendImage(lastChatId, resolved);
+              }
+              return Response.json({ success: true });
+            } catch (err) {
+              console.error('[console] send-attachment failed:', err);
+              return Response.json({ error: String(err) }, { status: 500 });
+            }
+          }
+
           if (url.pathname === '/api/flush' && req.method === 'POST') {
             const result = await handleCommand('flush');
             return Response.json(result);
@@ -428,6 +560,14 @@ export function startConsole(
             const ok = cancelTaskInDb(taskId);
             if (ok && taskRunner) taskRunner.cancelTask(taskId);
             return Response.json({ ok, taskId });
+          }
+          if (url.pathname.startsWith('/api/tasks/') && url.pathname.endsWith('/logs') && req.method === 'GET') {
+            const taskId = url.pathname.slice('/api/tasks/'.length, -'/logs'.length);
+            const task = getTask(taskId);
+            if (!task) return Response.json({ error: 'task not found' }, { status: 404 });
+            const afterLine = Number(url.searchParams.get('after') ?? 0);
+            const logData = parseTaskLog(taskId, afterLine);
+            return Response.json(logData);
           }
           if (url.pathname.startsWith('/api/tasks/') && req.method === 'GET') {
             const taskId = url.pathname.slice('/api/tasks/'.length);

@@ -622,6 +622,172 @@
       font-size: 13px;
     }
 
+    /* ── Task Detail Split View ── */
+    #detail-content.task-split-mode {
+      overflow: hidden;
+      padding: 0;
+    }
+    .task-detail-split {
+      display: flex;
+      height: 100%;
+    }
+    .td-log-panel {
+      flex: 6;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      border-right: 1px solid var(--surface0);
+    }
+    .td-result-panel {
+      flex: 4;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .td-panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--surface0);
+      flex-shrink: 0;
+    }
+    .td-log-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 14px;
+      min-height: 0;
+    }
+    .td-log-scroll::-webkit-scrollbar { width: 5px; }
+    .td-log-scroll::-webkit-scrollbar-track { background: transparent; }
+    .td-log-scroll::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+    .td-result-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      min-height: 0;
+    }
+    .td-result-scroll::-webkit-scrollbar { width: 5px; }
+    .td-result-scroll::-webkit-scrollbar-track { background: transparent; }
+    .td-result-scroll::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+
+    /* Log entry types */
+    .log-entry { margin-bottom: 2px; }
+    .log-system {
+      color: var(--overlay0);
+      font-size: 11px;
+      font-family: var(--font-mono);
+      padding: 4px 0;
+    }
+    .log-text {
+      color: var(--text);
+      padding: 4px 0;
+      line-height: 1.6;
+      font-size: 13px;
+    }
+    .log-text p { margin: 4px 0; }
+    .log-text code {
+      background: var(--surface1);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .log-text pre {
+      background: var(--crust);
+      padding: 8px 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin: 4px 0;
+    }
+    .log-text pre code { background: none; padding: 0; }
+    .log-text a { color: var(--blue); }
+    .log-thinking {
+      cursor: pointer;
+      padding: 2px 0;
+    }
+    .log-thinking .think-label {
+      color: var(--overlay0);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .log-thinking .think-content {
+      display: none;
+      margin-top: 4px;
+      padding: 6px 10px;
+      background: var(--surface0);
+      border-radius: var(--radius-sm);
+      font-style: italic;
+      color: var(--overlay1);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-height: 300px;
+      overflow-y: auto;
+      font-size: 12px;
+    }
+    .log-thinking.expanded .think-content { display: block; }
+    .log-tool {
+      background: var(--surface0);
+      border-radius: var(--radius-sm);
+      padding: 6px 10px;
+      margin: 4px 0;
+      cursor: pointer;
+    }
+    .log-tool .tool-header {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--mauve);
+    }
+    .log-tool .tool-detail {
+      display: none;
+      margin-top: 6px;
+      padding: 6px 8px;
+      background: var(--crust);
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--subtext0);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .log-tool.expanded .tool-detail { display: block; }
+    .log-tool-result {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--overlay1);
+      padding: 2px 10px;
+      margin: 0 0 4px;
+      max-height: 60px;
+      overflow: hidden;
+      cursor: pointer;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .log-tool-result.expanded { max-height: none; }
+    .log-tool-result.error { color: var(--red); }
+    .log-result {
+      background: rgba(166,227,161,.08);
+      border: 1px solid rgba(166,227,161,.15);
+      border-radius: var(--radius-sm);
+      padding: 8px 12px;
+      margin: 8px 0;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--green);
+    }
+    .td-result-running {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 40px 0;
+      color: var(--overlay1);
+      font-size: 13px;
+    }
+
     /* ── Toast ── */
     #toast {
       position: fixed;
@@ -885,6 +1051,9 @@
   var sessions = []; // cached session list
   var taskDetail = null; // cached task detail
   var taskOutput = null; // cached task output
+  var taskLogs = [];
+  var taskLogTotalLines = 0;
+  var taskLogPollTimer = null;
 
   // xterm.js terminal instance (lazy-initialized)
   var term = null;
@@ -1125,7 +1294,6 @@
       taskDetail = d;
       taskOutput = null;
       renderTaskView();
-      // Try loading output
       if (d.result_file) {
         fetch('/api/tasks/' + taskId + '/output').then(function(r) {
           if (r.ok) return r.json();
@@ -1133,7 +1301,7 @@
         }).then(function(o) {
           if (o && o.content) {
             taskOutput = o.content;
-            renderTaskView();
+            renderTaskResultPanel();
           }
         }).catch(function() {});
       }
@@ -1172,9 +1340,11 @@
 
   // ── View switching ──
   window.selectSession = function (sessionId) {
+    stopLogPolling();
     viewMode = 'session';
     selectedSessionId = sessionId;
     selectedTaskId = null;
+    $('detail-content').classList.remove('task-split-mode');
     renderSessionList();
     renderTaskList();
     $('dh-title').textContent = 'Session';
@@ -1188,21 +1358,28 @@
   };
 
   window.selectTask = function (taskId) {
+    stopLogPolling();
     viewMode = 'task';
     selectedTaskId = taskId;
     selectedSessionId = null;
+    taskDetail = null;
+    taskOutput = null;
+    taskLogs = [];
+    taskLogTotalLines = 0;
     hideTerminal();
     renderSessionList();
     renderTaskList();
-    $('dh-title').textContent = 'Task';
+    $('dh-title').innerHTML = '<span style="cursor:pointer;color:var(--blue);margin-right:8px" onclick="selectDashboard()">\u2190</span>Task';
     $('dh-sub').textContent = taskId;
     loadTaskDetail(taskId);
   };
 
   window.selectDashboard = function () {
+    stopLogPolling();
     viewMode = 'dashboard';
     selectedSessionId = null;
     selectedTaskId = null;
+    $('detail-content').classList.remove('task-split-mode');
     hideTerminal();
     renderSessionList();
     renderTaskList();
@@ -1466,27 +1643,64 @@
     }
   }
 
-  // ── Render: Task Detail View ──
+  // ── Render: Task Detail View (Split: Logs + Result) ──
   function renderTaskView() {
     var container = $('detail-content');
+    container.classList.add('task-split-mode');
+
     if (!taskDetail) {
-      container.innerHTML = '<div class="empty">Loading task...</div>';
+      container.innerHTML = '<div class="empty" style="padding:40px">Loading task...</div>';
       return;
     }
+
     var t = taskDetail;
-    var statusColor = {
-      running: 'var(--green)', dispatched: 'var(--green)',
-      completed: 'var(--blue)', failed: 'var(--red)', cancelled: 'var(--subtext0)'
-    };
-    var sc = statusColor[t.status] || 'var(--text)';
+    var html = '<div class="task-detail-split">';
 
-    var html = '<div class="task-detail">';
+    // Left panel — logs
+    html += '<div class="td-log-panel">';
+    html += '<div class="td-panel-header">';
+    html += '<div class="td-section-title" style="margin:0">Logs</div>';
+    html += '<div style="display:flex;align-items:center;gap:8px">';
+    if (t.status === 'running' || t.status === 'dispatched') {
+      html += '<div class="running-dot"></div><span style="font-size:11px;color:var(--green)">Live</span>';
+    }
+    html += '<span style="font-size:11px;color:var(--overlay0);font-family:var(--font-mono)">' + esc(t.role) + '</span>';
+    html += '</div></div>';
+    html += '<div class="td-log-scroll" id="td-log-scroll"><div id="td-log-entries"></div></div>';
+    html += '</div>';
 
-    // Metadata grid
-    html += '<div class="td-meta">';
+    // Right panel — result + meta
+    html += '<div class="td-result-panel">';
+    html += '<div class="td-panel-header">';
+    html += '<div class="td-section-title" style="margin:0">Result</div>';
+    html += '<span class="badge ' + esc(t.status) + '">' + esc(t.status) + '</span>';
+    html += '</div>';
+    html += '<div class="td-result-scroll" id="td-result-content"></div>';
+    html += '</div>';
+
+    html += '</div>';
+    container.innerHTML = html;
+
+    renderTaskResultPanel();
+
+    taskLogs = [];
+    taskLogTotalLines = 0;
+    loadTaskLogs(t.id, 0);
+
+    if (t.status === 'running' || t.status === 'dispatched') {
+      startLogPolling(t.id);
+    }
+  }
+
+  function renderTaskResultPanel() {
+    var el = $('td-result-content');
+    if (!el || !taskDetail) return;
+
+    var t = taskDetail;
+    var html = '';
+
+    html += '<div class="td-meta" style="margin-bottom:12px">';
     html += '<div class="td-field"><div class="td-field-label">Task ID</div><div class="td-field-value">' + esc(t.id) + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Role</div><div class="td-field-value" style="color:var(--mauve)">' + esc(t.role) + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Status</div><div class="td-field-value" style="color:' + sc + '">' + esc(t.status) + '</div></div>';
     html += '<div class="td-field"><div class="td-field-label">Created</div><div class="td-field-value">' + esc(t.created_at || '--') + '</div></div>';
     if (t.duration_ms != null) {
       html += '<div class="td-field"><div class="td-field-label">Duration</div><div class="td-field-value">' + fmtDur(t.duration_ms) + '</div></div>';
@@ -1496,35 +1710,149 @@
     }
     html += '</div>';
 
-    // Description
     if (t.description) {
-      html += '<div class="td-section"><div class="td-section-title">Description</div>' +
-        '<div style="font-size:13px;color:var(--subtext1)">' + esc(t.description) + '</div></div>';
+      html += '<div style="font-size:13px;color:var(--subtext1);margin-bottom:12px">' + esc(t.description) + '</div>';
     }
 
-    // Prompt
-    if (t.prompt) {
-      html += '<div class="td-section"><div class="td-section-title">Input (Prompt)</div>' +
-        '<div class="td-prompt">' + esc(t.prompt) + '</div></div>';
+    if (t.status === 'running' || t.status === 'dispatched') {
+      html += '<div class="td-result-running"><div class="spinner"></div><span>Running...</span></div>';
     }
 
-    // Error
     if (t.error) {
-      html += '<div class="td-section"><div class="td-section-title">Error</div>' +
-        '<div class="td-error">' + esc(t.error) + '</div></div>';
+      html += '<div class="td-error" style="margin-bottom:12px">' + esc(t.error) + '</div>';
     }
 
-    // Output
     if (taskOutput) {
-      html += '<div class="td-section"><div class="td-section-title">Output</div>' +
-        '<div class="td-output"><div class="md-content">' + renderMd(taskOutput) + '</div></div></div>';
-    } else if (t.result_file) {
-      html += '<div class="td-section"><div class="td-section-title">Output</div>' +
-        '<div class="empty">Loading output...</div></div>';
+      html += '<div class="td-output"><div class="md-content">' + renderMd(taskOutput) + '</div></div>';
+    } else if (t.result_file && t.status === 'completed') {
+      html += '<div class="empty">Loading output...</div>';
     }
 
-    html += '</div>';
-    container.innerHTML = html;
+    el.innerHTML = html;
+  }
+
+  function loadTaskLogs(taskId, after) {
+    var url = '/api/tasks/' + taskId + '/logs';
+    if (after > 0) url += '?after=' + after;
+    fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+      if (!d) return;
+      if (d.entries && d.entries.length > 0) {
+        taskLogs = taskLogs.concat(d.entries);
+        taskLogTotalLines = d.totalLines;
+        renderLogEntries(d.entries, after > 0);
+      } else if (d.totalLines != null) {
+        taskLogTotalLines = d.totalLines;
+      }
+    }).catch(function() {});
+  }
+
+  function renderLogEntries(entries, append) {
+    var el = $('td-log-entries');
+    if (!el) return;
+
+    if (!append) el.innerHTML = '';
+
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      var div = document.createElement('div');
+      div.className = 'log-entry';
+
+      switch (e.type) {
+        case 'system':
+          div.className += ' log-system';
+          div.textContent = '\u25cf ' + e.content;
+          break;
+        case 'text':
+          div.className += ' log-text';
+          div.innerHTML = renderMd(e.content);
+          break;
+        case 'thinking':
+          div.className += ' log-thinking';
+          div.innerHTML = '<span class="think-label">\u25b8 Thinking</span>' +
+            '<div class="think-content">' + esc(e.content) + '</div>';
+          div.onclick = function() {
+            this.classList.toggle('expanded');
+            var lbl = this.querySelector('.think-label');
+            lbl.textContent = this.classList.contains('expanded') ? '\u25be Thinking' : '\u25b8 Thinking';
+          };
+          break;
+        case 'tool_use':
+          div.className += ' log-tool';
+          var detail = e.meta && e.meta.input ? JSON.stringify(e.meta.input, null, 2) : '';
+          div.innerHTML = '<div class="tool-header">\u25b6 ' + esc(e.content) + '</div>' +
+            (detail ? '<div class="tool-detail">' + esc(detail) + '</div>' : '');
+          div.onclick = function() { this.classList.toggle('expanded'); };
+          break;
+        case 'tool_result':
+          div.className += ' log-tool-result' + (e.meta && e.meta.is_error ? ' error' : '');
+          div.textContent = (e.meta && e.meta.is_error ? '\u2717 ' : '\u2713 ') + e.content;
+          div.onclick = function() { this.classList.toggle('expanded'); };
+          break;
+        case 'result':
+          div.className += ' log-result';
+          var parts = [e.content];
+          if (e.meta) {
+            if (e.meta.duration_ms) parts.push(fmtDur(e.meta.duration_ms));
+            if (e.meta.cost_usd) parts.push(fmtCost(e.meta.cost_usd));
+            if (e.meta.num_turns) parts.push(e.meta.num_turns + ' turns');
+          }
+          div.textContent = parts.join(' \u00b7 ');
+          break;
+      }
+
+      frag.appendChild(div);
+    }
+    el.appendChild(frag);
+
+    // Auto-scroll to bottom if near bottom
+    var scroll = $('td-log-scroll');
+    if (scroll) {
+      var nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100;
+      if (nearBottom || !append) {
+        scroll.scrollTop = scroll.scrollHeight;
+      }
+    }
+  }
+
+  function startLogPolling(taskId) {
+    stopLogPolling();
+    taskLogPollTimer = setInterval(function() {
+      if (viewMode !== 'task' || selectedTaskId !== taskId) {
+        stopLogPolling();
+        return;
+      }
+      loadTaskLogs(taskId, taskLogTotalLines);
+      fetch('/api/tasks/' + taskId).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d || !taskDetail) return;
+        var statusChanged = d.status !== taskDetail.status;
+        taskDetail = d;
+        if (statusChanged) {
+          renderTaskResultPanel();
+          if (d.status === 'completed' || d.status === 'failed') {
+            stopLogPolling();
+            if (d.result_file) {
+              fetch('/api/tasks/' + taskId + '/output').then(function(r) {
+                if (r.ok) return r.json();
+                return null;
+              }).then(function(o) {
+                if (o && o.content) {
+                  taskOutput = o.content;
+                  renderTaskResultPanel();
+                }
+              }).catch(function() {});
+            }
+          }
+        }
+      }).catch(function() {});
+    }, 2000);
+  }
+
+  function stopLogPolling() {
+    if (taskLogPollTimer) {
+      clearInterval(taskLogPollTimer);
+      taskLogPollTimer = null;
+    }
   }
 
   // ── Elapsed timer ──
