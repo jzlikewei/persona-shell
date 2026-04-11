@@ -36,6 +36,7 @@ export class Director extends EventEmitter {
   private pendingCount = 0;
   private systemReplyQueue: string[] = [];
   private writingDailyReport = false;
+  private bootstrapping = false;
   /** The date for which a daily report was last successfully requested (persisted) */
   private dailyReportDate: string = '';
   private flushCheckpointResolve: (() => void) | null = null;
@@ -325,6 +326,18 @@ export class Director extends EventEmitter {
     });
   }
 
+  /** Send bootstrap message to initialize session and load context.
+   *  Safe to call on every startup — response is absorbed, not emitted to users. */
+  async bootstrap(): Promise<void> {
+    if (!this.writeHandle || this.flushing) return;
+    this.bootstrapping = true;
+    this.pendingCount++;
+    await this.writeRaw(
+      '[系统] 新 session 已启动。请读取 daily/state.md 恢复工作上下文，了解当前待处理事项。'
+    );
+    console.log('[director] Bootstrap message sent');
+  }
+
   async send(message: string): Promise<void> {
     if (!this.writeHandle) {
       throw new Error('Director not started');
@@ -439,15 +452,22 @@ export class Director extends EventEmitter {
   }
 
   /** Check if daily report is needed for yesterday. Safe to call from timer.
+   *  Triggers at or after 03:00 Asia/Shanghai. If 03:00 is missed (e.g. machine off),
+   *  triggers on the next heartbeat after boot.
    *  Uses persisted dailyReportDate to survive restarts. */
   checkDailyReport(): void {
     if (this.flushing || this.writingDailyReport) return;
     if (!this.writeHandle) return; // Director not connected
 
-    const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    const now = new Date();
+    const today = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
 
     // Already sent daily report request for today (i.e., yesterday's report)
     if (this.dailyReportDate === today) return;
+
+    // Only trigger at or after 03:00 Asia/Shanghai
+    const shanghaiHour = parseInt(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false }), 10);
+    if (shanghaiHour < 3) return;
 
     // On first run of the day (or after restart), compute yesterday
     const yesterday = this.getYesterday();
@@ -664,6 +684,10 @@ export class Director extends EventEmitter {
                 // Late response after flush timeout — discard silently
                 console.log(`[director] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
                 this.discardNextResponse = false;
+              } else if (this.bootstrapping) {
+                // Startup bootstrap response — absorb, don't emit to users
+                console.log(`[director] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
+                this.bootstrapping = false;
               } else if (this.systemReplyQueue.length > 0) {
                 // System message response (task notification) — emit with feishu messageId for reply
                 const replyTo = this.systemReplyQueue.shift()!;

@@ -5,7 +5,7 @@ import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
 import { Scheduler } from './scheduler.js';
-import { updateTask, listTasks, createTask, getTask, getState, deleteState } from './task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob } from './task-store.js';
 import { writeFileSync } from 'fs';
 import { join } from 'path';
 
@@ -78,6 +78,11 @@ async function main() {
 
   // Start director process
   await director.start();
+
+  // Bootstrap: send initial message to trigger session creation and load context.
+  // Claude CLI in stream-json mode doesn't create a session until it receives input.
+  // Without this, Director sits idle with no session after restart.
+  director.bootstrap();
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
@@ -159,23 +164,29 @@ async function main() {
   // 启动 Web 管理控制台（含 Task API）
   startConsole(director, queue, config, taskRunner, feishu, metrics);
 
-  // 7.4: Scheduler — setInterval-driven task automation
+  // 7.4: Scheduler — interval-driven cron job automation
   const scheduler = new Scheduler(
     config.scheduler,
-    [], // jobs 暂时为空，后续从 config.yaml 读取
-    async (job) => {
-      const task = createTask({
-        type: 'cron',
-        role: job.role,
-        description: job.description,
-        prompt: job.prompt,
-      });
-      taskRunner.runTask({ taskId: task.id, role: task.role, prompt: task.prompt });
-      return task.id;
-    },
-    (role, type) => {
-      const active = listTasks({ role });
-      return active.some((t) => t.type === type && (t.status === 'running' || t.status === 'dispatched'));
+    {
+      listEnabledJobs: () => listCronJobs({ enabled: true }),
+      executeJob: async (job) => {
+        const task = createTask({
+          type: 'cron',
+          role: job.role,
+          description: job.description,
+          prompt: job.prompt,
+          extra: { cronJobId: job.id },
+        });
+        taskRunner.runTask({ taskId: task.id, role: task.role, prompt: task.prompt });
+        return task.id;
+      },
+      isOverlapping: (role) => {
+        const active = listTasks({ role });
+        return active.some((t) => t.type === 'cron' && (t.status === 'running' || t.status === 'dispatched'));
+      },
+      markJobRun: (jobId) => {
+        updateCronJob(jobId, { last_run_at: new Date().toISOString() });
+      },
     },
   );
   scheduler.start();
