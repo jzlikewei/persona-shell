@@ -364,7 +364,12 @@ export class Director extends EventEmitter {
     if (!this.writeHandle || this.flushing) return;
     this.systemMessagePending++;
     this.pendingCount++;
-    await this.writeRaw(msg);
+    try {
+      await this.writeRaw(msg);
+    } catch {
+      this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+      this.decrementPending();
+    }
   }
 
   private async writeRaw(content: string): Promise<void> {
