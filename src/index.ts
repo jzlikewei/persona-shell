@@ -70,7 +70,10 @@ async function main() {
       'persona-tasks': {
         command: 'bun',
         args: ['run', join(import.meta.dirname, 'task-mcp-server.ts')],
-        env: { SHELL_PORT: String(config.console.port) },
+        env: {
+          SHELL_PORT: String(config.console.port),
+          ...(config.console.token ? { SHELL_TOKEN: config.console.token } : {}),
+        },
       },
     },
   };
@@ -309,10 +312,14 @@ async function main() {
       return;
     }
 
-    // /restart — restart Shell process (launchd will respawn)
+    // /restart — kill Director + restart Shell (launchd will respawn)
     if (text.trim() === '/restart') {
       await feishu.reply(messageId, 'Shell 正在重启...');
-      console.log('[shell] /restart: exiting for launchd respawn');
+      console.log('[shell] /restart: killing Director and exiting for launchd respawn');
+      const pid = director.getStatus().pid;
+      if (pid) {
+        try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
+      }
       setTimeout(() => process.exit(0), 500);
       return;
     }

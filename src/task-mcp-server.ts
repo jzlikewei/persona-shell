@@ -1,6 +1,7 @@
 /** Minimal MCP server (stdio transport) for task system — proxies to Shell HTTP API */
 
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
+const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
 const TOOLS = [
@@ -117,9 +118,12 @@ const TOOLS = [
 ];
 
 async function callShell(method: string, path: string, body?: unknown): Promise<unknown> {
+  const headers: Record<string, string> = {};
+  if (body) headers['Content-Type'] = 'application/json';
+  if (SHELL_TOKEN) headers['Authorization'] = `Bearer ${SHELL_TOKEN}`;
   const res = await fetch(`${BASE}${path}`, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {

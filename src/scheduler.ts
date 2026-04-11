@@ -131,10 +131,11 @@ export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
     const targetHour = parseInt(dailyMatch[1], 10);
     const targetMinute = parseInt(dailyMatch[2], 10);
 
-    // Get current time in Asia/Shanghai
-    const shanghaiNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-    const currentHour = shanghaiNow.getHours();
-    const currentMinute = shanghaiNow.getMinutes();
+    // Get current time in Asia/Shanghai (用 Intl.DateTimeFormat 安全提取，避免 re-parse toLocaleString)
+    const hourFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false });
+    const minuteFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', minute: 'numeric' });
+    const currentHour = parseInt(hourFmt.format(now), 10);
+    const currentMinute = parseInt(minuteFmt.format(now), 10);
 
     // Haven't reached target time yet today
     if (currentHour < targetHour || (currentHour === targetHour && currentMinute < targetMinute)) {

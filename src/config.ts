@@ -20,6 +20,7 @@ export interface Config {
   console: {
     enabled: boolean;
     port: number;
+    token?: string;
   };
   task: {
     default_timeout_ms: number;
@@ -68,6 +69,7 @@ export function loadConfig(path?: string): Config {
     console: {
       enabled: con.enabled !== false,
       port: Number(con.port ?? 3000),
+      token: con.token ?? undefined,
     },
     task: {
       default_timeout_ms: Number(yaml.task?.default_timeout_minutes ?? 10) * 60_000,

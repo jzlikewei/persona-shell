@@ -143,6 +143,30 @@ const MAX_DEDUP_SIZE = 200;
 const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
 const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则自杀重启
 
+const RETRY_DELAYS = [1000, 3000];
+
+/** 带重试的异步调用，失败后按 delays 间隔重试 */
+async function withRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  delays: number[] = RETRY_DELAYS,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < delays.length) {
+        console.warn(`[feishu] ${label} attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms...`, err);
+        await new Promise((r) => setTimeout(r, delays[attempt]));
+      }
+    }
+  }
+  console.error(`[feishu] ${label} failed after all retries:`, lastErr);
+  throw lastErr;
+}
+
 export function createFeishuClient(config: Config['feishu']) {
   const client = new Lark.Client({
     appId: config.app_id,
@@ -302,33 +326,24 @@ export function createFeishuClient(config: Config['feishu']) {
     },
 
     async reply(messageId: string, text: string) {
-      const delays = [1000, 3000];
-      let lastErr: unknown;
-      for (let attempt = 0; attempt <= delays.length; attempt++) {
-        try {
-          await client.im.v1.message.reply({
-            path: { message_id: messageId },
-            data: { content: JSON.stringify({ text }), msg_type: 'text' },
-          });
-          lastActiveTime = Date.now();
-          return;
-        } catch (err) {
-          lastErr = err;
-          if (attempt < delays.length) {
-            console.warn(`[feishu] reply attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms...`, err);
-            await new Promise((r) => setTimeout(r, delays[attempt]));
-          }
-        }
-      }
-      console.error('[feishu] reply failed after all retries:', lastErr);
+      await withRetry('reply', async () => {
+        await client.im.v1.message.reply({
+          path: { message_id: messageId },
+          data: { content: JSON.stringify({ text }), msg_type: 'text' },
+        });
+        lastActiveTime = Date.now();
+      }).catch(() => { /* withRetry already logged */ });
     },
 
     async sendMessage(chatId: string, text: string): Promise<string | null> {
-      const res = await client.im.v1.message.create({
-        params: { receive_id_type: 'chat_id' },
-        data: { receive_id: chatId, content: JSON.stringify({ text }), msg_type: 'text' },
-      });
-      lastActiveTime = Date.now();
+      const res = await withRetry('sendMessage', async () => {
+        const r = await client.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: { receive_id: chatId, content: JSON.stringify({ text }), msg_type: 'text' },
+        });
+        lastActiveTime = Date.now();
+        return r;
+      }).catch(() => null);
       return res?.data?.message_id ?? null;
     },
 
@@ -378,29 +393,16 @@ export function createFeishuClient(config: Config['feishu']) {
     },
 
     async replyImage(messageId: string, imageKey: string): Promise<void> {
-      const delays = [1000, 3000];
-      let lastErr: unknown;
-      for (let attempt = 0; attempt <= delays.length; attempt++) {
-        try {
-          await client.im.v1.message.reply({
-            path: { message_id: messageId },
-            data: {
-              content: JSON.stringify({ image_key: imageKey }),
-              msg_type: 'image',
-            },
-          });
-          lastActiveTime = Date.now();
-          return;
-        } catch (err) {
-          lastErr = err;
-          if (attempt < delays.length) {
-            console.warn(`[feishu] replyImage attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms...`, err);
-            await new Promise((r) => setTimeout(r, delays[attempt]));
-          }
-        }
-      }
-      console.error('[feishu] replyImage failed after all retries:', lastErr);
-      throw lastErr;
+      await withRetry('replyImage', async () => {
+        await client.im.v1.message.reply({
+          path: { message_id: messageId },
+          data: {
+            content: JSON.stringify({ image_key: imageKey }),
+            msg_type: 'image',
+          },
+        });
+        lastActiveTime = Date.now();
+      });
     },
 
     async uploadAndSendImage(chatId: string, filePath: string): Promise<string | null> {
@@ -471,29 +473,16 @@ export function createFeishuClient(config: Config['feishu']) {
     },
 
     async replyFile(messageId: string, fileKey: string, fileName: string): Promise<void> {
-      const delays = [1000, 3000];
-      let lastErr: unknown;
-      for (let attempt = 0; attempt <= delays.length; attempt++) {
-        try {
-          await client.im.v1.message.reply({
-            path: { message_id: messageId },
-            data: {
-              content: JSON.stringify({ file_key: fileKey, file_name: fileName }),
-              msg_type: 'file',
-            },
-          });
-          lastActiveTime = Date.now();
-          return;
-        } catch (err) {
-          lastErr = err;
-          if (attempt < delays.length) {
-            console.warn(`[feishu] replyFile attempt ${attempt + 1} failed, retrying in ${delays[attempt]}ms...`, err);
-            await new Promise((r) => setTimeout(r, delays[attempt]));
-          }
-        }
-      }
-      console.error('[feishu] replyFile failed after all retries:', lastErr);
-      throw lastErr;
+      await withRetry('replyFile', async () => {
+        await client.im.v1.message.reply({
+          path: { message_id: messageId },
+          data: {
+            content: JSON.stringify({ file_key: fileKey, file_name: fileName }),
+            msg_type: 'file',
+          },
+        });
+        lastActiveTime = Date.now();
+      });
     },
 
     async uploadAndSendFile(chatId: string, filePath: string): Promise<string | null> {

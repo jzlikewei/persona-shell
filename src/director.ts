@@ -398,7 +398,7 @@ export class Director extends EventEmitter {
     try {
       await this.writeRaw(msg);
     } catch {
-      this.pendingCount = Math.max(0, this.pendingCount - 1);
+      this.decrementPending();
       if (replyToMessageId) this.systemReplyQueue.pop();
     }
   }
@@ -423,6 +423,15 @@ export class Director extends EventEmitter {
         resolve(true);
       };
     });
+  }
+
+  /** 安全递减 pendingCount，负数时记录错误而非静默钳位 */
+  private decrementPending(): void {
+    this.pendingCount--;
+    if (this.pendingCount < 0) {
+      console.error(`[director] BUG: pendingCount went negative (${this.pendingCount}), clamping to 0`);
+      this.pendingCount = 0;
+    }
   }
 
   private timeout(ms: number): Promise<void> {
@@ -612,7 +621,7 @@ export class Director extends EventEmitter {
             this.currentMessagePreview = null;
             this.currentMessageStartedAt = null;
 
-            this.pendingCount = Math.max(0, this.pendingCount - 1);
+            this.decrementPending();
 
             if (currentResponse) {
               if (this.flushing && this.flushCheckpointResolve) {

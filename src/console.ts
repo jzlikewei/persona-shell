@@ -1,6 +1,30 @@
-import { readFileSync, existsSync, statSync } from 'fs';
+import { readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, resolve, extname } from 'path';
 import { homedir } from 'os';
+
+/** 从文件尾部读取最多 maxBytes 字节，返回完整行（丢弃首行截断部分） */
+function readTail(filePath: string, maxBytes: number): string {
+  if (!existsSync(filePath)) return '';
+  const stat = statSync(filePath);
+  if (stat.size === 0) return '';
+  const readSize = Math.min(stat.size, maxBytes);
+  const buf = Buffer.alloc(readSize);
+  const fd = openSync(filePath, 'r');
+  try {
+    readSync(fd, buf, 0, readSize, stat.size - readSize);
+  } finally {
+    closeSync(fd);
+  }
+  const raw = buf.toString('utf-8');
+  // 如果不是从文件开头读的，丢弃第一个不完整行
+  if (readSize < stat.size) {
+    const firstNewline = raw.indexOf('\n');
+    return firstNewline >= 0 ? raw.slice(firstNewline + 1) : '';
+  }
+  return raw;
+}
+
+const MAX_LOG_READ_BYTES = 2 * 1024 * 1024; // 2MB
 import type { Director } from './director.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
@@ -32,29 +56,26 @@ function parseConversationLog(limit: number, sessionFilter?: string): Conversati
 
   // Parse input log — each line is {"type":"user","message":{"role":"user","content":"..."}}
   const inputs: string[] = [];
-  if (existsSync(INPUT_LOG)) {
-    try {
-      const raw = readFileSync(INPUT_LOG, 'utf-8');
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const evt = JSON.parse(line);
-          if (evt?.type === 'user' && evt.message?.content) {
-            inputs.push(evt.message.content);
-          }
-        } catch { /* skip malformed lines */ }
-      }
-    } catch { /* file read error */ }
-  }
+  try {
+    const raw = readTail(INPUT_LOG, MAX_LOG_READ_BYTES);
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const evt = JSON.parse(line);
+        if (evt?.type === 'user' && evt.message?.content) {
+          inputs.push(evt.message.content);
+        }
+      } catch { /* skip malformed lines */ }
+    }
+  } catch { /* file read error */ }
 
   // Parse output log — extract result events with response text + session_id
   // Only keep result events that have actual response text (skip intermediate tool-use results)
   const outputs: Array<{ text: string; sessionId?: string }> = [];
-  if (existsSync(OUTPUT_LOG)) {
-    try {
-      const raw = readFileSync(OUTPUT_LOG, 'utf-8');
-      let pendingText = '';
-      let lastSessionId: string | undefined;
+  try {
+    const raw = readTail(OUTPUT_LOG, MAX_LOG_READ_BYTES);
+    let pendingText = '';
+    let lastSessionId: string | undefined;
 
       for (const line of raw.split('\n')) {
         if (!line.trim()) continue;
@@ -83,7 +104,6 @@ function parseConversationLog(limit: number, sessionFilter?: string): Conversati
         } catch { /* skip malformed lines */ }
       }
     } catch { /* file read error */ }
-  }
 
   // Tail-aligned pairing: most recent input corresponds to most recent output.
   // Output log may have started recording before input log, so early outputs are orphans.
@@ -119,7 +139,7 @@ function parseSessions(): SessionInfo[] {
   if (!existsSync(OUTPUT_LOG)) return [];
 
   try {
-    const raw = readFileSync(OUTPUT_LOG, 'utf-8');
+    const raw = readTail(OUTPUT_LOG, MAX_LOG_READ_BYTES);
     let currentSession: string | undefined;
 
     for (const line of raw.split('\n')) {
@@ -275,7 +295,16 @@ export function startConsole(
   }
 
   const port = config.console.port;
+  const token = config.console.token;
   const htmlPath = join(import.meta.dir, 'public', 'index.html');
+
+  /** 检查请求是否携带有效 token，未配置 token 时放行 */
+  function checkAuth(req: Request): Response | null {
+    if (!token) return null; // 未配置 token，放行
+    const auth = req.headers.get('Authorization');
+    if (auth === `Bearer ${token}`) return null;
+    return new Response('Unauthorized', { status: 401 });
+  }
 
   // 活跃的 WebSocket 连接集合
   const clients = new Set<any>();
@@ -429,6 +458,10 @@ export function startConsole(
     hostname: '127.0.0.1',
     async fetch(req, server) {
       const url = new URL(req.url);
+
+      // Token 认证检查
+      const authErr = checkAuth(req);
+      if (authErr) return authErr;
 
       // WebSocket 升级
       if (server.upgrade(req)) {
