@@ -4,7 +4,7 @@ import type { Director } from './director.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 import type { TaskRunner } from './task-runner.js';
-import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, type CreateTaskInput } from './task-store.js';
+import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task-store.js';
 
 /** Director log paths — must match director.ts */
 const LOG_DIR = join(import.meta.dirname, '..', 'logs');
@@ -434,6 +434,41 @@ export function startConsole(
             const task = getTask(taskId);
             if (!task) return Response.json({ error: 'not found' }, { status: 404 });
             return Response.json(task);
+          }
+          // Cron Jobs API routes
+          if (url.pathname === '/api/cron-jobs' && req.method === 'GET') {
+            return Response.json(listCronJobs());
+          }
+          if (url.pathname === '/api/cron-jobs' && req.method === 'POST') {
+            const body = await req.json() as CreateCronJobInput;
+            if (!body.name || !body.role || !body.prompt || !body.schedule || !body.description) {
+              return Response.json({ error: 'name, role, description, prompt, schedule are required' }, { status: 400 });
+            }
+            return Response.json(createCronJob(body));
+          }
+          if (url.pathname.startsWith('/api/cron-jobs/') && url.pathname.endsWith('/toggle') && req.method === 'POST') {
+            const id = url.pathname.slice('/api/cron-jobs/'.length, -'/toggle'.length);
+            const job = toggleCronJob(id);
+            if (!job) return Response.json({ error: 'not found' }, { status: 404 });
+            return Response.json(job);
+          }
+          if (url.pathname.startsWith('/api/cron-jobs/') && req.method === 'GET') {
+            const id = url.pathname.slice('/api/cron-jobs/'.length);
+            const job = getCronJob(id);
+            if (!job) return Response.json({ error: 'not found' }, { status: 404 });
+            return Response.json(job);
+          }
+          if (url.pathname.startsWith('/api/cron-jobs/') && req.method === 'PUT') {
+            const id = url.pathname.slice('/api/cron-jobs/'.length);
+            const body = await req.json() as Partial<CreateCronJobInput>;
+            const job = updateCronJob(id, body);
+            if (!job) return Response.json({ error: 'not found' }, { status: 404 });
+            return Response.json(job);
+          }
+          if (url.pathname.startsWith('/api/cron-jobs/') && req.method === 'DELETE') {
+            const id = url.pathname.slice('/api/cron-jobs/'.length);
+            const ok = deleteCronJob(id);
+            return Response.json({ ok, id });
           }
           return new Response('Not found', { status: 404 });
         }

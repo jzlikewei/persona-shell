@@ -62,6 +62,20 @@ CREATE TABLE IF NOT EXISTS state (
   value TEXT
 )`;
 
+const CREATE_CRON_JOBS_TABLE = `
+CREATE TABLE IF NOT EXISTS cron_jobs (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  role        TEXT NOT NULL,
+  description TEXT NOT NULL,
+  prompt      TEXT NOT NULL,
+  schedule    TEXT NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+)`;
+
 function generateId(): string {
   return randomBytes(8).toString('hex');
 }
@@ -78,6 +92,7 @@ function openDb(): Database {
   db.run('PRAGMA journal_mode = WAL');
   db.run(CREATE_TABLE);
   db.run(CREATE_STATE_TABLE);
+  db.run(CREATE_CRON_JOBS_TABLE);
   return db;
 }
 
@@ -186,4 +201,95 @@ export function setState<T>(key: string, data: T): void {
 
 export function deleteState(key: string): void {
   db.run('DELETE FROM state WHERE key = ?', [key]);
+}
+
+// --- Cron Jobs CRUD ---
+
+export interface CronJob {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  prompt: string;
+  schedule: string;
+  enabled: boolean;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateCronJobInput {
+  name: string;
+  role: string;
+  description: string;
+  prompt: string;
+  schedule: string;
+  enabled?: boolean;
+}
+
+function rowToCronJob(row: Record<string, unknown>): CronJob {
+  return {
+    ...row,
+    enabled: row.enabled === 1,
+  } as CronJob;
+}
+
+export function createCronJob(input: CreateCronJobInput): CronJob {
+  const id = generateId();
+  const now = new Date().toISOString();
+  const enabled = input.enabled !== false ? 1 : 0;
+
+  db.run(
+    `INSERT INTO cron_jobs (id, name, role, description, prompt, schedule, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.description, input.prompt, input.schedule, enabled, now, now],
+  );
+
+  return getCronJob(id)!;
+}
+
+export function getCronJob(id: string): CronJob | null {
+  const row = db.query('SELECT * FROM cron_jobs WHERE id = ?').get(id) as Record<string, unknown> | null;
+  return row ? rowToCronJob(row) : null;
+}
+
+export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
+  if (filter?.enabled !== undefined) {
+    const rows = db.query('SELECT * FROM cron_jobs WHERE enabled = ? ORDER BY created_at DESC').all(filter.enabled ? 1 : 0) as Record<string, unknown>[];
+    return rows.map(rowToCronJob);
+  }
+  const rows = db.query('SELECT * FROM cron_jobs ORDER BY created_at DESC').all() as Record<string, unknown>[];
+  return rows.map(rowToCronJob);
+}
+
+export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
+  const allowed = ['name', 'role', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at'] as const;
+  const sets: string[] = [];
+  const params: SQLQueryBindings[] = [];
+
+  for (const key of allowed) {
+    if (key in update) {
+      sets.push(`${key} = ?`);
+      const val = (update as Record<string, unknown>)[key];
+      params.push((key === 'enabled' ? (val ? 1 : 0) : val) as SQLQueryBindings);
+    }
+  }
+
+  if (sets.length === 0) return getCronJob(id);
+
+  sets.push('updated_at = ?');
+  params.push(new Date().toISOString());
+  params.push(id);
+  db.run(`UPDATE cron_jobs SET ${sets.join(', ')} WHERE id = ?`, params);
+  return getCronJob(id);
+}
+
+export function deleteCronJob(id: string): boolean {
+  const result = db.run('DELETE FROM cron_jobs WHERE id = ?', [id]);
+  return result.changes > 0;
+}
+
+export function toggleCronJob(id: string): CronJob | null {
+  db.run('UPDATE cron_jobs SET enabled = 1 - enabled, updated_at = ? WHERE id = ?', [new Date().toISOString(), id]);
+  return getCronJob(id);
 }

@@ -52,6 +52,51 @@ const TOOLS = [
       required: ['task_id'],
     },
   },
+  {
+    name: 'create_cron_job',
+    description: '创建定时 cron job（持久化到 SQLite，由 Scheduler 自动触发）',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        name: { type: 'string', description: 'Job 名称' },
+        role: { type: 'string', description: '角色名 (explorer / critic / cron-builder)' },
+        description: { type: 'string', description: '简短描述' },
+        prompt: { type: 'string', description: '完整 prompt' },
+        schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00"' },
+      },
+      required: ['name', 'role', 'description', 'prompt', 'schedule'],
+    },
+  },
+  {
+    name: 'list_cron_jobs',
+    description: '列出所有 cron jobs',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'delete_cron_job',
+    description: '删除 cron job',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Cron Job ID' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'toggle_cron_job',
+    description: '切换 cron job 的启用/禁用状态',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Cron Job ID' },
+      },
+      required: ['id'],
+    },
+  },
 ];
 
 async function callShell(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -89,6 +134,20 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     }
     case 'cancel_task':
       return callShell('POST', `/api/tasks/${args.task_id}/cancel`);
+    case 'create_cron_job':
+      return callShell('POST', '/api/cron-jobs', {
+        name: args.name,
+        role: args.role,
+        description: args.description,
+        prompt: args.prompt,
+        schedule: args.schedule,
+      });
+    case 'list_cron_jobs':
+      return callShell('GET', '/api/cron-jobs');
+    case 'delete_cron_job':
+      return callShell('DELETE', `/api/cron-jobs/${args.id}`);
+    case 'toggle_cron_job':
+      return callShell('POST', `/api/cron-jobs/${args.id}/toggle`);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
