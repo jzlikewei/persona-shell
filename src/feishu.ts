@@ -19,7 +19,7 @@ const FILE_TYPE_MAP: Record<string, "opus" | "mp4" | "pdf" | "doc" | "xls" | "pp
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
 
-type Mention = { id?: { open_id?: string }; name?: string };
+type Mention = { id?: { open_id?: string }; name?: string; key?: string; mentioned_type?: string };
 
 /** Extract plain text from feishu post (rich text) message content.
  *  Post format: { title?, content: [[{tag, text?, href?}, ...], ...] }
@@ -79,6 +79,12 @@ function extractPostText(parsed: Record<string, unknown>, mentions?: Mention[]):
           break;
         case 'media':
           line.push('[媒体]');
+          break;
+        case 'code_block':
+          if (n.text) {
+            const lang = n.language ? ` ${n.language}` : '';
+            line.push(`\`\`\`${lang}\n${(n.text as string).trimEnd()}\n\`\`\``);
+          }
           break;
       }
     }
@@ -174,12 +180,22 @@ export function createFeishuClient(config: Config['feishu']) {
       const mentions = (message as Record<string, unknown>).mentions as Mention[] | undefined;
       const parentId = (message as Record<string, unknown>).parent_id as string | undefined;
 
-      /** Strip @bot mention placeholders from text using the mentions array. */
+      // Log raw message for debugging rich text parsing
+      console.log(`[feishu] raw ${msgType} content: ${content}`);
+      if (mentions?.length) console.log(`[feishu] mentions: ${JSON.stringify(mentions)}`);
+
+      /** Replace @_user_N placeholders with real names, strip bot mentions. */
       const stripMentions = (text: string): string => {
         if (!mentions?.length) return text;
         for (const m of mentions) {
-          if (m.id?.open_id) text = text.replace(`@_user_${m.id.open_id}`, '').trim();
-          if (m.name) text = text.replace(new RegExp(`@${m.name}`, 'g'), '').trim();
+          if (!m.key) continue;
+          if (m.mentioned_type === 'bot') {
+            // Remove bot mention entirely
+            text = text.replace(m.key, '').trim();
+          } else if (m.name) {
+            // Replace user mention placeholder with real name
+            text = text.replace(m.key, `@${m.name}`);
+          }
         }
         return text;
       };
@@ -198,6 +214,11 @@ export function createFeishuClient(config: Config['feishu']) {
         try {
           const parsed = JSON.parse(content);
           let text = parsed.text as string;
+
+          // Feishu sometimes sends rich text with msg_type="text" but post-format content
+          if (!text && (parsed.content || parsed.title !== undefined)) {
+            text = extractPostText(parsed, mentions);
+          }
           if (!text) return;
 
           text = stripMentions(text);
