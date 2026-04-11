@@ -231,6 +231,14 @@ function parseTaskLog(taskId: string, afterLine: number): { entries: TaskLogEntr
 // Shell 启动时间，用于计算 uptime
 const startedAt = Date.now();
 
+/** Attachment compositor buffer — implemented in index.ts */
+export interface AttachmentBuffer {
+  /** Add a file path to the pending buffer */
+  push(filePath: string): void;
+  /** Whether Director is currently processing a user message (queue has items) */
+  hasPending(): boolean;
+}
+
 /** Metrics collector interface — implemented in index.ts */
 export interface MetricsCollector {
   recentMessages: Array<{ direction: 'in' | 'out'; preview: string; timestamp: number; responseSec?: number }>;
@@ -259,6 +267,7 @@ export function startConsole(
     uploadAndReplyFile: (messageId: string, filePath: string) => Promise<void>;
   },
   metrics?: MetricsCollector,
+  attachmentBuffer?: AttachmentBuffer,
 ): void {
   if (!config.console.enabled) {
     console.log('[console] Web console disabled by config');
@@ -451,7 +460,7 @@ export function startConsole(
             }
           }
 
-          // POST /api/send-attachment — send image file to user via feishu
+          // POST /api/send-attachment — send image/file to user via feishu
           if (url.pathname === '/api/send-attachment' && req.method === 'POST') {
             const body = await req.json() as { path: string };
             if (!body.path) return Response.json({ error: 'path is required' }, { status: 400 });
@@ -472,34 +481,28 @@ export function startConsole(
               return Response.json({ error: 'File is empty' }, { status: 400 });
             }
 
-            // Determine if image or file by extension
-            const ext = extname(resolved).toLowerCase();
-            const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
-            const isImage = imageExts.has(ext);
-
             if (!feishu) {
               return Response.json({ error: 'Feishu client not available' }, { status: 503 });
             }
 
+            // Compositor: if Director is processing a user message, buffer for later delivery
+            if (attachmentBuffer?.hasPending()) {
+              attachmentBuffer.push(resolved);
+              return Response.json({ queued: true });
+            }
+
+            // No pending response — send immediately as new message to lastChatId
+            const ext = extname(resolved).toLowerCase();
+            const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+            const isImage = imageExts.has(ext);
+
             try {
-              // Determine reply vs send: check if queue has a pending item
-              const pendingItem = queue.peek();
+              const lastChatId = feishu.getLastChatId();
+              if (!lastChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
               if (isImage) {
-                if (pendingItem) {
-                  await feishu.uploadAndReplyImage(pendingItem.messageId, resolved);
-                } else {
-                  const lastChatId = feishu.getLastChatId();
-                  if (!lastChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
-                  await feishu.uploadAndSendImage(lastChatId, resolved);
-                }
+                await feishu.uploadAndSendImage(lastChatId, resolved);
               } else {
-                if (pendingItem) {
-                  await feishu.uploadAndReplyFile(pendingItem.messageId, resolved);
-                } else {
-                  const lastChatId = feishu.getLastChatId();
-                  if (!lastChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
-                  await feishu.uploadAndSendFile(lastChatId, resolved);
-                }
+                await feishu.uploadAndSendFile(lastChatId, resolved);
               }
               return Response.json({ success: true });
             } catch (err) {

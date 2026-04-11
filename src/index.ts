@@ -2,12 +2,12 @@ import { loadConfig } from './config.js';
 import { Director } from './director.js';
 import { createFeishuClient } from './feishu.js';
 import { MessageQueue } from './queue.js';
-import { startConsole, type MetricsCollector } from './console.js';
+import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
 import { Scheduler } from './scheduler.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob } from './task-store.js';
 import { writeFileSync } from 'fs';
-import { join } from 'path';
+import { join, extname } from 'path';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -161,8 +161,20 @@ async function main() {
     }
   });
 
+  // Attachment compositor — buffer attachments until pipe response arrives
+  const pendingAttachments: string[] = [];
+  const attachmentBuffer: AttachmentBuffer = {
+    push(filePath: string) {
+      pendingAttachments.push(filePath);
+      console.log(`[shell] Compositor: buffered attachment ${filePath} (${pendingAttachments.length} pending)`);
+    },
+    hasPending() {
+      return queue.length > 0;
+    },
+  };
+
   // 启动 Web 管理控制台（含 Task API）
-  startConsole(director, queue, config, taskRunner, feishu, metrics);
+  startConsole(director, queue, config, taskRunner, feishu, metrics, attachmentBuffer);
 
   // 7.4: Scheduler — interval-driven cron job automation
   const scheduler = new Scheduler(
@@ -217,6 +229,11 @@ async function main() {
     const orphaned = queue.clearAll();
     if (orphaned.length > 0) {
       console.log(`[shell] Cleared ${orphaned.length} orphaned queue items after flush drain`);
+    }
+    // Compositor: discard any buffered attachments — they'll never have a target message
+    if (pendingAttachments.length > 0) {
+      console.log(`[shell] Compositor: discarding ${pendingAttachments.length} buffered attachment(s) after flush`);
+      pendingAttachments.length = 0;
     }
   });
 
@@ -361,6 +378,23 @@ async function main() {
       await feishu.reply(item.messageId, replyWithTiming);
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
       console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
+
+      // Compositor: drain buffered attachments, reply to the same message
+      const attachments = pendingAttachments.splice(0);
+      for (const filePath of attachments) {
+        try {
+          const ext = extname(filePath).toLowerCase();
+          const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+          if (imageExts.has(ext)) {
+            await feishu.uploadAndReplyImage(item.messageId, filePath);
+          } else {
+            await feishu.uploadAndReplyFile(item.messageId, filePath);
+          }
+          console.log(`[shell] Compositor: sent attachment ${filePath} as reply to ${item.messageId}`);
+        } catch (err) {
+          console.error(`[shell] Compositor: failed to send attachment ${filePath}:`, err);
+        }
+      }
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
       metrics.addError(`Reply failed: ${String(err).slice(0, 200)}`);
