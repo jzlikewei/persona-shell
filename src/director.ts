@@ -544,7 +544,16 @@ export class Director extends EventEmitter {
       .join(' ');
 
     const mcpConfigPath = join(personaDir, '.mcp.json');
+    const soulFile = join(personaDir, 'soul.md');
+    const metaFile = join(personaDir, 'meta.md');
+    const directorPersonaFile = join(personasDir, 'director.md');
+
     let cmd = `${this.config.claude_path} --print --input-format stream-json --output-format stream-json --verbose --dangerously-skip-permissions --bare --effort max --mcp-config "${mcpConfigPath}" --add-dir "${personaDir}" --plugin-dir "${personasDir}" ${skillPluginDirs}`;
+
+    // Append system prompt files: soul + meta + director persona
+    if (existsSync(soulFile)) cmd += ` --append-system-prompt-file "${soulFile}"`;
+    if (existsSync(metaFile)) cmd += ` --append-system-prompt-file "${metaFile}"`;
+    if (existsSync(directorPersonaFile)) cmd += ` --append-system-prompt-file "${directorPersonaFile}"`;
 
     // Resume previous session if available
     const savedSession = this.readSession();

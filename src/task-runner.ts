@@ -70,6 +70,12 @@ export class TaskRunner extends EventEmitter {
       '--plugin-dir', personasDir,
     ];
 
+    // Append system prompt files: soul + meta
+    const soulFile = join(personaDir, 'soul.md');
+    const metaFile = join(personaDir, 'meta.md');
+    if (existsSync(soulFile)) args.push('--append-system-prompt-file', soulFile);
+    if (existsSync(metaFile)) args.push('--append-system-prompt-file', metaFile);
+
     // Load skill plugin subdirectories
     try {
       for (const d of readdirSync(skillsDir, { withFileTypes: true })) {
