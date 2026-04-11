@@ -19,6 +19,62 @@ const FILE_TYPE_MAP: Record<string, "opus" | "mp4" | "pdf" | "doc" | "xls" | "pp
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
 
+/** Extract plain text from feishu post (rich text) message content.
+ *  Post format: { title?, content: [[{tag, text?, href?}, ...], ...] }
+ *  Supports: text, a (link), at (mention). Paragraphs joined by \n. */
+function extractPostText(parsed: Record<string, unknown>): string {
+  const parts: string[] = [];
+
+  // Title
+  const title = (parsed.title as string) ?? '';
+  if (title) parts.push(title);
+
+  // Content can be nested under a locale key (zh_cn, en_us, etc.) or directly
+  let postBody = parsed.content as unknown[][] | undefined;
+  if (!postBody) {
+    // Try locale keys
+    for (const key of Object.keys(parsed)) {
+      const val = parsed[key] as Record<string, unknown> | undefined;
+      if (val && typeof val === 'object' && 'content' in val) {
+        postBody = val.content as unknown[][];
+        if (!parts.length && val.title) parts.push(val.title as string);
+        break;
+      }
+    }
+  }
+
+  if (!postBody || !Array.isArray(postBody)) return parts.join('\n');
+
+  for (const paragraph of postBody) {
+    if (!Array.isArray(paragraph)) continue;
+    const line: string[] = [];
+    for (const node of paragraph) {
+      const n = node as Record<string, unknown>;
+      switch (n.tag) {
+        case 'text':
+          if (n.text) line.push(n.text as string);
+          break;
+        case 'a':
+          if (n.text && n.href) line.push(`${n.text}(${n.href})`);
+          else if (n.text) line.push(n.text as string);
+          break;
+        case 'at':
+          if (n.user_name) line.push(`@${n.user_name}`);
+          break;
+        case 'img':
+          line.push('[图片]');
+          break;
+        case 'media':
+          line.push('[媒体]');
+          break;
+      }
+    }
+    if (line.length > 0) parts.push(line.join(''));
+  }
+
+  return parts.join('\n');
+}
+
 const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
 const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则自杀重启
 
@@ -46,27 +102,45 @@ export function createFeishuClient(config: Config['feishu']) {
 
       const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
 
-      if (msgType !== 'text') {
-        for (const handler of handlers) {
-          try { await handler('', message_id, chat_id, msgType); } catch (err) {
-            console.error('[feishu] Handler error:', err);
+      if (msgType === 'text') {
+        try {
+          const parsed = JSON.parse(content);
+          const text = parsed.text as string;
+          if (!text) return;
+
+          for (const handler of handlers) {
+            try { await handler(text, message_id, chat_id, msgType); } catch (err) {
+              console.error('[feishu] Handler error:', err);
+            }
           }
+        } catch {
+          console.error('[feishu] Failed to parse message content:', content);
         }
         return;
       }
 
-      try {
-        const parsed = JSON.parse(content);
-        const text = parsed.text as string;
-        if (!text) return;
+      if (msgType === 'post') {
+        try {
+          const parsed = JSON.parse(content);
+          const text = extractPostText(parsed);
+          if (!text) return;
 
-        for (const handler of handlers) {
-          try { await handler(text, message_id, chat_id, msgType); } catch (err) {
-            console.error('[feishu] Handler error:', err);
+          for (const handler of handlers) {
+            try { await handler(text, message_id, chat_id, 'text'); } catch (err) {
+              console.error('[feishu] Handler error:', err);
+            }
           }
+        } catch {
+          console.error('[feishu] Failed to parse post content:', content);
         }
-      } catch {
-        console.error('[feishu] Failed to parse message content:', content);
+        return;
+      }
+
+      // Unsupported message types
+      for (const handler of handlers) {
+        try { await handler('', message_id, chat_id, msgType); } catch (err) {
+          console.error('[feishu] Handler error:', err);
+        }
       }
     },
   });
