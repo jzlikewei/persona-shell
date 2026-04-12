@@ -29,6 +29,11 @@ export interface Config {
     enabled: boolean;
     intervalMinutes: number;
   };
+  pool: {
+    max_directors: number;
+    idle_timeout_minutes: number;
+    small_group_threshold: number;
+  };
   logging: {
     level: string;
     queue_log: string;
@@ -77,6 +82,11 @@ export function loadConfig(path?: string): Config {
     scheduler: {
       enabled: yaml.scheduler?.enabled !== false,
       intervalMinutes: Number(yaml.scheduler?.interval_minutes ?? 30),
+    },
+    pool: {
+      max_directors: Number(yaml.pool?.max_directors ?? 3),
+      idle_timeout_minutes: Number(yaml.pool?.idle_timeout_minutes ?? 30),
+      small_group_threshold: Number(yaml.pool?.small_group_threshold ?? 5),
     },
     logging: {
       level: yaml.logging?.level ?? 'info',

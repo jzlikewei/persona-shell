@@ -23,6 +23,7 @@ export interface ChatMeta {
   chatMode?: 'group' | 'topic';  // 普通群 vs 话题群（来自 chat.get API）
   memberCount?: number;
   chatName?: string;
+  threadId?: string;  // 话题群的 thread_id（omt_ 前缀），用于按话题路由 session
 }
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string, meta: ChatMeta) => void;
@@ -287,6 +288,12 @@ export function createFeishuClient(config: Config['feishu']) {
         if (info) {
           meta = { chatType, chatMode: info.chatMode, memberCount: info.memberCount, chatName: info.name };
         }
+      }
+
+      // Extract thread_id for topic group routing (field: thread_id or root_id)
+      const threadId = (msgRaw?.thread_id ?? msgRaw?.root_id) as string | undefined;
+      if (threadId) {
+        meta.threadId = threadId;
       }
       /** Replace @_user_N placeholders: remove bot mentions, replace user mentions with real names. */
       const stripMentions = (text: string): string => {

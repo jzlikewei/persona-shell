@@ -1,9 +1,12 @@
 import { loadConfig } from './config.js';
 import { Director } from './director.js';
+import { DirectorPool } from './director-pool.js';
 import { createFeishuClient, type ChatMeta } from './feishu.js';
 import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
+import { spawnPersona } from './persona-process.js';
+import { createInterface } from 'readline';
 import { Scheduler } from './scheduler.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob } from './task-store.js';
 import { writeFileSync } from 'fs';
@@ -88,6 +91,13 @@ async function main() {
   // Claude CLI in stream-json mode doesn't create a session until it receives input.
   // Without this, Director sits idle with no session after restart.
   director.bootstrap();
+
+  // DirectorPool for multi-group chat support
+  const pool = new DirectorPool(director, config.pool, config.director, {
+    reply: (messageId, text) => feishu.reply(messageId, text),
+    sendMessage: (chatId, text) => feishu.sendMessage(chatId, text),
+    addReaction: (messageId, emoji) => feishu.addReaction(messageId, emoji),
+  });
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
@@ -283,6 +293,74 @@ async function main() {
     }
   });
 
+  /** 大群 one-shot 响应：spawn 一次性 Claude CLI 进程，回复后释放 */
+  async function handleOneShot(prompt: string, messageId: string) {
+    const ONESHOT_TIMEOUT = 60_000;
+    const startedAt = Date.now();
+
+    const { child } = spawnPersona({
+      role: 'director',
+      personaDir: config.director.persona_dir,
+      claudePath: config.director.claude_path,
+      mode: 'background',
+      prompt,
+    });
+
+    child.on('error', () => {}); // prevent unhandled error crash
+
+    if (!child.pid || !child.stdout) {
+      await feishu.reply(messageId, '处理失败，请稍后重试');
+      return;
+    }
+
+    console.log(`[shell] One-shot spawned (pid=${child.pid})`);
+
+    let responseText = '';
+    let costUsd: number | undefined;
+
+    const rl = createInterface({ input: child.stdout });
+    rl.on('line', (line) => {
+      if (!line.trim()) return;
+      try {
+        const event = JSON.parse(line);
+        if (event.type === 'result') {
+          if (event.result) responseText = event.result;
+          if (event.cost_usd != null) costUsd = event.cost_usd;
+        }
+      } catch { /* non-JSON line */ }
+    });
+
+    const timedOut = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        try { process.kill(-child.pid!, 'SIGTERM'); } catch {}
+        resolve(true);
+      }, ONESHOT_TIMEOUT);
+
+      child.on('close', () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+    });
+
+    const elapsedMs = Date.now() - startedAt;
+    const elapsedSec = (elapsedMs / 1000).toFixed(1);
+
+    if (timedOut || !responseText) {
+      await feishu.reply(messageId, timedOut ? '处理超时，请稍后重试' : '未生成回复');
+    } else {
+      const costStr = costUsd != null ? ` $${costUsd.toFixed(3)}` : '';
+      await feishu.reply(messageId, `${responseText}\n\n(one-shot ${elapsedSec}s${costStr})`);
+    }
+
+    metrics.addMessage({ direction: 'out', preview: (responseText || 'timeout').slice(0, 80), timestamp: Date.now(), responseSec: elapsedMs / 1000 });
+    const today = metrics.getToday();
+    today.messagesProcessed++;
+    today.totalResponseMs += elapsedMs;
+    if (costUsd) today.totalCostUsd += costUsd;
+
+    console.log(`[shell] One-shot done ${messageId} (${elapsedSec}s${costUsd ? ` $${costUsd.toFixed(3)}` : ''} timeout=${timedOut})`);
+  }
+
   // Feishu message → queue → director
   feishu.onMessage(async (text, messageId, chatId, msgType, meta) => {
     // Log chat metadata
@@ -371,27 +449,81 @@ async function main() {
       console.warn('[shell] Failed to add reaction:', err);
     });
 
+    // 大群(>threshold 人) → one-shot 响应，不走 Director
+    if (meta.chatType === 'group' && (meta.memberCount ?? 0) > config.pool.small_group_threshold) {
+      const groupLabel = meta.chatMode === 'topic' ? '话题群' : '群聊';
+      const oneShotPrompt = `你在飞书${groupLabel}「${meta.chatName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${text}`;
+
+      console.log(`[shell] Large group one-shot: ${text.slice(0, 50)}... (members=${meta.memberCount})`);
+      metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
+
+      handleOneShot(oneShotPrompt, messageId).catch((err) => {
+        console.error('[shell] One-shot error:', err);
+        metrics.addError(`One-shot failed: ${String(err).slice(0, 200)}`);
+        feishu.reply(messageId, '处理出错，请稍后重试').catch(() => {});
+      });
+      return;
+    }
+
     // Prepend group chat label for Director context
-    const groupLabel = meta.chatMode === 'topic' ? '话题群' : '群聊';
-    const directorText = meta.chatType === 'group'
-      ? `[${groupLabel}: ${meta.chatName || '未知群'}] ${text}`
-      : text;
+    // 话题群带 thread 后缀以区分不同话题上下文
+    let directorText: string;
+    if (meta.chatType === 'group') {
+      if (meta.chatMode === 'topic' && meta.threadId) {
+        const threadSuffix = meta.threadId.slice(-6);
+        directorText = `[话题群: ${meta.chatName || '未知群'} #${threadSuffix}] ${text}`;
+      } else {
+        directorText = `[群聊: ${meta.chatName || '未知群'}] ${text}`;
+      }
+    } else {
+      directorText = text;
+    }
+
+    // Routing: 小群 → DirectorPool, 私聊 → 主 Director
+    const routingKey = (meta.chatMode === 'topic' && meta.threadId)
+      ? meta.threadId                        // 话题群: 按 thread_id 路由
+      : (meta.chatType === 'group')
+        ? chatId                             // 普通群: 按 chatId 路由
+        : undefined;                         // 私聊: 默认 Director
+    if (routingKey) {
+      log.debug(`[shell] Routing key: ${routingKey} (chatMode=${meta.chatMode}, threadId=${meta.threadId ?? 'N/A'})`);
+    }
 
     console.log(`[shell] Received message: ${directorText.slice(0, 50)}...`);
     metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
-    const correlationId = queue.enqueue({ text, messageId, chatId });
-    queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
-    try {
-      await director.send(directorText);
-    } catch (err) {
-      // 3.3: All send errors must clean up queue state to prevent orphaned items
-      queue.resolve(correlationId);
-      if (String(err).includes('flushing')) {
-        await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
-      } else {
-        console.error(`[shell] send failed, queue item cleaned:`, err);
-        metrics.addError(`Send failed: ${String(err).slice(0, 200)}`);
-        await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
+
+    if (routingKey) {
+      // 小群/话题群 → DirectorPool
+      try {
+        const groupName = meta.chatName ?? chatId.slice(0, 8);
+        const entry = await pool.getOrCreate(routingKey, groupName);
+        await pool.send(routingKey, directorText, messageId);
+        console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
+      } catch (err) {
+        if (String(err).includes('flushing')) {
+          await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
+        } else {
+          console.error(`[shell] pool send failed:`, err);
+          metrics.addError(`Pool send failed: ${String(err).slice(0, 200)}`);
+          await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
+        }
+      }
+    } else {
+      // 私聊 → 主 Director
+      const correlationId = queue.enqueue({ text, messageId, chatId });
+      queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
+      try {
+        await director.send(directorText);
+      } catch (err) {
+        // 3.3: All send errors must clean up queue state to prevent orphaned items
+        queue.resolve(correlationId);
+        if (String(err).includes('flushing')) {
+          await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
+        } else {
+          console.error(`[shell] send failed, queue item cleaned:`, err);
+          metrics.addError(`Send failed: ${String(err).slice(0, 200)}`);
+          await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
+        }
       }
     }
   });
@@ -495,6 +627,7 @@ async function main() {
   // Graceful shutdown
   process.on('SIGINT', () => {
     console.log('[shell] Shutting down (Director stays alive)...');
+    pool.shutdownAll().catch(() => {});
     director.stop();
     process.exit(0);
   });

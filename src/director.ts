@@ -21,10 +21,25 @@ interface DirectorPersistedState {
   contextWindow: number;
 }
 
+export interface DirectorOptions {
+  config: Config['director'];
+  /** 唯一标识，如 'main' 或 chatId 的短 hash */
+  label: string;
+  /** 主 Director 标记（默认 true） */
+  isMain?: boolean;
+  /** 群聊名称，非主 Director 用于 bootstrap 消息 */
+  groupName?: string;
+}
+
 export class Director extends EventEmitter {
   private config: Config['director'];
+  readonly label: string;
+  readonly isMain: boolean;
+  private groupName?: string;
   private pipeIn: string;
   private pipeOut: string;
+  private pipeDir: string;
+  private pidFile: string;
   private writeHandle: FileHandle | null = null;
   private sessionFile: string;
   private sessionId: string | null = null;
@@ -58,17 +73,42 @@ export class Director extends EventEmitter {
   /** Flag to discard the next late response after flush timeout */
   private discardNextResponse = false;
 
-  constructor(config: Config['director']) {
+  /**
+   * @param configOrOptions — 兼容两种调用方式：
+   *   - `new Director(config.director)` — 向后兼容，默认 label='main', isMain=true
+   *   - `new Director({ config, label, isMain, groupName })` — 新版多实例
+   */
+  constructor(configOrOptions: Config['director'] | DirectorOptions) {
     super();
-    this.config = config;
-    this.pipeIn = join(config.pipe_dir, 'director-in');
-    this.pipeOut = join(config.pipe_dir, 'director-out');
-    this.sessionFile = join(config.pipe_dir, 'director-session');
+    if ('config' in configOrOptions) {
+      // New-style: DirectorOptions
+      this.config = configOrOptions.config;
+      this.label = configOrOptions.label;
+      this.isMain = configOrOptions.isMain ?? true;
+      this.groupName = configOrOptions.groupName;
+    } else {
+      // Legacy: Config['director'] — backward compatible
+      this.config = configOrOptions;
+      this.label = 'main';
+      this.isMain = true;
+    }
+
+    // 路径参数化：/tmp/persona/{label}/...
+    this.pipeDir = join(this.config.pipe_dir, this.label);
+    this.pipeIn = join(this.pipeDir, 'director-in');
+    this.pipeOut = join(this.pipeDir, 'director-out');
+    this.sessionFile = join(this.pipeDir, 'session');
+    this.pidFile = join(this.pipeDir, 'director.pid');
+  }
+
+  /** State key parameterized by label: 'director:main', 'director:abc12345', etc. */
+  private get stateKey(): string {
+    return `director:${this.label}`;
   }
 
   /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow). Returns restored data or null. */
   restoreState(): DirectorPersistedState | null {
-    const saved = getState<DirectorPersistedState>('director');
+    const saved = getState<DirectorPersistedState>(this.stateKey);
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
@@ -77,7 +117,7 @@ export class Director extends EventEmitter {
   }
 
   private persistState(): void {
-    setState<DirectorPersistedState>('director', {
+    setState<DirectorPersistedState>(this.stateKey, {
       lastFlushAt: this.lastFlushAt,
       lastInputTokens: this.lastInputTokens,
       contextWindow: this.contextWindow,
@@ -88,7 +128,7 @@ export class Director extends EventEmitter {
     this.ensurePipeDir();
 
     if (this.isDirectorAlive()) {
-      console.log(`[director] Existing director process found (pid: ${this.readPid()}), reconnecting...`);
+      console.log(`[director:${this.label}] Existing director process found (pid: ${this.readPid()}), reconnecting...`);
     } else {
       this.ensurePipes();
       this.spawnDirector();
@@ -102,7 +142,7 @@ export class Director extends EventEmitter {
 
     this.writeHandle = writeHandle;
     this.sessionId = this.readSession();
-    console.log('[director] Pipes connected');
+    console.log(`[director:${this.label}] Pipes connected`);
 
     this.listenOutput(readHandle);
   }
@@ -110,7 +150,7 @@ export class Director extends EventEmitter {
   /** Send SIGINT to cancel current request, then auto-restart with --resume */
   async interrupt(): Promise<void> {
     if (this.flushing) {
-      console.log('[director] Interrupt skipped: flush in progress');
+      console.log(`[director:${this.label}] Interrupt skipped: flush in progress`);
       return;
     }
 
@@ -118,7 +158,7 @@ export class Director extends EventEmitter {
     if (!pid) return;
 
     this.interrupted = true;
-    console.log(`[director] Interrupting (pid: ${pid})...`);
+    console.log(`[director:${this.label}] Interrupting (pid: ${pid})...`);
 
     try { process.kill(-pid, 'SIGINT'); } catch { /* already dead */ }
 
@@ -139,19 +179,33 @@ export class Director extends EventEmitter {
   /** Kill current Director and restart with a fresh session (no --conversation-id) */
   async flush(): Promise<boolean> {
     if (this.flushing) {
-      console.log('[director] FLUSH already in progress, skipping');
+      console.log(`[director:${this.label}] FLUSH already in progress, skipping`);
       return false;
+    }
+
+    // Non-main Directors: skip checkpoint, just kill and restart
+    if (!this.isMain) {
+      this.flushing = true;
+      const pid = this.readPid();
+      if (pid) {
+        try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
+      }
+      this.clearSession();
+      await this.restart();
+      this.finishFlush();
+      console.log(`[director:${this.label}] FLUSH: complete (non-main, no checkpoint)`);
+      return true;
     }
 
     // 7.x: Warn about running tasks before flush
     const runningTasks = listTasks({ status: 'running' });
     if (runningTasks.length > 0) {
-      console.warn(`[director] FLUSH: ${runningTasks.length} task(s) still running — new Director may miss results`);
+      console.warn(`[director:${this.label}] FLUSH: ${runningTasks.length} task(s) still running — new Director may miss results`);
     }
 
     // Wait for interrupt to complete if in progress
     if (this.interrupted) {
-      console.log('[director] FLUSH: waiting for interrupt to complete...');
+      console.log(`[director:${this.label}] FLUSH: waiting for interrupt to complete...`);
       await new Promise<void>((resolve) => {
         this.once('restarted', resolve);
       });
@@ -161,10 +215,10 @@ export class Director extends EventEmitter {
 
     // Drain: wait for in-flight messages to complete
     if (this.pendingCount > 0) {
-      console.log(`[director] FLUSH: draining ${this.pendingCount} in-flight messages...`);
+      console.log(`[director:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
       const drained = await this.waitForDrain(Director.FLUSH_STEP_TIMEOUT);
       if (!drained) {
-        console.warn('[director] FLUSH: drain timeout, aborting flush');
+        console.warn(`[director:${this.label}] FLUSH: drain timeout, aborting flush`);
         this.flushing = false;
         return false;
       }
@@ -175,7 +229,7 @@ export class Director extends EventEmitter {
     this.emit('flush-drain-complete');
 
     // Step 1 - Checkpoint: ask Director to save state
-    console.log('[director] FLUSH: starting checkpoint...');
+    console.log(`[director:${this.label}] FLUSH: starting checkpoint...`);
     const checkpointDone = new Promise<void>((resolve) => {
       this.flushCheckpointResolve = resolve;
     });
@@ -189,14 +243,14 @@ export class Director extends EventEmitter {
       this.timeout(Director.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!checkpointOk) {
-      console.warn('[director] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset');
+      console.warn(`[director:${this.label}] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset`);
       this.flushCheckpointResolve = null;
       this.discardNextResponse = true;
       // Fall through to kill+restart — don't abort, otherwise the
       // checkpoint message is still in-flight and its late response
       // would leak to users.
     } else {
-      console.log('[director] FLUSH: checkpoint done');
+      console.log(`[director:${this.label}] FLUSH: checkpoint done`);
     }
 
     // Step 2 - Reset: kill process + clear session + clean pipes
@@ -222,13 +276,13 @@ export class Director extends EventEmitter {
       this.timeout(Director.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!bootstrapOk) {
-      console.warn('[director] FLUSH: bootstrap timeout — forcing flush finish');
+      console.warn(`[director:${this.label}] FLUSH: bootstrap timeout — forcing flush finish`);
       this.flushBootstrapResolve = null;
       this.discardNextResponse = true;
       this.finishFlush();
     } else {
       this.finishFlush();
-      console.log('[director] FLUSH: complete');
+      console.log(`[director:${this.label}] FLUSH: complete`);
     }
     return true;
   }
@@ -329,10 +383,13 @@ export class Director extends EventEmitter {
     if (!this.writeHandle || this.flushing) return;
     this.bootstrapping = true;
     this.pendingCount++;
-    await this.writeRaw(
-      '[系统] 新 session 已启动。请读取 daily/state.md 恢复工作上下文，了解当前待处理事项。'
-    );
-    console.log('[director] Bootstrap message sent');
+
+    const msg = this.isMain
+      ? '[系统] 新 session 已启动。请读取 daily/state.md 恢复工作上下文，了解当前待处理事项。'
+      : `[系统] 新 session 已启动。你正在为群「${this.groupName ?? this.label}」服务。请读取 daily/state.md 了解全局状态（只读）。`;
+
+    await this.writeRaw(msg);
+    console.log(`[director:${this.label}] Bootstrap message sent`);
   }
 
   async send(message: string): Promise<void> {
@@ -435,7 +492,7 @@ export class Director extends EventEmitter {
   private decrementPending(): void {
     this.pendingCount--;
     if (this.pendingCount < 0) {
-      console.error(`[director] BUG: pendingCount went negative (${this.pendingCount}), clamping to 0`);
+      console.error(`[director:${this.label}] BUG: pendingCount went negative (${this.pendingCount}), clamping to 0`);
       this.pendingCount = 0;
     }
   }
@@ -454,7 +511,7 @@ export class Director extends EventEmitter {
       const reason = contextOverLimit
         ? `context tokens ${this.lastInputTokens} > ${this.config.flush_context_limit}`
         : `time since last flush exceeded ${this.config.flush_interval_ms}ms`;
-      console.log(`[director] Auto-flush triggered: ${reason}`);
+      console.log(`[director:${this.label}] Auto-flush triggered: ${reason}`);
       // Fire and forget — flush is async but we don't block the event loop
       this.flush().then((success) => {
         if (success) {
@@ -464,7 +521,7 @@ export class Director extends EventEmitter {
           this.emit('alert', `⚠️ 自动 FLUSH 未能完成（reason: ${reason}）`);
         }
       }).catch((err) => {
-        console.error('[director] Auto-flush failed:', err);
+        console.error(`[director:${this.label}] Auto-flush failed:`, err);
         this.emit('alert', `⚠️ 自动 FLUSH 异常: ${String(err).slice(0, 200)}`);
       });
     }
@@ -478,8 +535,14 @@ export class Director extends EventEmitter {
     this.restartTimestamps.push(now);
     this.restartTimestamps = this.restartTimestamps.filter((t) => now - t < BACKOFF_WINDOW);
     if (this.restartTimestamps.length >= MAX_RESTARTS) {
-      console.error(`[director] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — exiting to let launchd handle recovery`);
-      process.exit(1);
+      if (this.isMain) {
+        console.error(`[director:${this.label}] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — exiting to let launchd handle recovery`);
+        process.exit(1);
+      } else {
+        console.error(`[director:${this.label}] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — giving up, emitting close`);
+        this.emit('close');
+        return;
+      }
     }
 
     await this.writeHandle?.close();
@@ -493,8 +556,8 @@ export class Director extends EventEmitter {
   }
 
   private ensurePipeDir(): void {
-    if (!existsSync(this.config.pipe_dir)) {
-      mkdirSync(this.config.pipe_dir, { recursive: true });
+    if (!existsSync(this.pipeDir)) {
+      mkdirSync(this.pipeDir, { recursive: true });
     }
   }
 
@@ -502,7 +565,7 @@ export class Director extends EventEmitter {
     for (const pipe of [this.pipeIn, this.pipeOut]) {
       if (!existsSync(pipe)) {
         execSync(`mkfifo "${pipe}"`);
-        console.log(`[director] Created FIFO: ${pipe}`);
+        console.log(`[director:${this.label}] Created FIFO: ${pipe}`);
       }
     }
   }
@@ -513,9 +576,9 @@ export class Director extends EventEmitter {
 
     const savedSession = this.readSession();
     if (savedSession) {
-      console.log(`[director] Resuming session: ${savedSession}`);
+      console.log(`[director:${this.label}] Resuming session: ${savedSession}`);
     } else {
-      console.log('[director] Starting new session');
+      console.log(`[director:${this.label}] Starting new session`);
     }
 
     const { child } = spawnPersona({
@@ -527,12 +590,12 @@ export class Director extends EventEmitter {
       sessionId: savedSession ?? undefined,
       pipeIn: this.pipeIn,
       pipeOut: this.pipeOut,
-      stderrPath: join(this.config.pipe_dir, 'director-stderr.log'),
+      stderrPath: join(this.pipeDir, 'director-stderr.log'),
     });
 
     if (child.pid) {
-      writeFileSync(this.config.pid_file, String(child.pid));
-      console.log(`[director] Spawned claude process (pid: ${child.pid})`);
+      writeFileSync(this.pidFile, String(child.pid));
+      console.log(`[director:${this.label}] Spawned claude process (pid: ${child.pid})`);
     }
   }
 
@@ -558,12 +621,12 @@ export class Director extends EventEmitter {
 
         switch (event.type) {
           case 'system':
-            log.debug(`[director] System event: ${event.subtype}`);
+            log.debug(`[director:${this.label}] System event: ${event.subtype}`);
             // Capture session_id from init event
             if (event.subtype === 'init' && event.session_id) {
               this.sessionId = event.session_id;
               this.saveSession(event.session_id);
-              log.debug(`[director] Session ID: ${event.session_id}`);
+              log.debug(`[director:${this.label}] Session ID: ${event.session_id}`);
             }
             break;
 
@@ -585,7 +648,7 @@ export class Director extends EventEmitter {
           case 'result':
             // Handle stale session error — clear session and let close handler restart
             if (event.is_error && event.errors?.some((e: string) => e.includes('No conversation found'))) {
-              console.warn('[director] Session expired, clearing session for fresh start');
+              console.warn(`[director:${this.label}] Session expired, clearing session for fresh start`);
               this.clearSession();
               break;
             }
@@ -632,30 +695,30 @@ export class Director extends EventEmitter {
             if (currentResponse) {
               if (this.flushing && this.flushCheckpointResolve) {
                 // Flush checkpoint response — don't emit to users
-                log.debug(`[director] FLUSH checkpoint response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director:${this.label}] FLUSH checkpoint response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushCheckpointResolve();
                 this.flushCheckpointResolve = null;
               } else if (this.flushing && this.flushBootstrapResolve) {
                 // Flush bootstrap response — don't emit to users
-                log.debug(`[director] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director:${this.label}] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushBootstrapResolve();
                 this.flushBootstrapResolve = null;
               } else if (this.systemMessagePending > 0) {
                 // 系统消息响应（cron director_msg 等）— 吸收，不转发用户
-                log.debug(`[director] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director:${this.label}] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
                 this.systemMessagePending--;
               } else if (this.discardNextResponse) {
                 // Late response after flush timeout — discard silently
-                log.debug(`[director] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director:${this.label}] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
                 this.discardNextResponse = false;
               } else if (this.bootstrapping) {
                 // Startup bootstrap response — absorb, don't emit to users
-                log.debug(`[director] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director:${this.label}] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.bootstrapping = false;
               } else if (this.systemReplyQueue.length > 0) {
                 // System message response (task notification) — emit with feishu messageId for reply
                 const replyTo = this.systemReplyQueue.shift()!;
-                log.debug(`[director] System message response (replyTo=${replyTo}): ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director:${this.label}] System message response (replyTo=${replyTo}): ${currentResponse.trim().slice(0, 100)}`);
                 this.emit('system-response', currentResponse.trim(), replyTo);
               } else {
                 this.emit('response', currentResponse.trim(), event.duration_ms);
@@ -683,7 +746,7 @@ export class Director extends EventEmitter {
     rl.on('close', async () => {
       // 3.1: Ignore close events from stale generations
       if (gen !== this.generation) {
-        console.log(`[director] Ignoring stale close event (gen=${gen}, current=${this.generation})`);
+        console.log(`[director:${this.label}] Ignoring stale close event (gen=${gen}, current=${this.generation})`);
         return;
       }
 
@@ -696,16 +759,20 @@ export class Director extends EventEmitter {
 
       if (this.interrupted) {
         this.interrupted = false;
-        console.log('[director] Interrupted, restarting with --resume...');
+        console.log(`[director:${this.label}] Interrupted, restarting with --resume...`);
         await this.restart();
         this.emit('restarted');
       } else if (this.flushing) {
         // Flush handles its own restart — do nothing here
-        console.log('[director] Pipe closed during flush (expected)');
+        console.log(`[director:${this.label}] Pipe closed during flush (expected)`);
+      } else if (!this.isMain) {
+        // Non-main Director: emit 'close' for DirectorPool cleanup, don't exit
+        console.log(`[director:${this.label}] Non-main Director closed unexpectedly`);
+        this.emit('close');
       } else {
         // 4.1: Alert before unexpected restart
         this.emit('alert', `🔴 Director 进程意外退出，正在重启...`);
-        console.log('[director] Output pipe closed, restarting...');
+        console.log(`[director:${this.label}] Output pipe closed, restarting...`);
         await this.restart();
       }
     });
@@ -725,7 +792,7 @@ export class Director extends EventEmitter {
 
   private readPid(): number | null {
     try {
-      const raw = readFileSync(this.config.pid_file, 'utf-8').trim();
+      const raw = readFileSync(this.pidFile, 'utf-8').trim();
       return parseInt(raw, 10) || null;
     } catch {
       return null;
