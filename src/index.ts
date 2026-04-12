@@ -309,6 +309,7 @@ async function main() {
     child.on('error', () => {}); // prevent unhandled error crash
 
     if (!child.pid || !child.stdout) {
+      if (child.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
       await feishu.reply(messageId, '处理失败，请稍后重试');
       return;
     }
@@ -376,32 +377,57 @@ async function main() {
       return;
     }
 
-    // /esc — cancel the oldest pending message
+    // Pre-compute routingKey for slash commands (same logic as message routing below)
+    const routingKey = (meta.chatMode === 'topic' && meta.threadId)
+      ? meta.threadId                        // 话题群: 按 thread_id 路由
+      : (meta.chatType === 'group')
+        ? chatId                             // 普通群: 按 chatId 路由
+        : undefined;                         // 私聊: 默认 Director
+
+    // Helper: resolve the target Director/queue for the current message context
+    const getTargetEntry = () => routingKey ? pool.get(routingKey) : undefined;
+
+    // /esc — cancel the oldest pending message (routes to correct Director)
     if (text.trim() === '/esc') {
-      const cancelled = queue.cancelOldest();
-      if (cancelled) {
-        console.log(`[shell] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
-        await director.interrupt();
-        await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+      const poolEntry = getTargetEntry();
+      if (poolEntry) {
+        const cancelled = poolEntry.queue.cancelOldest();
+        if (cancelled) {
+          console.log(`[shell] /esc (group ${poolEntry.groupName}): cancelling ${cancelled.messageId}`);
+          await poolEntry.director.interrupt();
+          await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+        } else {
+          await feishu.reply(messageId, '队列为空，没有可取消的消息');
+        }
       } else {
-        await feishu.reply(messageId, '队列为空，没有可取消的消息');
+        const cancelled = queue.cancelOldest();
+        if (cancelled) {
+          console.log(`[shell] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
+          await director.interrupt();
+          await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+        } else {
+          await feishu.reply(messageId, '队列为空，没有可取消的消息');
+        }
       }
       return;
     }
 
-    // /flush — manually flush Director context
+    // /flush — manually flush Director context (routes to correct Director)
     if (text.trim() === '/flush') {
       feishu.addReaction(messageId, 'Typing').catch(() => {});
-      const success = await director.flush();
+      const poolEntry = getTargetEntry();
+      const targetDirector = poolEntry?.director ?? director;
+      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
+      const success = await targetDirector.flush();
       if (success) {
-        await feishu.reply(messageId, 'FLUSH 完成，上下文已刷新');
+        await feishu.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`);
       } else {
-        await feishu.reply(messageId, 'FLUSH 未能完成（超时或正在进行中），请稍后重试');
+        await feishu.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`);
       }
       return;
     }
 
-    // /restart — kill Director + restart Shell (launchd will respawn)
+    // /restart — kill Director + restart Shell (launchd will respawn) — global operation
     if (text.trim() === '/restart') {
       await feishu.reply(messageId, 'Shell 正在重启...');
       console.log('[shell] /restart: killing Director and exiting for launchd respawn');
@@ -413,24 +439,38 @@ async function main() {
       return;
     }
 
-    // 1.4: /status — show Director status summary
+    // 1.4: /status — show Director status summary (routes to correct Director)
     if (text.trim() === '/status') {
-      const s = director.getStatus();
-      const uptime = Math.floor((Date.now() - startTime) / 1000);
-      const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
-      const contextLimit = s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit;
-      const lines = [
-        `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-        `📊 Tokens: ${s.lastInputTokens.toLocaleString()} / ${contextLimit.toLocaleString()}`,
-        `📬 Pending: ${s.pendingCount} | Queue: ${queue.length}`,
-        `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
-        `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
-      ];
-      await feishu.reply(messageId, lines.join('\n'));
+      const poolEntry = getTargetEntry();
+      if (poolEntry) {
+        const s = poolEntry.director.getStatus();
+        const label = poolEntry.groupName;
+        const lines = [
+          `🟢 [${label}] Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
+          `📊 Tokens: ${s.lastInputTokens.toLocaleString()}`,
+          `📬 Pending: ${s.pendingCount} | Queue: ${poolEntry.queue.length}`,
+          `🔄 Flushing: ${s.flushing ? 'yes' : 'no'}`,
+          `⏱️ Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
+        ];
+        await feishu.reply(messageId, lines.join('\n'));
+      } else {
+        const s = director.getStatus();
+        const uptime = Math.floor((Date.now() - startTime) / 1000);
+        const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
+        const contextLimit = s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit;
+        const lines = [
+          `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
+          `📊 Tokens: ${s.lastInputTokens.toLocaleString()} / ${contextLimit.toLocaleString()}`,
+          `📬 Pending: ${s.pendingCount} | Queue: ${queue.length}`,
+          `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
+          `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
+        ];
+        await feishu.reply(messageId, lines.join('\n'));
+      }
       return;
     }
 
-    // 1.5: /help — list all available commands
+    // 1.5: /help — list all available commands — global operation
     if (text.trim() === '/help') {
       const lines = [
         '📖 可用命令:',
@@ -481,11 +521,7 @@ async function main() {
     }
 
     // Routing: 小群 → DirectorPool, 私聊 → 主 Director
-    const routingKey = (meta.chatMode === 'topic' && meta.threadId)
-      ? meta.threadId                        // 话题群: 按 thread_id 路由
-      : (meta.chatType === 'group')
-        ? chatId                             // 普通群: 按 chatId 路由
-        : undefined;                         // 私聊: 默认 Director
+    // (routingKey was computed above, before slash command handling)
     if (routingKey) {
       log.debug(`[shell] Routing key: ${routingKey} (chatMode=${meta.chatMode}, threadId=${meta.threadId ?? 'N/A'})`);
     }
@@ -626,10 +662,9 @@ async function main() {
   }
 
   // Graceful shutdown
-  process.on('SIGINT', () => {
-    console.log('[shell] Shutting down (Director stays alive)...');
-    pool.shutdownAll().catch(() => {});
-    director.stop();
+  process.on('SIGINT', async () => {
+    console.log('[shell] Shutting down...');
+    await Promise.allSettled([pool.shutdownAll(), director.stop()]);
     process.exit(0);
   });
 }

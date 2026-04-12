@@ -32,6 +32,7 @@ export class DirectorPool {
   private poolConfig: PoolConfig;
   private directorConfig: Config['director'];
   private handlers: PoolEventHandlers;
+  private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     mainDirector: Director,
@@ -43,6 +44,12 @@ export class DirectorPool {
     this.poolConfig = poolConfig;
     this.directorConfig = directorConfig;
     this.handlers = handlers;
+
+    // Start idle Director reaper — check every minute, shutdown Directors
+    // that have been idle longer than idle_timeout_minutes
+    if (poolConfig.idle_timeout_minutes > 0) {
+      this.idleTimer = setInterval(() => this.reapIdle(), 60_000);
+    }
   }
 
   /** Get the main (p2p) Director */
@@ -150,6 +157,10 @@ export class DirectorPool {
 
   /** Shutdown all non-main Directors */
   async shutdownAll(): Promise<void> {
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
+    }
     const chatIds = [...this.entries.keys()];
     for (const chatId of chatIds) {
       await this.shutdown(chatId);
@@ -174,6 +185,24 @@ export class DirectorPool {
       directorStatus: entry.director.getStatus(),
       queueLength: entry.queue.length,
     }));
+  }
+
+  /** Reap idle Directors that have exceeded idle_timeout_minutes */
+  private reapIdle(): void {
+    const timeoutMs = this.poolConfig.idle_timeout_minutes * 60_000;
+    const now = Date.now();
+
+    for (const [chatId, entry] of this.entries) {
+      // Skip Directors with pending messages
+      if (entry.queue.length > 0) continue;
+
+      if (now - entry.lastActiveAt > timeoutMs) {
+        console.log(`[pool] Reaping idle Director for group "${entry.groupName}" (idle ${Math.floor((now - entry.lastActiveAt) / 1000)}s)`);
+        this.shutdown(chatId).catch((err) => {
+          console.error(`[pool] Failed to reap idle Director "${entry.groupName}":`, err);
+        });
+      }
+    }
   }
 
   /** Wire Director events for a group chat Director */
@@ -231,12 +260,14 @@ export class DirectorPool {
     });
   }
 
-  /** Evict the least recently used group Director */
+  /** Evict the least recently used group Director (skip Directors with pending messages) */
   private async evictLRU(): Promise<void> {
     let lruChatId: string | null = null;
     let lruTime = Infinity;
 
     for (const [chatId, entry] of this.entries) {
+      // Skip Directors that are still processing messages
+      if (entry.queue.length > 0) continue;
       if (entry.lastActiveAt < lruTime) {
         lruTime = entry.lastActiveAt;
         lruChatId = chatId;
@@ -247,6 +278,10 @@ export class DirectorPool {
       const entry = this.entries.get(lruChatId)!;
       console.log(`[pool] Evicting LRU Director for group "${entry.groupName}" (idle ${Math.floor((Date.now() - lruTime) / 1000)}s)`);
       await this.shutdown(lruChatId);
+    } else {
+      // All Directors have pending messages — cannot evict safely
+      console.warn(`[pool] All ${this.entries.size} Directors are busy, cannot evict`);
+      throw new Error('所有会话都在忙碌中，系统繁忙，请稍后重试');
     }
   }
 }
