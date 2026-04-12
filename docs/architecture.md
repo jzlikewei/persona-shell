@@ -158,7 +158,87 @@ tools: [Read, Grep, Glob, Bash, Agent]
 
 同时，Director 的编排逻辑（如何选人格、如何跑 debate）用 Claude Code skill 系统定义。验收逻辑用 hook 系统实现。
 
-## 五、隔离与通信机制
+## 五、通讯层抽象（MessagingClient）
+
+### 设计原则
+
+通讯平台（飞书、Telegram、Slack、Web 控制台等）是外挂的适配器，路由层不依赖任何平台特有概念。
+
+```
+通讯适配器层                  路由层 (index.ts)           Director 层
+───────────────              ─────────────────          ──────────────
+feishu.ts                    MessagingRouter            director.ts
+web (console.ts)               │                       director-pool.ts
+telegram.ts (未来)             │
+                               ▼
+                         平台无关的路由决策
+                         引用格式化、模式分流
+```
+
+### MessagingClient 接口
+
+所有通讯平台适配器实现同一接口（`src/messaging.ts`）：
+
+```typescript
+interface MessagingClient {
+  start(): void;
+  onMessage(handler: (msg: IncomingMessage) => void): void;
+  reply(messageId: string, text: string): Promise<void>;
+  sendMessage(chatId: string, text: string): Promise<string | null>;
+  addReaction(messageId: string, emoji: string): Promise<void>;
+  // ... 文件上传等
+  getLastChatId(): string | null;
+  getConnectionStatus(): 'connected' | 'disconnected';
+}
+```
+
+### IncomingMessage（平台无关的入站消息）
+
+```typescript
+interface IncomingMessage {
+  text: string;
+  messageId: string;
+  chatId: string;
+  chatType: 'p2p' | 'group';
+  memberCount?: number;
+  groupName?: string;
+  threadId?: string;      // 子对话（飞书话题、Slack thread、Telegram topic）
+  quotedText?: string;    // 引用回复的原文
+}
+```
+
+关键设计：不暴露平台特有字段（如飞书的 `chatMode: 'topic'`），用通用的 `threadId` 表达子对话概念。
+
+### MessagingRouter（多渠道路由器）
+
+```
+              MessagingRouter
+              ┌─────────────┐
+              │ messageOrigin│  ← messageId → client 映射
+              │   Map        │
+              └──┬────────┬─┘
+                 │        │
+         ┌───────┘        └───────┐
+         ▼                        ▼
+  FeishuClient              WebMessagingClient
+  (primary)                 (console WebSocket)
+```
+
+- 所有 client 的入站消息汇入同一个 handler
+- Director 回复时，按 messageId 查 origin 路由到正确的 client
+- `sendMessage`（主动通知）默认走 primary
+- 新增渠道只需：实现 `MessagingClient` + `router.addClient()`
+
+### 引用消息处理
+
+通讯层只提取引用原文（`quotedText`），不做截断。路由层根据目标模式决定截断策略：
+
+| 目标 | 截断 | 原因 |
+|------|------|------|
+| Director / Pool | 截断到 `quote_max_length` | 原文已在上下文中 |
+| One-shot | 不截断 | 无上下文，需要完整引用 |
+
+## 六、隔离与通信机制
 
 ### 硬隔离
 
@@ -290,7 +370,7 @@ report:
 | Relay（接力） | 从模糊到清晰的渐进式任务 | Explorer → Executor → （Critic）→ Integrator |
 | Debate（辩论） | 高影响、不可逆的关键决策 | 多人格多轮交锋，Director 做最终裁决 |
 
-## 六、多会话与群聊路由
+## 七、多会话与群聊路由
 
 ### 消息路由决策树
 
@@ -376,7 +456,7 @@ pool:
 - 主 Director：`读取 daily/state.md 恢复工作上下文，了解当前待处理事项。`
 - 群 Director：`你正在为群「{群名}」服务。请读取 daily/state.md 了解全局状态（只读）。`
 
-## 七、Director Daemon 运行机制
+## 八、Director Daemon 运行机制
 
 ### 运行形态
 
@@ -470,7 +550,7 @@ last_flush: 2026-04-05T14:30:00
 （跨 cycle 需要保留的关键临时信息）
 ```
 
-## 八、对齐机制
+## 九、对齐机制
 
 不采用复杂的治理/审批层，而是两个轻量机制：
 
@@ -491,7 +571,7 @@ last_flush: 2026-04-05T14:30:00
 
 **记忆精度就是对齐精度。**
 
-## 九、迭代与同步
+## 十、迭代与同步
 
 通过日报/周报 + 关键决策点复盘，让本体介入并微调系统的价值锚点。
 
@@ -499,11 +579,14 @@ last_flush: 2026-04-05T14:30:00
 - 周报：Introspector 定时生成系统自省报告
 - 复盘接口：本体审阅日报/周报，更新 Core 层
 
-## 十、技术栈
+## 十一、技术栈
 
 | 组件 | 实现 |
 |------|------|
-| TS Shell | TypeScript 进程，飞书 WebSocket + 进程管理 + named pipe I/O |
+| TS Shell | TypeScript 进程，进程管理 + named pipe I/O |
+| MessagingRouter | 多渠道路由器，按 messageId 路由回复到正确渠道 |
+| 飞书适配器 | MessagingClient 实现，WebSocket 长连接 + 飞书 SDK |
+| Web 控制台适配器 | MessagingClient 实现，复用控制台 WebSocket |
 | 主 Director | Claude Code CLI（detached），stream-json 双向通信 |
 | DirectorPool | 多 Director 实例管理，按群/话题路由，idle 超时回收 |
 | One-shot 响应 | Claude Code CLI（`-p` 模式），大群无状态事件响应 |
@@ -512,10 +595,9 @@ last_flush: 2026-04-05T14:30:00
 | 记忆存储 | 本地 Markdown 文件 |
 | 通信协议 | Briefing / Report（YAML 结构） |
 | 定时触发 | cron |
-| 外部 IM 接入 | 飞书 Bot WebSocket → TS Shell → 路由分发 → Director/One-shot |
 | 日报输出 | 本地 Markdown 文件 |
 
-## 十一、全局日志与可追踪性
+## 十二、全局日志与可追踪性
 
 所有决策链路可追踪：
 
