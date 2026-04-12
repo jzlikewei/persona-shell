@@ -125,8 +125,9 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   }
 
   // background (子角色) 专用参数
-  if (options.mode === 'background' && options.prompt) {
-    args.push('-p', options.prompt);
+  if (options.mode === 'background') {
+    args.push('--bare');
+    if (options.prompt) args.push('-p', options.prompt);
   }
 
   // 额外参数
