@@ -23,6 +23,8 @@ export interface PersonaSpawnOptions {
   mcpConfigPath?: string;
   /** 恢复已有 session */
   sessionId?: string;
+  /** session 显示名称（通过 --name 传入，如 "director-main-20260412"） */
+  sessionName?: string;
   /** FIFO 输入管道路径 */
   pipeIn?: string;
   /** FIFO 输出管道路径 */
@@ -122,6 +124,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     args.push('--input-format', 'stream-json', '--bare', '--effort', 'max');
     if (options.mcpConfigPath) args.push('--mcp-config', options.mcpConfigPath);
     if (options.sessionId) args.push('--resume', options.sessionId);
+    if (options.sessionName) args.push('--name', options.sessionName);
   }
 
   // background (子角色) 专用参数

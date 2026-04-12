@@ -593,6 +593,12 @@ export class Director extends EventEmitter {
       console.log(`[director:${this.label}] Starting new session`);
     }
 
+    // 生成语义化 session 名称：director-{label}-{日期}[-{群名}]
+    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+    const nameParts = ['director', this.label, dateStr];
+    if (this.groupName) nameParts.push(this.groupName);
+    const sessionName = nameParts.join('-');
+
     const { child } = spawnPersona({
       role: 'director',
       personaDir,
@@ -600,6 +606,7 @@ export class Director extends EventEmitter {
       mode: 'foreground',
       mcpConfigPath,
       sessionId: savedSession ?? undefined,
+      sessionName,
       pipeIn: this.pipeIn,
       pipeOut: this.pipeOut,
       stderrPath: join(this.pipeDir, 'director-stderr.log'),
