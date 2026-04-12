@@ -54,10 +54,8 @@ interface SessionInfo {
 
 /** Parse director logs to reconstruct conversation messages */
 function parseConversationLog(limit: number, sessionFilter?: string): ConversationMessage[] {
-  const messages: ConversationMessage[] = [];
-
-  // Parse input log — each line is {"type":"user","message":{"role":"user","content":"..."}}
-  const inputs: string[] = [];
+  // Parse input log — new format has timestamp + director fields
+  const inputs: Array<{ content: string; director?: string; timestamp?: string }> = [];
   try {
     const raw = readTail(INPUT_LOG, MAX_LOG_READ_BYTES);
     for (const line of raw.split('\n')) {
@@ -65,24 +63,25 @@ function parseConversationLog(limit: number, sessionFilter?: string): Conversati
       try {
         const evt = JSON.parse(line);
         if (evt?.type === 'user' && evt.message?.content) {
-          inputs.push(evt.message.content);
+          inputs.push({ content: evt.message.content, director: evt.director, timestamp: evt.timestamp });
         }
       } catch { /* skip malformed lines */ }
     }
   } catch { /* file read error */ }
 
-  // Parse output log — extract result events with response text + session_id
-  // Only keep result events that have actual response text (skip intermediate tool-use results)
-  const outputs: Array<{ text: string; sessionId?: string }> = [];
+  // Parse output log — extract result events with response text + session_id + director
+  const outputs: Array<{ text: string; sessionId?: string; director?: string }> = [];
   try {
     const raw = readTail(OUTPUT_LOG, MAX_LOG_READ_BYTES);
     let pendingText = '';
     let lastSessionId: string | undefined;
+    let lastDirector: string | undefined;
 
       for (const line of raw.split('\n')) {
         if (!line.trim()) continue;
         try {
           const evt = JSON.parse(line);
+          if (evt._director) lastDirector = evt._director;
           if (evt.type === 'assistant' && evt.message?.content) {
             const content = evt.message.content;
             if (typeof content === 'string') {
@@ -97,9 +96,8 @@ function parseConversationLog(limit: number, sessionFilter?: string): Conversati
           } else if (evt.type === 'result') {
             if (evt.session_id) lastSessionId = evt.session_id;
             const resultText = pendingText || (typeof evt.result === 'string' ? evt.result : '');
-            // Only collect results with actual text — skip empty intermediate tool-use results
             if (resultText) {
-              outputs.push({ text: resultText, sessionId: lastSessionId });
+              outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector });
             }
             pendingText = '';
           }
@@ -107,30 +105,55 @@ function parseConversationLog(limit: number, sessionFilter?: string): Conversati
       }
     } catch { /* file read error */ }
 
-  // Tail-aligned pairing: most recent input corresponds to most recent output.
-  // Output log may have started recording before input log, so early outputs are orphans.
-  const outputOffset = Math.max(0, outputs.length - inputs.length);
+  // Per-director pairing: group inputs and outputs by director label, then pair within each group
+  // This handles multi-Director log mixing correctly
+  const directorInputs = new Map<string, string[]>();
+  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string }>>();
 
-  // Orphan outputs (no matching input)
-  for (let i = 0; i < outputOffset; i++) {
-    const o = outputs[i];
-    if (sessionFilter && o.sessionId && o.sessionId !== sessionFilter) continue;
-    messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId });
+  for (const inp of inputs) {
+    const key = inp.director ?? 'main';
+    const arr = directorInputs.get(key) ?? [];
+    arr.push(inp.content);
+    directorInputs.set(key, arr);
   }
 
-  // Paired input/output
-  for (let i = 0; i < inputs.length; i++) {
-    const oIdx = outputOffset + i;
-    const sessionId = oIdx < outputs.length ? outputs[oIdx].sessionId : undefined;
-    if (sessionFilter && sessionId && sessionId !== sessionFilter) continue;
+  for (const out of outputs) {
+    const key = out.director ?? 'main';
+    const arr = directorOutputs.get(key) ?? [];
+    arr.push({ text: out.text, sessionId: out.sessionId });
+    directorOutputs.set(key, arr);
+  }
 
-    messages.push({ direction: 'in', content: inputs[i], sessionId });
-    if (oIdx < outputs.length) {
-      messages.push({ direction: 'out', content: outputs[oIdx].text, sessionId: outputs[oIdx].sessionId });
+  // Pair within each director group using tail-aligned strategy
+  const messages: ConversationMessage[] = [];
+  const allDirectors = new Set([...directorInputs.keys(), ...directorOutputs.keys()]);
+
+  for (const dir of allDirectors) {
+    const ins = directorInputs.get(dir) ?? [];
+    const outs = directorOutputs.get(dir) ?? [];
+    const offset = Math.max(0, outs.length - ins.length);
+
+    // Orphan outputs
+    for (let i = 0; i < offset; i++) {
+      const o = outs[i];
+      if (sessionFilter && o.sessionId && o.sessionId !== sessionFilter) continue;
+      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId });
+    }
+
+    // Paired input/output
+    for (let i = 0; i < ins.length; i++) {
+      const oIdx = offset + i;
+      const sessionId = oIdx < outs.length ? outs[oIdx].sessionId : undefined;
+      if (sessionFilter && sessionId && sessionId !== sessionFilter) continue;
+
+      messages.push({ direction: 'in', content: ins[i], sessionId });
+      if (oIdx < outs.length) {
+        messages.push({ direction: 'out', content: outs[oIdx].text, sessionId: outs[oIdx].sessionId });
+      }
     }
   }
 
-  // Return most recent first, limited
+  // Sort by original order (approximate: use array indices as proxy) and return
   return messages.slice(-limit).reverse();
 }
 
