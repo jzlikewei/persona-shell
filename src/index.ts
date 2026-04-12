@@ -449,9 +449,10 @@ async function main() {
       console.warn('[shell] Failed to add reaction:', err);
     });
 
-    // 话题群 → 始终走 DirectorPool（话题群是并行工具，不按人数判断）
-    // 大群(>threshold 人，非话题群) → one-shot 响应，不走 Director
-    if (meta.chatType === 'group' && meta.chatMode !== 'topic' && (meta.memberCount ?? 0) > config.pool.small_group_threshold) {
+    // 并行群（配置的特定 chat_id）→ 始终走 DirectorPool，不受人数限制
+    const isParallelChat = config.pool.parallel_chat_ids.includes(chatId);
+    // 大群(>threshold 人，非并行群) → one-shot 响应，不走 Director
+    if (meta.chatType === 'group' && !isParallelChat && (meta.memberCount ?? 0) > config.pool.small_group_threshold) {
       const oneShotPrompt = `你在飞书群聊「${meta.chatName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${text}`;
 
       console.log(`[shell] Large group one-shot: ${text.slice(0, 50)}... (members=${meta.memberCount})`);

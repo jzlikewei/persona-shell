@@ -33,6 +33,7 @@ export interface Config {
     max_directors: number;
     idle_timeout_minutes: number;
     small_group_threshold: number;
+    parallel_chat_ids: string[];  // 配置为"并行模式"的群 chat_id，始终走 DirectorPool
   };
   logging: {
     level: string;
@@ -87,6 +88,7 @@ export function loadConfig(path?: string): Config {
       max_directors: Number(yaml.pool?.max_directors ?? 5),
       idle_timeout_minutes: Number(yaml.pool?.idle_timeout_minutes ?? 30),
       small_group_threshold: Number(yaml.pool?.small_group_threshold ?? 5),
+      parallel_chat_ids: Array.isArray(yaml.pool?.parallel_chat_ids) ? yaml.pool.parallel_chat_ids : [],
     },
     logging: {
       level: yaml.logging?.level ?? 'info',
