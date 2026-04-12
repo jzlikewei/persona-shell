@@ -8,6 +8,7 @@ import { Scheduler } from './scheduler.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob } from './task-store.js';
 import { writeFileSync } from 'fs';
 import { join, extname } from 'path';
+import { setLogLevel, log } from './logger.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -19,6 +20,7 @@ for (const method of ['log', 'warn', 'error'] as const) {
 
 async function main() {
   const config = loadConfig();
+  setLogLevel(config.logging.level);
   const queue = new MessageQueue(config.logging.queue_log);
   const director = new Director(config.director);
   const feishu = createFeishuClient(config.feishu);
@@ -161,7 +163,7 @@ async function main() {
   director.on('system-response', async (reply: string, replyToMessageId: string) => {
     try {
       await feishu.reply(replyToMessageId, reply);
-      console.log(`[shell] System response replied to ${replyToMessageId}`);
+      log.debug(`[shell] System response replied to ${replyToMessageId}`);
     } catch (err) {
       console.warn('[shell] Failed to reply system response:', err);
     }
@@ -172,7 +174,7 @@ async function main() {
   const attachmentBuffer: AttachmentBuffer = {
     push(filePath: string) {
       pendingAttachments.push(filePath);
-      console.log(`[shell] Compositor: buffered attachment ${filePath} (${pendingAttachments.length} pending)`);
+      log.debug(`[shell] Compositor: buffered attachment ${filePath} (${pendingAttachments.length} pending)`);
     },
     hasPending() {
       return queue.length > 0;
@@ -287,7 +289,7 @@ async function main() {
     const metaLog = meta.chatType === 'group'
       ? `chatType=${meta.chatType} chatName="${meta.chatName ?? ''}" members=${meta.memberCount ?? '?'}`
       : `chatType=${meta.chatType}`;
-    console.log(`[shell] Message meta: ${metaLog}`);
+    log.debug(`[shell] Message meta: ${metaLog}`);
 
     // 1.3: Non-text message feedback
     if (msgType !== 'text') {
@@ -438,7 +440,7 @@ async function main() {
           } else {
             await feishu.uploadAndReplyFile(item.messageId, filePath);
           }
-          console.log(`[shell] Compositor: sent attachment ${filePath} as reply to ${item.messageId}`);
+          log.debug(`[shell] Compositor: sent attachment ${filePath} as reply to ${item.messageId}`);
         } catch (err) {
           console.error(`[shell] Compositor: failed to send attachment ${filePath}:`, err);
         }

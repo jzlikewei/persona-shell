@@ -8,6 +8,7 @@ import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
 import { getState, setState, listTasks } from './task-store.js';
 import { spawnPersona } from './persona-process.js';
+import { log } from './logger.js';
 
 /** Sidecar log paths — input (user→Director) and output (Director→user) */
 const DIRECTOR_LOG_DIR = join(import.meta.dirname, '..', 'logs');
@@ -557,12 +558,12 @@ export class Director extends EventEmitter {
 
         switch (event.type) {
           case 'system':
-            console.log(`[director] System event: ${event.subtype}`);
+            log.debug(`[director] System event: ${event.subtype}`);
             // Capture session_id from init event
             if (event.subtype === 'init' && event.session_id) {
               this.sessionId = event.session_id;
               this.saveSession(event.session_id);
-              console.log(`[director] Session ID: ${event.session_id}`);
+              log.debug(`[director] Session ID: ${event.session_id}`);
             }
             break;
 
@@ -631,30 +632,30 @@ export class Director extends EventEmitter {
             if (currentResponse) {
               if (this.flushing && this.flushCheckpointResolve) {
                 // Flush checkpoint response — don't emit to users
-                console.log(`[director] FLUSH checkpoint response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director] FLUSH checkpoint response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushCheckpointResolve();
                 this.flushCheckpointResolve = null;
               } else if (this.flushing && this.flushBootstrapResolve) {
                 // Flush bootstrap response — don't emit to users
-                console.log(`[director] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushBootstrapResolve();
                 this.flushBootstrapResolve = null;
               } else if (this.systemMessagePending > 0) {
                 // 系统消息响应（cron director_msg 等）— 吸收，不转发用户
-                console.log(`[director] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
                 this.systemMessagePending--;
               } else if (this.discardNextResponse) {
                 // Late response after flush timeout — discard silently
-                console.log(`[director] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
                 this.discardNextResponse = false;
               } else if (this.bootstrapping) {
                 // Startup bootstrap response — absorb, don't emit to users
-                console.log(`[director] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.bootstrapping = false;
               } else if (this.systemReplyQueue.length > 0) {
                 // System message response (task notification) — emit with feishu messageId for reply
                 const replyTo = this.systemReplyQueue.shift()!;
-                console.log(`[director] System message response (replyTo=${replyTo}): ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[director] System message response (replyTo=${replyTo}): ${currentResponse.trim().slice(0, 100)}`);
                 this.emit('system-response', currentResponse.trim(), replyTo);
               } else {
                 this.emit('response', currentResponse.trim(), event.duration_ms);

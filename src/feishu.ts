@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'fs';
 import { extname, basename } from 'path';
 import type { Config } from './config.js';
 import { getState, setState } from './task-store.js';
+import { log } from './logger.js';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -198,7 +199,7 @@ export function createFeishuClient(config: Config['feishu']) {
       const openId = res?.data?.bot?.open_id ?? res?.bot?.open_id;
       if (openId) {
         botOpenId = openId;
-        console.log(`[feishu] Bot open_id resolved: ${openId}`);
+        log.debug(`[feishu] Bot open_id resolved: ${openId}`);
       } else {
         console.warn('[feishu] Bot info response missing open_id:', JSON.stringify(res?.data ?? res));
       }
@@ -244,7 +245,7 @@ export function createFeishuClient(config: Config['feishu']) {
 
       // LRU message deduplication — prevent duplicate processing on WebSocket reconnect
       if (processedMessageIds.has(message_id)) {
-        console.log(`[feishu] duplicate message ${message_id}, skipped`);
+        log.debug(`[feishu] duplicate message ${message_id}, skipped`);
         return;
       }
       processedMessageIds.add(message_id);
@@ -262,14 +263,14 @@ export function createFeishuClient(config: Config['feishu']) {
       const chatType = ((message as Record<string, unknown>).chat_type as string) === 'group' ? 'group' : 'p2p';
 
       // Log raw message for debugging rich text parsing
-      console.log(`[feishu] raw ${msgType} content (${chatType}): ${content}`);
-      if (mentions?.length) console.log(`[feishu] mentions: ${JSON.stringify(mentions)}`);
+      log.debug(`[feishu] raw ${msgType} content (${chatType}): ${content}`);
+      if (mentions?.length) log.debug(`[feishu] mentions: ${JSON.stringify(mentions)}`);
 
       // Group chat @mention filter: skip messages that don't mention the bot
       if (chatType === 'group') {
         const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
         if (!hasBotMention) {
-          console.log(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
+          log.debug(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
           return;
         }
       }
@@ -303,7 +304,7 @@ export function createFeishuClient(config: Config['feishu']) {
         const quoted = await fetchMessageText(client, parentId);
         if (!quoted) return text;
         const quotedBlock = quoted.split('\n').map(l => `> ${l}`).join('\n');
-        console.log(`[feishu] prepended quoted message ${parentId}`);
+        log.debug(`[feishu] prepended quoted message ${parentId}`);
         return `${quotedBlock}\n\n${text}`.trim();
       };
 
