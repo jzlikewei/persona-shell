@@ -43,8 +43,12 @@ export class Director extends EventEmitter {
   private writeHandle: FileHandle | null = null;
   private sessionFile: string;
   private sessionId: string | null = null;
+  private sessionName: string | null = null;
   private interrupted = false;
   private flushing = false;
+  private shuttingDown = false;
+  private shutdownResolve: (() => void) | null = null;
+  private explicitRestart = false;
   private lastTimeSyncAt = 0;
   private lastFlushAt: number = Date.now();
   private lastInputTokens = 0;
@@ -136,11 +140,13 @@ export class Director extends EventEmitter {
     });
   }
 
-  async start(): Promise<void> {
+  async start(): Promise<boolean> {
     this.ensurePipeDir();
 
+    let freshStart = true;
     if (this.isDirectorAlive()) {
       console.log(`[director:${this.label}] Existing director process found (pid: ${this.readPid()}), reconnecting...`);
+      freshStart = false;
     } else {
       this.ensurePipes();
       this.spawnDirector();
@@ -157,6 +163,8 @@ export class Director extends EventEmitter {
     console.log(`[director:${this.label}] Pipes connected`);
 
     this.listenOutput(readHandle);
+
+    return freshStart;
   }
 
   /** Send SIGINT to cancel current request, then auto-restart with --resume */
@@ -315,6 +323,7 @@ export class Director extends EventEmitter {
     alive: boolean;
     pid: number | null;
     sessionId: string | null;
+    sessionName: string | null;
     flushing: boolean;
     interrupted: boolean;
     pendingCount: number;
@@ -351,6 +360,7 @@ export class Director extends EventEmitter {
       alive: this.isDirectorAlive(),
       pid: this.readPid(),
       sessionId: this.sessionId,
+      sessionName: this.sessionName,
       flushing: this.flushing,
       interrupted: this.interrupted,
       pendingCount: this.pendingCount,
@@ -366,26 +376,24 @@ export class Director extends EventEmitter {
     };
   }
 
-  /** 公开的重启方法：杀掉当前进程并重新启动 */
+  /** 公开的重启方法：杀掉当前进程并重新启动（保留 session，加载新配置） */
   async restartDirector(): Promise<void> {
+    this.explicitRestart = true;
     const pid = this.readPid();
     if (pid) {
       try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
     }
-    // restart() 会在 pipe close 回调中被触发，但我们这里主动调用以确保完成
-    // 等待 pipe 关闭后自动 restart
+    // Wait for close handler to finish restart (it checks explicitRestart flag)
     await new Promise<void>((resolve) => {
-      const onRestart = () => resolve();
-      // 如果 pipe close 触发了 restart，listenOutput 的 close handler 会调用 restart()
-      // 我们用一个 timeout 兜底
       const timer = setTimeout(() => {
         this.removeListener('restarted', onRestart);
         resolve();
-      }, 10_000);
-      this.once('restarted', () => {
+      }, 30_000);
+      const onRestart = () => {
         clearTimeout(timer);
-        onRestart();
-      });
+        resolve();
+      };
+      this.once('restarted', onRestart);
     });
   }
 
@@ -446,17 +454,16 @@ export class Director extends EventEmitter {
     if (!this.writeHandle) {
       throw new Error('pipe not open');
     }
-    const payload = JSON.stringify({
-      type: 'user',
-      message: { role: 'user', content },
-    }) + '\n';
+    const msg = { type: 'user', message: { role: 'user', content } };
+    const pipePayload = JSON.stringify(msg) + '\n';
 
     try {
       if (!existsSync(DIRECTOR_LOG_DIR)) mkdirSync(DIRECTOR_LOG_DIR, { recursive: true });
-      appendFileSync(DIRECTOR_INPUT_LOG, payload);
+      const logPayload = JSON.stringify({ ...msg, timestamp: new Date().toISOString(), director: this.label }) + '\n';
+      appendFileSync(DIRECTOR_INPUT_LOG, logPayload);
     } catch { /* best-effort logging */ }
 
-    await this.writeHandle.write(payload);
+    await this.writeHandle.write(pipePayload);
   }
 
   /** 7.3.5: Notify Director that a managed task has completed or failed */
@@ -481,6 +488,34 @@ export class Director extends EventEmitter {
   async stop(): Promise<void> {
     await this.writeHandle?.close();
     this.writeHandle = null;
+  }
+
+  /** Gracefully shut down: kill the Director process and wait for pipe close.
+   *  Unlike restart(), this does NOT spawn a new process — used for /restart-shell. */
+  async shutdown(): Promise<void> {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+
+    const pid = this.readPid();
+    if (!pid || !this.isDirectorAlive()) {
+      // Already dead, just clean up
+      await this.writeHandle?.close();
+      this.writeHandle = null;
+      return;
+    }
+
+    return new Promise<void>((resolve) => {
+      this.shutdownResolve = resolve;
+      try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
+      // Safety timeout — if pipe close never fires
+      setTimeout(() => {
+        if (this.shutdownResolve) {
+          console.warn(`[director:${this.label}] Shutdown timeout, forcing`);
+          this.shutdownResolve();
+          this.shutdownResolve = null;
+        }
+      }, 10_000);
+    });
   }
 
   private waitForDrain(timeoutMs: number): Promise<boolean> {
@@ -598,6 +633,7 @@ export class Director extends EventEmitter {
     const nameParts = ['director', this.label, dateStr];
     if (this.groupName) nameParts.push(this.groupName);
     const sessionName = nameParts.join('-');
+    this.sessionName = sessionName;
 
     const { child } = spawnPersona({
       role: 'director',
@@ -632,8 +668,14 @@ export class Director extends EventEmitter {
       // 4.2: Sidecar raw output to logs/director-output.log before parsing
       try {
         if (!existsSync(DIRECTOR_LOG_DIR)) mkdirSync(DIRECTOR_LOG_DIR, { recursive: true });
-        appendFileSync(DIRECTOR_OUTPUT_LOG, line + '\n');
-      } catch { /* best-effort logging */ }
+        const parsed = JSON.parse(line);
+        parsed._ts = new Date().toISOString();
+        parsed._director = this.label;
+        appendFileSync(DIRECTOR_OUTPUT_LOG, JSON.stringify(parsed) + '\n');
+      } catch {
+        // JSON parse failed — write raw line as fallback
+        try { appendFileSync(DIRECTOR_OUTPUT_LOG, line + '\n'); } catch { /* best-effort */ }
+      }
 
       try {
         const event = JSON.parse(line);
@@ -776,7 +818,21 @@ export class Director extends EventEmitter {
         this.drainResolve = null;
       }
 
-      if (this.interrupted) {
+      if (this.shuttingDown) {
+        // Graceful shutdown — do NOT restart
+        console.log(`[director:${this.label}] Shutdown complete`);
+        await this.writeHandle?.close();
+        this.writeHandle = null;
+        if (this.shutdownResolve) {
+          this.shutdownResolve();
+          this.shutdownResolve = null;
+        }
+      } else if (this.explicitRestart) {
+        this.explicitRestart = false;
+        console.log(`[director:${this.label}] Explicit restart, restarting with --resume...`);
+        await this.restart();
+        this.emit('restarted');
+      } else if (this.interrupted) {
         this.interrupted = false;
         console.log(`[director:${this.label}] Interrupted, restarting with --resume...`);
         await this.restart();
@@ -789,7 +845,7 @@ export class Director extends EventEmitter {
         console.log(`[director:${this.label}] Non-main Director closed unexpectedly`);
         this.emit('close');
       } else {
-        // 4.1: Alert before unexpected restart
+        // 4.1: Alert before unexpected restart — this is a genuine crash
         this.emit('alert', `🔴 Director 进程意外退出，正在重启...`);
         console.log(`[director:${this.label}] Output pipe closed, restarting...`);
         await this.restart();

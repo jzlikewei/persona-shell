@@ -24,6 +24,7 @@ export interface ChatMeta {
   memberCount?: number;
   chatName?: string;
   threadId?: string;  // 话题群的 thread_id（omt_ 前缀），用于按话题路由 session
+  quotedText?: string;  // 被引用消息的完整文本（引用回复时有值）
 }
 
 type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string, meta: ChatMeta) => void;
@@ -310,14 +311,15 @@ export function createFeishuClient(config: Config['feishu']) {
         return text.replace(/ {2,}/g, ' ').trim();
       };
 
-      /** Prepend quoted message content as blockquote if this is a reply. */
-      const prependQuote = async (text: string): Promise<string> => {
-        if (!parentId) return text;
+      /** Fetch quoted message text and store in meta (if this is a reply).
+       *  Formatting and truncation is left to the consumer (routing layer). */
+      const fetchQuote = async (): Promise<void> => {
+        if (!parentId) return;
         const quoted = await fetchMessageText(client, parentId);
-        if (!quoted) return text;
-        const quotedBlock = quoted.split('\n').map(l => `> ${l}`).join('\n');
-        log.debug(`[feishu] prepended quoted message ${parentId}`);
-        return `${quotedBlock}\n\n${text}`.trim();
+        if (quoted) {
+          meta.quotedText = quoted;
+          log.debug(`[feishu] fetched quoted message ${parentId} (${quoted.length} chars)`);
+        }
       };
 
       if (msgType === 'text') {
@@ -332,7 +334,7 @@ export function createFeishuClient(config: Config['feishu']) {
           if (!text) return;
 
           text = stripMentions(text);
-          text = await prependQuote(text);
+          await fetchQuote();
           if (!text) return;
 
           for (const handler of handlers) {
@@ -353,7 +355,7 @@ export function createFeishuClient(config: Config['feishu']) {
           if (!text) return;
 
           text = stripMentions(text);
-          text = await prependQuote(text);
+          await fetchQuote();
           if (!text) return;
 
           for (const handler of handlers) {

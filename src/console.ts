@@ -45,6 +45,7 @@ interface ConversationMessage {
 
 interface SessionInfo {
   sessionId: string;
+  sessionName?: string;
   messageCount: number;
   firstMessageAt?: string;
   lastMessageAt?: string;
@@ -381,6 +382,7 @@ export function startConsole(
           feishu: feishuStatus,
           directorAlive: ds.alive,
           sessionId: ds.sessionId,
+          sessionName: ds.sessionName,
         },
         activity,
         context: {
@@ -563,7 +565,14 @@ export function startConsole(
             return Response.json(parseConversationLog(limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
-            return Response.json(parseSessions());
+            const sessions = parseSessions();
+            // Inject sessionName for the live session from Director status
+            const ds = director.getStatus();
+            if (ds.sessionId && ds.sessionName) {
+              const live = sessions.find(s => s.sessionId === ds.sessionId);
+              if (live) live.sessionName = ds.sessionName;
+            }
+            return Response.json(sessions);
           }
           // Task API routes
           if (url.pathname === '/api/tasks' && req.method === 'POST') {

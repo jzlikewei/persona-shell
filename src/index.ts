@@ -85,12 +85,15 @@ async function main() {
   writeFileSync(join(config.director.persona_dir, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
 
   // Start director process
-  await director.start();
+  const freshStart = await director.start();
 
   // Bootstrap: send initial message to trigger session creation and load context.
   // Claude CLI in stream-json mode doesn't create a session until it receives input.
   // Without this, Director sits idle with no session after restart.
-  director.bootstrap();
+  // Skip on reconnect — the Claude process already has context, sending bootstrap again wastes tokens.
+  if (freshStart) {
+    director.bootstrap();
+  }
 
   // DirectorPool for multi-group chat support
   const pool = new DirectorPool(director, config.pool, config.director, {
@@ -427,16 +430,26 @@ async function main() {
       return;
     }
 
-    // /restart — kill Director + restart Shell (launchd will respawn) — global operation
+    // /restart — restart current session's Director (routes to correct Director, preserves session)
     if (text.trim() === '/restart') {
-      await feishu.reply(messageId, 'Shell 正在重启...');
-      console.log('[shell] /restart: killing Director and exiting for launchd respawn');
-      const pid = director.getStatus().pid;
-      if (pid) {
-        try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
-      }
-      setTimeout(() => process.exit(0), 500);
+      feishu.addReaction(messageId, 'Typing').catch(() => {});
+      const poolEntry = getTargetEntry();
+      const targetDirector = poolEntry?.director ?? director;
+      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
+      await feishu.reply(messageId, `正在重启 ${label} Director...`);
+      console.log(`[shell] /restart: restarting ${label} Director`);
+      await targetDirector.restartDirector();
+      await feishu.reply(messageId, `${label} Director 已重启`);
       return;
+    }
+
+    // /restart-shell — shutdown all Directors + exit Shell (launchd will respawn)
+    if (text.trim() === '/restart-shell') {
+      await feishu.reply(messageId, 'Shell 正在重启...');
+      console.log('[shell] /restart-shell: shutting down all Directors and exiting for launchd respawn');
+      await pool.shutdownAll();
+      await director.shutdown();
+      process.exit(0);
     }
 
     // 1.4: /status — show Director status summary (routes to correct Director)
@@ -475,9 +488,10 @@ async function main() {
       const lines = [
         '📖 可用命令:',
         '/status — 查看 Director 状态摘要',
-        '/flush — 手动刷新上下文',
+        '/flush — 手动刷新上下文（checkpoint → 新 session）',
         '/esc — 取消队列中最早的消息',
-        '/restart — 重启 Shell 进程',
+        '/restart — 重启当前 Director（保留 session，加载新配置）',
+        '/restart-shell — 重启整个 Shell 进程（代码更新生效）',
         '/help — 显示此帮助信息',
       ];
       await feishu.reply(messageId, lines.join('\n'));
@@ -489,11 +503,23 @@ async function main() {
       console.warn('[shell] Failed to add reaction:', err);
     });
 
+    /** Format quoted text as blockquote prefix.
+     *  @param maxLen — truncate to this length (0 = no truncation, for stateless one-shot) */
+    const formatQuote = (raw: string, maxLen: number): string => {
+      const truncated = maxLen > 0 && raw.length > maxLen
+        ? raw.slice(0, maxLen) + '…(已截断)'
+        : raw;
+      const block = truncated.split('\n').map(l => `> ${l}`).join('\n');
+      return `[引用上文]\n${block}\n\n`;
+    };
+
     // 并行群（配置的特定 chat_id）→ 始终走 DirectorPool，不受人数限制
     const isParallelChat = config.pool.parallel_chat_ids.includes(chatId);
     // 大群(>threshold 人，非并行群) → one-shot 响应，不走 Director
     if (meta.chatType === 'group' && !isParallelChat && (meta.memberCount ?? 0) > config.pool.small_group_threshold) {
-      const oneShotPrompt = `你在飞书群聊「${meta.chatName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${text}`;
+      // One-shot 无上下文，引用需要保留全文
+      const quotePrefix = meta.quotedText ? formatQuote(meta.quotedText, 0) : '';
+      const oneShotPrompt = `你在飞书群聊「${meta.chatName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${quotePrefix}${text}`;
 
       console.log(`[shell] Large group one-shot: ${text.slice(0, 50)}... (members=${meta.memberCount})`);
       metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
@@ -508,16 +534,18 @@ async function main() {
 
     // Prepend group chat label for Director context
     // 话题群带 thread 后缀以区分不同话题上下文
+    // Director 有上下文，引用截断到 quote_max_length
+    const quotePrefix = meta.quotedText ? formatQuote(meta.quotedText, config.feishu.quote_max_length) : '';
     let directorText: string;
     if (meta.chatType === 'group') {
       if (meta.chatMode === 'topic' && meta.threadId) {
         const threadSuffix = meta.threadId.slice(-6);
-        directorText = `[话题群: ${meta.chatName || '未知群'} #${threadSuffix}] ${text}`;
+        directorText = `[话题群: ${meta.chatName || '未知群'} #${threadSuffix}] ${quotePrefix}${text}`;
       } else {
-        directorText = `[群聊: ${meta.chatName || '未知群'}] ${text}`;
+        directorText = `[群聊: ${meta.chatName || '未知群'}] ${quotePrefix}${text}`;
       }
     } else {
-      directorText = text;
+      directorText = `${quotePrefix}${text}`;
     }
 
     // Routing: 小群 → DirectorPool, 私聊 → 主 Director

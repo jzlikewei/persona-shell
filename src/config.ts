@@ -7,6 +7,7 @@ export interface Config {
   feishu: {
     app_id: string;
     app_secret: string;
+    quote_max_length: number;
   };
   director: {
     persona_dir: string;
@@ -58,7 +59,10 @@ export function loadConfig(path?: string): Config {
   const con = yaml.console ?? {};
 
   return {
-    feishu: yaml.feishu,
+    feishu: {
+      ...yaml.feishu,
+      quote_max_length: Number(yaml.feishu.quote_max_length ?? 32),
+    },
     director: {
       persona_dir: expandHome(dir.persona_dir ?? '~/.persona'),
       pipe_dir: dir.pipe_dir ?? '/tmp/persona',

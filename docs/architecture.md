@@ -290,7 +290,93 @@ report:
 | Relay（接力） | 从模糊到清晰的渐进式任务 | Explorer → Executor → （Critic）→ Integrator |
 | Debate（辩论） | 高影响、不可逆的关键决策 | 多人格多轮交锋，Director 做最终裁决 |
 
-## 六、Director Daemon 运行机制
+## 六、多会话与群聊路由
+
+### 消息路由决策树
+
+飞书消息到达 Shell 后，按以下规则分流到不同的处理模式：
+
+```
+飞书消息到达
+    │
+    ├─ 私聊(p2p) ──────────────────────→ 主 Director（长驻）
+    │
+    └─ 群聊(group)
+         │
+         ├─ 并行群（chat_id 在配置白名单）─→ DirectorPool（长驻，按 thread_id 路由）
+         │
+         ├─ 大群（成员 > threshold）──────→ One-shot（无状态，用完即释放）
+         │
+         └─ 小群（成员 ≤ threshold）─────→ DirectorPool（长驻，按 chat_id 路由）
+```
+
+### 三种处理模式
+
+| 模式 | 适用场景 | 进程模型 | 上下文 | 记忆 |
+|------|---------|---------|--------|------|
+| 主 Director | 私聊 | 长驻 daemon，named pipe | 跨消息保持 | 完整读写 |
+| DirectorPool | 小群 / 并行群 | 按需创建，idle 超时回收 | 群级隔离 | 共享 soul/memory，只读 state.md |
+| One-shot | 大群 @mention | 一次性 `claude -p`，回复后退出 | 无状态 | 无 |
+
+### DirectorPool 机制
+
+管理多个非主 Director 实例的生命周期：
+
+```
+DirectorPool
+  ├── entries: Map<routingKey, PoolEntry>   # 活跃的 Director 实例
+  ├── creating: Map<routingKey, Promise>    # 竞态锁，防止并发创建
+  │
+  ├── getOrCreate(key, name)               # 有则复用，无则创建
+  ├── reapIdle()                           # 每分钟检查，超时回收
+  └── evictLRU()                           # 达到上限时淘汰最久未活跃的
+```
+
+**配置参数**：
+
+```yaml
+pool:
+  max_directors: 5          # 最大并发 Director 数
+  idle_timeout_minutes: 30  # 空闲超时回收
+  small_group_threshold: 5  # 大群/小群人数分界
+  parallel_chat_ids: []     # 并行模式白名单（chat_id 列表）
+```
+
+**路由键（routingKey）**：
+
+- 普通群聊：`chat_id`（一个群一个 Director）
+- 话题群（并行群）：`thread_id`（一个话题一个 Director，实现并行处理）
+- 私聊：无路由键，走主 Director
+
+### One-shot 大群响应
+
+大群消息不值得维持长驻 Director（成本高、上下文利用率低）。改为事件驱动：
+
+```
+@mention 到达 → spawn `claude -p` → 等待回复（60s 超时）→ 回复飞书 → 进程退出
+```
+
+- 无状态：不保持对话历史，每次独立处理
+- 轻量：不占用 DirectorPool 名额
+- Prompt 注入群聊上下文：`你在飞书群聊「{群名}」中被 @ 提问。请简洁回复。`
+
+### 记忆共享模型
+
+多 Director 实例共享同一个 persona 目录：
+
+```
+稳定性 ▲
+       │  Soul / Core / Memory   ── 所有 Director 共享（git 管理）
+       │  state.md               ── 主 Director 读写，群 Director 只读
+       │  上下文窗口              ── 完全隔离，各自独立
+       └──────────────────────────────────────────► 隔离程度
+```
+
+群 Director 的 bootstrap 消息明确其角色边界：
+- 主 Director：`读取 daily/state.md 恢复工作上下文，了解当前待处理事项。`
+- 群 Director：`你正在为群「{群名}」服务。请读取 daily/state.md 了解全局状态（只读）。`
+
+## 七、Director Daemon 运行机制
 
 ### 运行形态
 
@@ -384,7 +470,7 @@ last_flush: 2026-04-05T14:30:00
 （跨 cycle 需要保留的关键临时信息）
 ```
 
-## 七、对齐机制
+## 八、对齐机制
 
 不采用复杂的治理/审批层，而是两个轻量机制：
 
@@ -405,7 +491,7 @@ last_flush: 2026-04-05T14:30:00
 
 **记忆精度就是对齐精度。**
 
-## 八、迭代与同步
+## 九、迭代与同步
 
 通过日报/周报 + 关键决策点复盘，让本体介入并微调系统的价值锚点。
 
@@ -413,21 +499,23 @@ last_flush: 2026-04-05T14:30:00
 - 周报：Introspector 定时生成系统自省报告
 - 复盘接口：本体审阅日报/周报，更新 Core 层
 
-## 九、技术栈
+## 十、技术栈
 
 | 组件 | 实现 |
 |------|------|
-| TS Shell | TypeScript 进程，飞书 webhook + 进程管理 + named pipe I/O |
-| Director | Claude Code CLI（detached），stream-json 双向通信 |
+| TS Shell | TypeScript 进程，飞书 WebSocket + 进程管理 + named pipe I/O |
+| 主 Director | Claude Code CLI（detached），stream-json 双向通信 |
+| DirectorPool | 多 Director 实例管理，按群/话题路由，idle 超时回收 |
+| One-shot 响应 | Claude Code CLI（`-p` 模式），大群无状态事件响应 |
 | Persona 实例 | Claude Code CLI（detached，`-p` 模式），输出写文件 |
 | Director ↔ Shell 通信 | named pipe (FIFO) + stream-json 协议 |
 | 记忆存储 | 本地 Markdown 文件 |
 | 通信协议 | Briefing / Report（YAML 结构） |
 | 定时触发 | cron |
-| 外部 IM 接入 | 飞书 Bot webhook → TS Shell → named pipe → Director |
+| 外部 IM 接入 | 飞书 Bot WebSocket → TS Shell → 路由分发 → Director/One-shot |
 | 日报输出 | 本地 Markdown 文件 |
 
-## 十、全局日志与可追踪性
+## 十一、全局日志与可追踪性
 
 所有决策链路可追踪：
 
@@ -440,8 +528,46 @@ last_flush: 2026-04-05T14:30:00
 
 日志存储于 `audit_log/` 目录，按日组织。
 
-## 附录：已知问题与后续优化
+## 附录 A：生命周期命令语义
+
+### 命令总览
+
+| 命令 | 作用域 | 说明 |
+|------|--------|------|
+| `/esc` | 当前会话 | 取消当前正在处理的消息（SIGINT → resume 旧 session） |
+| `/flush` | 当前会话 | 有状态的上下文刷新（checkpoint → 杀进程 → 新 session → bootstrap） |
+| `/restart` | 全局 | 重启整个 Shell 进程（launchd 自动拉起，Shell 代码更新生效） |
+
+### 语义对比
+
+| | `/esc` | `/flush` | `/restart` |
+|---|---|---|---|
+| 信号 | SIGINT | SIGTERM | SIGTERM（全部 Director） |
+| 对话历史 | 保留（`--resume`） | 清空（新 session） | N/A（Shell 重建） |
+| 状态保存 | 无 | checkpoint → state.md → bootstrap | 无 |
+| 新 skill/配置 | 生效 | 生效 | 生效 |
+| 场景 | 取消卡住的请求 | 上下文 token 过长，保持工作连续性 | Shell 代码更新后重新加载 |
+
+### `--resume` 与新 skill 的关系
+
+`--resume` 恢复的是对话历史（conversation context），不影响 CLI 参数。每次 `spawnDirector()` 都会重新调用 `buildCommonArgs()`，扫描 `skills/` 目录并构建 `--plugin-dir` 列表。因此即使 resume 旧 session，新安装的 skill 也会被加载。
+
+### 实现要点
+
+- **`/esc`**（`director.ts: interrupt()`）：设 `this.interrupted = true` → SIGINT → pipe close 回调检查标志 → `restart()`（保留 session）→ emit `restarted`
+- **`/flush`**（`director.ts: flush()`）：drain 等待 → checkpoint（让 Director 写 state.md）→ SIGTERM → `clearSession()` + `restart()`（新 session）→ bootstrap（让新 Director 读 state.md）
+- **`/restart`**（`index.ts`）：SIGTERM Director → `setTimeout(500ms)` → `process.exit(0)` → launchd 拉起新 Shell
+
+## 附录 B：已知问题与后续优化
 
 ### /esc 中断期间的消息缓冲
 
 `/esc` 通过 SIGINT + restart 实现真正的请求取消。`interrupt()` 期间（约 2-3 秒），`director.send()` 会因 writeHandle 为 null 抛异常。当前依赖飞书 SDK 在 WebSocket 层缓冲后续消息，实际触发概率低。后续可在 Director 层加 send 队列，在 restart 期间缓冲消息，restart 完成后自动 flush。
+
+### /restart 三个待修问题
+
+1. **虚假告警**：`/restart` 杀 Director 后 pipe close 触发 `rl.on('close')` 兜底分支，误发"🔴 Director 进程意外退出"告警，并在 Shell 退出前拉起孤儿 Director。应加 `shuttingDown` 标志位，close 回调中跳过 restart。
+
+2. **未按会话路由**：`/restart` 是全局操作，与 `/esc`、`/flush` 的按上下文路由不一致。多 Director 架构下应拆分为会话级操作和全局 `/restart-shell`。
+
+3. **竞态：未等待 Director 退出**：用 `setTimeout(500ms)` 代替事件驱动。正确做法是 Director 暴露 `shutdown()` 方法（设标志 → SIGTERM → 返回 Promise，close 回调 resolve），`/restart` 处 `await director.shutdown()` 后再 `process.exit(0)`。

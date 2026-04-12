@@ -108,6 +108,8 @@ export class DirectorPool {
     const queue = new MessageQueue(`logs/queue-${label}.log`);
 
     await director.start();
+    // Pool directors are always freshly spawned (no reconnect scenario),
+    // but respect the flag for consistency
     director.bootstrap();
 
     this.wireEvents(director, queue, chatId, name);
@@ -146,13 +148,8 @@ export class DirectorPool {
     if (!entry) return;
 
     console.log(`[pool] Shutting down Director for group "${entry.groupName}"`);
-    await entry.director.stop();
-    // Kill the claude process
-    const status = entry.director.getStatus();
-    if (status.pid) {
-      try { process.kill(-status.pid, 'SIGTERM'); } catch { /* already dead */ }
-    }
     this.entries.delete(chatId);
+    await entry.director.shutdown();
   }
 
   /** Shutdown all non-main Directors */

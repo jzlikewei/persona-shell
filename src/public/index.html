@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Persona Console</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
-  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -487,19 +484,93 @@
     .err-text { color: var(--red); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .err-time { font-family: var(--font-mono); font-size: 10px; color: var(--overlay0); flex-shrink: 0; }
 
-    /* ── Terminal View (session messages via xterm.js) ── */
-    #terminal-container {
+    /* ── Chat View (session messages) ── */
+    #chat-container {
       display: none;
       flex: 1;
       min-height: 0;
       flex-direction: column;
     }
-    #terminal-wrap {
+    #chat-scroll {
       flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
       min-height: 0;
-      padding: 4px;
     }
-    #term-input-bar {
+    #chat-scroll::-webkit-scrollbar { width: 5px; }
+    #chat-scroll::-webkit-scrollbar-track { background: transparent; }
+    #chat-scroll::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+
+    .chat-msg { margin-bottom: 12px; }
+    .chat-msg-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .chat-msg-role {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+    .chat-msg-role.user { color: var(--blue); }
+    .chat-msg-role.bot { color: var(--green); }
+    .chat-msg-time {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--overlay0);
+    }
+    .chat-msg-body {
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .chat-msg.in .chat-msg-body {
+      background: rgba(137,180,250,.06);
+      border-left: 3px solid var(--blue);
+      color: var(--text);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .chat-msg.out .chat-msg-body {
+      background: var(--surface0);
+    }
+    .chat-msg.out .chat-msg-body .md-content h1,
+    .chat-msg.out .chat-msg-body .md-content h2,
+    .chat-msg.out .chat-msg-body .md-content h3 { color: var(--text); margin: 10px 0 4px; }
+    .chat-msg.out .chat-msg-body .md-content p { margin: 4px 0; }
+    .chat-msg.out .chat-msg-body .md-content code {
+      background: var(--surface1);
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+    .chat-msg.out .chat-msg-body .md-content pre {
+      background: var(--crust);
+      padding: 10px 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+    .chat-msg.out .chat-msg-body .md-content pre code { background: none; padding: 0; }
+    .chat-msg.out .chat-msg-body .md-content a { color: var(--blue); }
+    .chat-msg.out .chat-msg-body .md-content ul,
+    .chat-msg.out .chat-msg-body .md-content ol { padding-left: 20px; margin: 4px 0; }
+
+    .chat-processing {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      color: var(--overlay1);
+      font-size: 12px;
+    }
+
+    #chat-input-bar {
       display: none;
       flex-shrink: 0;
       padding: 6px 8px;
@@ -507,8 +578,8 @@
       border-top: 1px solid var(--surface1);
       background: var(--mantle);
     }
-    #term-input-bar.visible { display: flex; }
-    #term-input-bar input {
+    #chat-input-bar.visible { display: flex; }
+    #chat-input-bar input {
       flex: 1;
       padding: 7px 12px;
       background: var(--surface0);
@@ -520,9 +591,9 @@
       outline: none;
       transition: border-color .2s;
     }
-    #term-input-bar input:focus { border-color: var(--blue); }
-    #term-input-bar input::placeholder { color: var(--overlay0); }
-    #term-input-bar button {
+    #chat-input-bar input:focus { border-color: var(--blue); }
+    #chat-input-bar input::placeholder { color: var(--overlay0); }
+    #chat-input-bar button {
       padding: 7px 14px;
       background: var(--mauve);
       color: var(--crust);
@@ -534,10 +605,10 @@
       line-height: 1;
       transition: opacity .15s;
     }
-    #term-input-bar button:hover { opacity: .85; }
-    /* When terminal is visible, hide the scrollable detail-content */
-    #main.terminal-active #detail-content { display: none; }
-    #main.terminal-active #terminal-container { display: flex; }
+    #chat-input-bar button:hover { opacity: .85; }
+    /* When chat is visible, hide the scrollable detail-content */
+    #main.chat-active #detail-content { display: none; }
+    #main.chat-active #chat-container { display: flex; }
 
     /* ── Task Detail View ── */
     .task-detail { }
@@ -965,11 +1036,11 @@
       <div id="detail-content">
         <!-- filled by JS -->
       </div>
-      <div id="terminal-container">
-        <div id="terminal-wrap"></div>
-        <div id="term-input-bar">
-          <input type="text" id="term-input" placeholder="Send message to Director..." onkeydown="if(event.key==='Enter'&&!event.isComposing)doTermSend()" />
-          <button onclick="doTermSend()">Send</button>
+      <div id="chat-container">
+        <div id="chat-scroll"><div id="chat-messages"></div></div>
+        <div id="chat-input-bar">
+          <input type="text" id="chat-input" placeholder="Send message to Director..." onkeydown="if(event.key==='Enter'&&!event.isComposing)doChatSend()" />
+          <button onclick="doChatSend()">Send</button>
         </div>
       </div>
     </div>
@@ -1055,83 +1126,16 @@
   var taskLogTotalLines = 0;
   var taskLogPollTimer = null;
 
-  // xterm.js terminal instance (lazy-initialized)
-  var term = null;
-  var fitAddon = null;
-  var termLastMessageCount = 0; // track rendered message count for incremental updates
-
   var $ = function (id) { return document.getElementById(id); };
 
-  // ── Terminal management ──
-  function ensureTerminal() {
-    if (term) return;
-    term = new Terminal({
-      cursorBlink: false,
-      cursorStyle: 'bar',
-      disableStdin: true,
-      scrollback: 10000,
-      fontSize: 13,
-      fontFamily: "'SF Mono', 'Menlo', 'Consolas', 'JetBrains Mono', monospace",
-      theme: {
-        background: '#1e1e2e',
-        foreground: '#cdd6f4',
-        cursor: '#f5e0dc',
-        cursorAccent: '#1e1e2e',
-        selectionBackground: '#45475a',
-        selectionForeground: '#cdd6f4',
-        black: '#45475a',
-        red: '#f38ba8',
-        green: '#a6e3a1',
-        yellow: '#f9e2af',
-        blue: '#89b4fa',
-        magenta: '#cba6f7',
-        cyan: '#94e2d5',
-        white: '#cdd6f4',
-        brightBlack: '#585b70',
-        brightRed: '#f38ba8',
-        brightGreen: '#a6e3a1',
-        brightYellow: '#f9e2af',
-        brightBlue: '#89b4fa',
-        brightMagenta: '#cba6f7',
-        brightCyan: '#94e2d5',
-        brightWhite: '#cdd6f4',
-      },
-    });
-    fitAddon = new FitAddon.FitAddon();
-    term.loadAddon(fitAddon);
-    term.open($('terminal-wrap'));
-    fitAddon.fit();
+  // ── Chat management ──
 
-    // Prevent xterm from stealing keyboard focus
-    term.attachCustomKeyEventHandler(function() { return false; });
-    var xtextarea = document.querySelector('#terminal-wrap .xterm-helper-textarea');
-    if (xtextarea) xtextarea.tabIndex = -1;
-
-    // Clicking terminal area redirects focus to the input field
-    $('terminal-wrap').addEventListener('click', function() {
-      var inp = $('term-input');
-      if (inp && inp.offsetParent !== null) inp.focus();
-    });
-
-    // Auto-resize on window resize
-    window.addEventListener('resize', function() {
-      if (fitAddon && viewMode === 'session') {
-        setTimeout(function() { fitAddon.fit(); }, 50);
-      }
-    });
-  }
-
-  /** Send message from the terminal input bar */
-  window.doTermSend = function() {
-    var input = $('term-input');
+  /** Send message from the chat input bar */
+  window.doChatSend = function() {
+    var input = $('chat-input');
     var text = (input.value || '').trim();
-    if (!text || !term) return;
+    if (!text) return;
     input.value = '';
-
-    // Echo the sent message in terminal with green prompt
-    term.write('\x1b[32m\u276f \x1b[0m');
-    var lines = text.split('\n');
-    for (var i = 0; i < lines.length; i++) { term.writeln(lines[i]); }
 
     fetch('/api/send', {
       method: 'POST',
@@ -1139,73 +1143,31 @@
       body: JSON.stringify({ text: text }),
     }).then(function(r) { return r.json(); }).then(function(body) {
       if (body.ok) {
-        term.writeln('\x1b[2m  Sent\x1b[0m');
+        showToast('Sent', true);
+        // Refresh messages after a brief delay
+        setTimeout(function() {
+          if (viewMode === 'session') {
+            if (selectedSessionId) loadSessionMessages(selectedSessionId);
+            else loadAllMessages();
+          }
+        }, 500);
       } else {
-        term.writeln('\x1b[31m  Error: ' + (body.message || 'send failed') + '\x1b[0m');
+        showToast('Error: ' + (body.message || 'send failed'), false);
       }
-      term.writeln('');
-      term.scrollToBottom();
     }).catch(function(err) {
-      term.writeln('\x1b[31m  Error: ' + err.message + '\x1b[0m');
-      term.writeln('');
-      term.scrollToBottom();
+      showToast('Error: ' + err.message, false);
     });
 
-    // Refocus input
     input.focus();
   };
 
-  function showTerminal() {
-    $('main').classList.add('terminal-active');
-    ensureTerminal();
-    // Refit after display change, then focus input if visible
-    setTimeout(function() {
-      if (fitAddon) fitAddon.fit();
-      var inp = $('term-input');
-      if (inp && inp.offsetParent !== null) inp.focus();
-    }, 10);
+  function showChat() {
+    $('main').classList.add('chat-active');
   }
 
-  function hideTerminal() {
-    $('main').classList.remove('terminal-active');
-    $('term-input-bar').classList.remove('visible');
-  }
-
-  /** Write a single line to the terminal, wrapping long lines */
-  function termWriteLine(text) {
-    // Write line by line to avoid xterm treating \n differently
-    var lines = text.split('\n');
-    for (var i = 0; i < lines.length; i++) {
-      term.writeln(lines[i]);
-    }
-  }
-
-  /** Write all session messages to the terminal */
-  function writeMessagesToTerminal(msgs) {
-    term.clear();
-    term.reset();
-    termLastMessageCount = 0;
-    appendMessagesToTerminal(msgs, 0);
-  }
-
-  /** Append messages starting from index to terminal (for incremental updates) */
-  function appendMessagesToTerminal(msgs, startIdx) {
-    for (var i = startIdx; i < msgs.length; i++) {
-      var m = msgs[i];
-      if (m.direction === 'in') {
-        // User message: green prompt
-        term.write('\x1b[32m\u276f \x1b[0m');
-        termWriteLine(m.content);
-      } else {
-        // Bot response: normal text
-        termWriteLine(m.content);
-      }
-      // Blank line separator between exchanges
-      term.writeln('');
-    }
-    termLastMessageCount = msgs.length;
-    // Scroll to bottom
-    term.scrollToBottom();
+  function hideChat() {
+    $('main').classList.remove('chat-active');
+    $('chat-input-bar').classList.remove('visible');
   }
 
   // ── Normalize ──
@@ -1348,8 +1310,13 @@
     renderSessionList();
     renderTaskList();
     $('dh-title').textContent = 'Session';
-    $('dh-sub').textContent = sessionId ? sessionId.slice(0, 12) + '...' : 'All Messages';
-    showTerminal();
+    var sessionLabel = 'All Messages';
+    if (sessionId) {
+      var match = sessions.find(function(s) { return s.sessionId === sessionId; });
+      sessionLabel = (match && match.sessionName) || sessionId.slice(0, 12) + '...';
+    }
+    $('dh-sub').textContent = sessionLabel;
+    showChat();
     if (sessionId) {
       loadSessionMessages(sessionId);
     } else {
@@ -1366,7 +1333,7 @@
     taskOutput = null;
     taskLogs = [];
     taskLogTotalLines = 0;
-    hideTerminal();
+    hideChat();
     renderSessionList();
     renderTaskList();
     $('dh-title').innerHTML = '<span style="cursor:pointer;color:var(--blue);margin-right:8px" onclick="selectDashboard()">\u2190</span>Task';
@@ -1380,7 +1347,7 @@
     selectedSessionId = null;
     selectedTaskId = null;
     $('detail-content').classList.remove('task-split-mode');
-    hideTerminal();
+    hideChat();
     renderSessionList();
     renderTaskList();
     $('dh-title').textContent = 'Dashboard';
@@ -1499,7 +1466,7 @@
       html += '<div class="list-item' + (isActive ? ' active' : '') +
         '" onclick="selectSession(\'' + esc(s.sessionId) + '\')">' +
         '<span class="item-icon" style="color:' + dotColor + '">&#9679;</span>' +
-        '<span class="item-label">' + esc(s.sessionId.slice(0, 16)) + (isLive ? ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">live</span>' : '') + '</span>' +
+        '<span class="item-label">' + esc(s.sessionName || s.sessionId.slice(0, 16)) + (isLive ? ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">live</span>' : '') + '</span>' +
         '<span class="item-meta">' + s.messageCount + '</span></div>';
     }
     el.innerHTML = html;
@@ -1607,37 +1574,55 @@
     $('detail-content').innerHTML = html;
   }
 
-  // ── Render: Session (terminal) View ──
+  // ── Render: Session (chat) View ──
   function renderSessionView() {
-    if (!term) return;
+    var el = $('chat-messages');
+    if (!el) return;
+
     if (!sessionMessages || sessionMessages.length === 0) {
-      term.clear();
-      term.reset();
-      term.writeln('\x1b[2m  No messages found\x1b[0m');
-      termLastMessageCount = 0;
-      $('term-input-bar').classList.remove('visible');
+      el.innerHTML = '<div class="empty" style="padding:40px">No messages found</div>';
+      $('chat-input-bar').classList.remove('visible');
       return;
     }
 
     // Messages come most-recent-first from API, reverse for chronological display
     var msgs = sessionMessages.slice().reverse();
-    writeMessagesToTerminal(msgs);
+    var html = '';
 
-    // Determine if this is the live session
-    var isLiveSession = data && data.system &&
-      (selectedSessionId === data.system.sessionId || !selectedSessionId);
-
-    // If viewing the live session and Director is processing, show indicator
-    if (isLiveSession && data && data.activity && data.activity.state === 'processing') {
-      term.writeln('\x1b[33m\u25cf Processing...\x1b[0m');
-      term.writeln('');
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      var isIn = m.direction === 'in';
+      html += '<div class="chat-msg ' + (isIn ? 'in' : 'out') + '">';
+      html += '<div class="chat-msg-header">';
+      html += '<span class="chat-msg-role ' + (isIn ? 'user' : 'bot') + '">' + (isIn ? 'User' : 'Director') + '</span>';
+      html += '</div>';
+      html += '<div class="chat-msg-body">';
+      if (isIn) {
+        html += esc(m.content);
+      } else {
+        html += '<div class="md-content">' + renderMd(m.content) + '</div>';
+      }
+      html += '</div></div>';
     }
 
+    // Show processing indicator if live session is busy
+    var isLiveSession = data && data.system &&
+      (selectedSessionId === data.system.sessionId || !selectedSessionId);
+    if (isLiveSession && data && data.activity && data.activity.state === 'processing') {
+      html += '<div class="chat-processing"><div class="running-dot"></div><span>Processing...</span></div>';
+    }
+
+    el.innerHTML = html;
+
+    // Scroll to bottom
+    var scroll = $('chat-scroll');
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+
     // Show/hide input bar based on live session
-    var inputBar = $('term-input-bar');
+    var inputBar = $('chat-input-bar');
     if (isLiveSession) {
       inputBar.classList.add('visible');
-      setTimeout(function() { $('term-input').focus(); }, 0);
+      setTimeout(function() { $('chat-input').focus(); }, 0);
     } else {
       inputBar.classList.remove('visible');
     }
