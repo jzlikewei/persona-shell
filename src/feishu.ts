@@ -20,6 +20,7 @@ const FILE_TYPE_MAP: Record<string, "opus" | "mp4" | "pdf" | "doc" | "xls" | "pp
 
 export interface ChatMeta {
   chatType: 'p2p' | 'group';
+  chatMode?: 'group' | 'topic';  // 普通群 vs 话题群（来自 chat.get API）
   memberCount?: number;
   chatName?: string;
 }
@@ -152,8 +153,8 @@ const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则自杀重启
 
 const RETRY_DELAYS = [1000, 3000];
 
-// Chat info cache (name + member count) for group chats
-const chatInfoCache = new Map<string, { name: string; memberCount: number; fetchedAt: number }>();
+// Chat info cache (name + member count + chat mode) for group chats
+const chatInfoCache = new Map<string, { name: string; memberCount: number; chatMode: 'group' | 'topic'; fetchedAt: number }>();
 const CHAT_INFO_CACHE_TTL = 30 * 60_000; // 30 minutes
 
 /** 带重试的异步调用，失败后按 delays 间隔重试 */
@@ -215,19 +216,21 @@ export function createFeishuClient(config: Config['feishu']) {
     return false;
   }
 
-  /** Get chat name + member count for a group, with caching. */
-  async function getChatInfo(chatId: string): Promise<{ name: string; memberCount: number } | null> {
+  /** Get chat name + member count + chat mode for a group, with caching. */
+  async function getChatInfo(chatId: string): Promise<{ name: string; memberCount: number; chatMode: 'group' | 'topic' } | null> {
     const cached = chatInfoCache.get(chatId);
     if (cached && Date.now() - cached.fetchedAt < CHAT_INFO_CACHE_TTL) {
-      return { name: cached.name, memberCount: cached.memberCount };
+      return { name: cached.name, memberCount: cached.memberCount, chatMode: cached.chatMode };
     }
     try {
       const res = await client.im.v1.chat.get({ path: { chat_id: chatId } });
       const data = res?.data as Record<string, unknown> | undefined;
+      log.debug(`[feishu] chat.get response for ${chatId}: ${JSON.stringify(data)}`);
       const name = (data?.name as string) ?? '';
       const memberCount = Number(data?.user_count ?? 0) + Number(data?.bot_count ?? 0);
-      chatInfoCache.set(chatId, { name, memberCount, fetchedAt: Date.now() });
-      return { name, memberCount };
+      const chatMode = (data?.chat_mode as string) === 'topic' ? 'topic' as const : 'group' as const;
+      chatInfoCache.set(chatId, { name, memberCount, chatMode, fetchedAt: Date.now() });
+      return { name, memberCount, chatMode };
     } catch (err) {
       console.warn(`[feishu] Failed to get chat info for ${chatId}:`, err);
       return null;
@@ -238,6 +241,8 @@ export function createFeishuClient(config: Config['feishu']) {
     'im.message.receive_v1': async (data) => {
       lastActiveTime = Date.now();
       const message = data.message;
+      const msgRaw = message as Record<string, unknown> | undefined;
+      log.debug(`[feishu] event received: message_id=${message?.message_id ?? 'N/A'} chat_type=${msgRaw?.chat_type ?? 'N/A'} chat_mode=${msgRaw?.chat_mode ?? 'N/A'} thread_id=${msgRaw?.thread_id ?? msgRaw?.root_id ?? 'N/A'}`);
       if (!message) return;
 
       const { chat_id, message_id, content } = message;
@@ -262,7 +267,7 @@ export function createFeishuClient(config: Config['feishu']) {
       const parentId = (message as Record<string, unknown>).parent_id as string | undefined;
       const chatType = ((message as Record<string, unknown>).chat_type as string) === 'group' ? 'group' : 'p2p';
 
-      // Log raw message for debugging rich text parsing
+      // Log raw message for debugging
       log.debug(`[feishu] raw ${msgType} content (${chatType}): ${content}`);
       if (mentions?.length) log.debug(`[feishu] mentions: ${JSON.stringify(mentions)}`);
 
@@ -280,7 +285,7 @@ export function createFeishuClient(config: Config['feishu']) {
       if (chatType === 'group') {
         const info = await getChatInfo(chat_id);
         if (info) {
-          meta = { chatType, memberCount: info.memberCount, chatName: info.name };
+          meta = { chatType, chatMode: info.chatMode, memberCount: info.memberCount, chatName: info.name };
         }
       }
       /** Replace @_user_N placeholders: remove bot mentions, replace user mentions with real names. */

@@ -287,7 +287,7 @@ async function main() {
   feishu.onMessage(async (text, messageId, chatId, msgType, meta) => {
     // Log chat metadata
     const metaLog = meta.chatType === 'group'
-      ? `chatType=${meta.chatType} chatName="${meta.chatName ?? ''}" members=${meta.memberCount ?? '?'}`
+      ? `chatType=${meta.chatType} chatMode=${meta.chatMode ?? '?'} chatName="${meta.chatName ?? ''}" members=${meta.memberCount ?? '?'}`
       : `chatType=${meta.chatType}`;
     log.debug(`[shell] Message meta: ${metaLog}`);
 
@@ -372,8 +372,9 @@ async function main() {
     });
 
     // Prepend group chat label for Director context
+    const groupLabel = meta.chatMode === 'topic' ? '话题群' : '群聊';
     const directorText = meta.chatType === 'group'
-      ? `[群聊: ${meta.chatName || '未知群'}] ${text}`
+      ? `[${groupLabel}: ${meta.chatName || '未知群'}] ${text}`
       : text;
 
     console.log(`[shell] Received message: ${directorText.slice(0, 50)}...`);
