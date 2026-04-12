@@ -1,4 +1,4 @@
-# 配置模板 — 复制到 ~/.persona/config.yaml 并填入实际值
+# 配置模板 — 复制到 config.yaml 并填入实际值
 feishu:
   app_id: "cli_xxxx"
   app_secret: "xxxx"
@@ -12,10 +12,21 @@ director:
   flush_context_limit: 700000       # 上下文 token 阈值，超过则自动 flush
   flush_interval_days: 7            # 距上次 flush 的最大天数
 
+pool:
+  max_directors: 5                  # 最大并发 Director 数（不含主 Director）
+  idle_timeout_minutes: 30          # 群聊 Director 空闲超时自动回收（分钟）
+  small_group_threshold: 5          # 群成员 ≤ 此值走 DirectorPool，> 此值走 one-shot
+  parallel_chat_ids: []             # 配置为"并行模式"的群 chat_id 列表，始终走 DirectorPool 不受人数限制
+  # parallel_chat_ids:
+  #   - oc_xxxxxxxxxxxxxxxxxxxx     # 示例：话题群用于并行任务
+
 logging:
-  level: "info"
+  level: "info"                     # debug | info | warn | error
   queue_log: "logs/queue.log"
 
 console:
   enabled: true
   port: 3000
+
+task:
+  default_timeout_minutes: 30       # 后台任务默认超时
