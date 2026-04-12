@@ -1137,26 +1137,25 @@
     if (!text) return;
     input.value = '';
 
-    fetch('/api/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text }),
-    }).then(function(r) { return r.json(); }).then(function(body) {
-      if (body.ok) {
-        showToast('Sent', true);
-        // Refresh messages after a brief delay
-        setTimeout(function() {
-          if (viewMode === 'session') {
-            if (selectedSessionId) loadSessionMessages(selectedSessionId);
-            else loadAllMessages();
-          }
-        }, 500);
-      } else {
-        showToast('Error: ' + (body.message || 'send failed'), false);
-      }
-    }).catch(function(err) {
-      showToast('Error: ' + err.message, false);
-    });
+    if (!ws || !wsConnected) {
+      showToast('Not connected', false);
+      return;
+    }
+
+    // Send via WebSocket chat message (goes through MessagingRouter)
+    var messageId = 'web-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+    ws.send(JSON.stringify({ type: 'chat', text: text, messageId: messageId }));
+
+    // Append user message to chat immediately
+    var el = $('chat-messages');
+    if (el) {
+      var div = document.createElement('div');
+      div.className = 'chat-bubble out';
+      div.textContent = text;
+      el.appendChild(div);
+      var scroll = $('chat-scroll');
+      if (scroll) scroll.scrollTop = scroll.scrollHeight;
+    }
 
     input.focus();
   };
@@ -1216,6 +1215,17 @@
           if (viewMode === 'dashboard') renderDashboard();
         } else if (msg.type === 'command_result') {
           showToast(msg.message || msg.command, msg.ok);
+        } else if (msg.type === 'chat_reply') {
+          // Director 回复 web chat 消息
+          var el = $('chat-messages');
+          if (el) {
+            var div = document.createElement('div');
+            div.className = 'chat-bubble in';
+            div.textContent = msg.text;
+            el.appendChild(div);
+            var scroll = $('chat-scroll');
+            if (scroll) scroll.scrollTop = scroll.scrollHeight;
+          }
         }
       } catch (e) { /* ignore */ }
     };

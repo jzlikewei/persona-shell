@@ -283,15 +283,33 @@ export function startConsole(
   messaging?: MessagingClient,
   metrics?: MetricsCollector,
   attachmentBuffer?: AttachmentBuffer,
-): void {
-  if (!config.console.enabled) {
-    console.log('[console] Web console disabled by config');
-    return;
-  }
-
+): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
   const htmlPath = join(import.meta.dir, 'public', 'index.html');
+
+  // Web chat 消息处理
+  const chatHandlers: Array<(msg: import('./messaging.js').IncomingMessage) => Promise<void> | void> = [];
+  // messageId → WebSocket 连接，用于路由回复
+  const messageWsMap = new Map<string, any>();
+
+  if (!config.console.enabled) {
+    console.log('[console] Web console disabled by config');
+    // 返回一个空的 MessagingClient stub
+    return {
+      start() {},
+      onMessage(handler) { chatHandlers.push(handler); },
+      async reply() {},
+      async sendMessage() { return null; },
+      async addReaction() {},
+      async uploadAndReplyImage() {},
+      async uploadAndReplyFile() {},
+      async uploadAndSendImage() { return null; },
+      async uploadAndSendFile() { return null; },
+      getLastChatId() { return null; },
+      getConnectionStatus() { return 'disconnected' as const; },
+    };
+  }
 
   /** 检查请求是否携带有效 token，未配置 token 时放行 */
   function checkAuth(req: Request): Response | null {
@@ -681,6 +699,22 @@ export function startConsole(
               command: msg.command,
               ...result,
             }));
+          } else if (msg.type === 'chat' && msg.text) {
+            // Web chat 消息 → 走 MessagingClient handler
+            const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            messageWsMap.set(messageId, ws);
+            for (const handler of chatHandlers) {
+              try {
+                await handler({
+                  text: msg.text,
+                  messageId,
+                  chatId: 'web-console',
+                  chatType: 'p2p',
+                });
+              } catch (err) {
+                console.error('[console] Web chat handler error:', err);
+              }
+            }
           }
         } catch {
           // 忽略无效消息
@@ -690,4 +724,32 @@ export function startConsole(
   });
 
   console.log(`[console] Web console started at http://localhost:${port}`);
+
+  // 返回 web 渠道的 MessagingClient
+  const webClient: MessagingClient = {
+    start() { /* already started above */ },
+    onMessage(handler) { chatHandlers.push(handler); },
+    async reply(messageId, text) {
+      const ws = messageWsMap.get(messageId);
+      if (ws) {
+        ws.send(JSON.stringify({ type: 'chat_reply', messageId, text }));
+        messageWsMap.delete(messageId);
+      }
+    },
+    async sendMessage(_chatId, text) {
+      const payload = JSON.stringify({ type: 'chat_reply', messageId: null, text });
+      for (const ws of clients) {
+        try { ws.send(payload); } catch { /* client gone */ }
+      }
+      return null;
+    },
+    async addReaction() { /* no-op for web */ },
+    async uploadAndReplyImage() { /* TODO: send image URL via WebSocket */ },
+    async uploadAndReplyFile() { /* TODO: send file URL via WebSocket */ },
+    async uploadAndSendImage() { return null; },
+    async uploadAndSendFile() { return null; },
+    getLastChatId() { return clients.size > 0 ? 'web-console' : null; },
+    getConnectionStatus() { return clients.size > 0 ? 'connected' : 'disconnected'; },
+  };
+  return webClient;
 }

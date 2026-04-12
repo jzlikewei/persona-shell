@@ -2,7 +2,8 @@ import { loadConfig } from './config.js';
 import { Director } from './director.js';
 import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './feishu.js';
-import type { MessagingClient, IncomingMessage } from './messaging.js';
+import { MessagingRouter } from './messaging-router.js';
+import type { IncomingMessage } from './messaging.js';
 import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
@@ -27,7 +28,8 @@ async function main() {
   setLogLevel(config.logging.level);
   const queue = new MessageQueue(config.logging.queue_log);
   const director = new Director(config.director);
-  const messaging: MessagingClient = createFeishuClient(config.feishu);
+  const feishu = createFeishuClient(config.feishu);
+  const messaging = new MessagingRouter(feishu);
   const startTime = Date.now();
 
   // --- In-memory metrics collector ---
@@ -191,8 +193,9 @@ async function main() {
     },
   };
 
-  // 启动 Web 管理控制台（含 Task API）
-  startConsole(director, queue, config, taskRunner, messaging, metrics, attachmentBuffer);
+  // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
+  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, attachmentBuffer);
+  messaging.addClient(webClient);
 
   // 7.4: Scheduler — interval-driven cron job automation
   const scheduler = new Scheduler(
