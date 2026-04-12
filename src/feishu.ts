@@ -17,7 +17,13 @@ const FILE_TYPE_MAP: Record<string, "opus" | "mp4" | "pdf" | "doc" | "xls" | "pp
   '.ppt': 'ppt', '.pptx': 'ppt',
 };
 
-type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string) => void;
+export interface ChatMeta {
+  chatType: 'p2p' | 'group';
+  memberCount?: number;
+  chatName?: string;
+}
+
+type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string, meta: ChatMeta) => void;
 
 type Mention = { id?: { open_id?: string }; name?: string; key?: string; mentioned_type?: string };
 
@@ -145,6 +151,10 @@ const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则自杀重启
 
 const RETRY_DELAYS = [1000, 3000];
 
+// Chat info cache (name + member count) for group chats
+const chatInfoCache = new Map<string, { name: string; memberCount: number; fetchedAt: number }>();
+const CHAT_INFO_CACHE_TTL = 30 * 60_000; // 30 minutes
+
 /** 带重试的异步调用，失败后按 delays 间隔重试 */
 async function withRetry<T>(
   label: string,
@@ -176,6 +186,52 @@ export function createFeishuClient(config: Config['feishu']) {
   const handlers: MessageHandler[] = [];
   let lastActiveTime = Date.now();
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  let botOpenId: string | null = null;
+
+  /** Fetch bot's open_id via /open-apis/bot/v3/info/ (called once at start). */
+  async function fetchBotOpenId(): Promise<void> {
+    try {
+      const res = await (client as any).request({
+        method: 'GET',
+        url: '/open-apis/bot/v3/info/',
+      });
+      const openId = res?.data?.bot?.open_id ?? res?.bot?.open_id;
+      if (openId) {
+        botOpenId = openId;
+        console.log(`[feishu] Bot open_id resolved: ${openId}`);
+      } else {
+        console.warn('[feishu] Bot info response missing open_id:', JSON.stringify(res?.data ?? res));
+      }
+    } catch (err) {
+      console.warn('[feishu] Failed to fetch bot info (group @mention filtering may not work):', err);
+    }
+  }
+
+  /** Check if a mention refers to the bot. */
+  function isBotMention(m: Mention): boolean {
+    if (m.mentioned_type === 'bot') return true;
+    if (botOpenId && m.id?.open_id === botOpenId) return true;
+    return false;
+  }
+
+  /** Get chat name + member count for a group, with caching. */
+  async function getChatInfo(chatId: string): Promise<{ name: string; memberCount: number } | null> {
+    const cached = chatInfoCache.get(chatId);
+    if (cached && Date.now() - cached.fetchedAt < CHAT_INFO_CACHE_TTL) {
+      return { name: cached.name, memberCount: cached.memberCount };
+    }
+    try {
+      const res = await client.im.v1.chat.get({ path: { chat_id: chatId } });
+      const data = res?.data as Record<string, unknown> | undefined;
+      const name = (data?.name as string) ?? '';
+      const memberCount = Number(data?.user_count ?? 0) + Number(data?.bot_count ?? 0);
+      chatInfoCache.set(chatId, { name, memberCount, fetchedAt: Date.now() });
+      return { name, memberCount };
+    } catch (err) {
+      console.warn(`[feishu] Failed to get chat info for ${chatId}:`, err);
+      return null;
+    }
+  }
 
   const eventDispatcher = new Lark.EventDispatcher({}).register({
     'im.message.receive_v1': async (data) => {
@@ -203,21 +259,42 @@ export function createFeishuClient(config: Config['feishu']) {
       const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
       const mentions = (message as Record<string, unknown>).mentions as Mention[] | undefined;
       const parentId = (message as Record<string, unknown>).parent_id as string | undefined;
+      const chatType = ((message as Record<string, unknown>).chat_type as string) === 'group' ? 'group' : 'p2p';
 
       // Log raw message for debugging rich text parsing
-      console.log(`[feishu] raw ${msgType} content: ${content}`);
+      console.log(`[feishu] raw ${msgType} content (${chatType}): ${content}`);
       if (mentions?.length) console.log(`[feishu] mentions: ${JSON.stringify(mentions)}`);
 
-      /** Replace @_user_N placeholders with real names. */
+      // Group chat @mention filter: skip messages that don't mention the bot
+      if (chatType === 'group') {
+        const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
+        if (!hasBotMention) {
+          console.log(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
+          return;
+        }
+      }
+
+      // Build ChatMeta (fetch chat info for groups)
+      let meta: ChatMeta = { chatType };
+      if (chatType === 'group') {
+        const info = await getChatInfo(chat_id);
+        if (info) {
+          meta = { chatType, memberCount: info.memberCount, chatName: info.name };
+        }
+      }
+      /** Replace @_user_N placeholders: remove bot mentions, replace user mentions with real names. */
       const stripMentions = (text: string): string => {
         if (!mentions?.length) return text;
         for (const m of mentions) {
           if (!m.key) continue;
-          if (m.name) {
+          if (isBotMention(m)) {
+            // Remove bot mention entirely
+            text = text.replace(m.key, '');
+          } else if (m.name) {
             text = text.replace(m.key, `@${m.name}`);
           }
         }
-        return text;
+        return text.replace(/ {2,}/g, ' ').trim();
       };
 
       /** Prepend quoted message content as blockquote if this is a reply. */
@@ -246,7 +323,7 @@ export function createFeishuClient(config: Config['feishu']) {
           if (!text) return;
 
           for (const handler of handlers) {
-            try { await handler(text, message_id, chat_id, 'text'); } catch (err) {
+            try { await handler(text, message_id, chat_id, 'text', meta); } catch (err) {
               console.error('[feishu] Handler error:', err);
             }
           }
@@ -267,7 +344,7 @@ export function createFeishuClient(config: Config['feishu']) {
           if (!text) return;
 
           for (const handler of handlers) {
-            try { await handler(text, message_id, chat_id, 'text'); } catch (err) {
+            try { await handler(text, message_id, chat_id, 'text', meta); } catch (err) {
               console.error('[feishu] Handler error:', err);
             }
           }
@@ -279,7 +356,7 @@ export function createFeishuClient(config: Config['feishu']) {
 
       // Unsupported message types
       for (const handler of handlers) {
-        try { await handler('', message_id, chat_id, msgType); } catch (err) {
+        try { await handler('', message_id, chat_id, msgType, meta); } catch (err) {
           console.error('[feishu] Handler error:', err);
         }
       }
@@ -314,6 +391,8 @@ export function createFeishuClient(config: Config['feishu']) {
     wsClient,
 
     start() {
+      // Eagerly fetch bot open_id for group @mention filtering
+      fetchBotOpenId();
       wsClient.start({ eventDispatcher }).catch((err) => {
         console.error('[feishu] WebSocket start failed:', err);
       });

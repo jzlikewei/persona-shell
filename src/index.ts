@@ -1,6 +1,6 @@
 import { loadConfig } from './config.js';
 import { Director } from './director.js';
-import { createFeishuClient } from './feishu.js';
+import { createFeishuClient, type ChatMeta } from './feishu.js';
 import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
@@ -282,7 +282,13 @@ async function main() {
   });
 
   // Feishu message → queue → director
-  feishu.onMessage(async (text, messageId, chatId, msgType) => {
+  feishu.onMessage(async (text, messageId, chatId, msgType, meta) => {
+    // Log chat metadata
+    const metaLog = meta.chatType === 'group'
+      ? `chatType=${meta.chatType} chatName="${meta.chatName ?? ''}" members=${meta.memberCount ?? '?'}`
+      : `chatType=${meta.chatType}`;
+    console.log(`[shell] Message meta: ${metaLog}`);
+
     // 1.3: Non-text message feedback
     if (msgType !== 'text') {
       console.log(`[shell] Non-text message type: ${msgType}`);
@@ -363,12 +369,17 @@ async function main() {
       console.warn('[shell] Failed to add reaction:', err);
     });
 
-    console.log(`[shell] Received message: ${text.slice(0, 50)}...`);
+    // Prepend group chat label for Director context
+    const directorText = meta.chatType === 'group'
+      ? `[群聊: ${meta.chatName || '未知群'}] ${text}`
+      : text;
+
+    console.log(`[shell] Received message: ${directorText.slice(0, 50)}...`);
     metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
     const correlationId = queue.enqueue({ text, messageId, chatId });
     queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
     try {
-      await director.send(text);
+      await director.send(directorText);
     } catch (err) {
       // 3.3: All send errors must clean up queue state to prevent orphaned items
       queue.resolve(correlationId);
