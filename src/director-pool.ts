@@ -27,6 +27,7 @@ interface PoolEntry {
 
 export class DirectorPool {
   private entries: Map<string, PoolEntry> = new Map();
+  private creating: Map<string, Promise<PoolEntry>> = new Map();
   private mainDirector: Director;
   private poolConfig: PoolConfig;
   private directorConfig: Config['director'];
@@ -67,6 +68,20 @@ export class DirectorPool {
       return existing;
     }
 
+    // 防止并发创建同一个 chatId 的 Director（竞态锁）
+    const inflight = this.creating.get(chatId);
+    if (inflight) return inflight;
+
+    const promise = this._doCreate(chatId, groupName);
+    this.creating.set(chatId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.creating.delete(chatId);
+    }
+  }
+
+  private async _doCreate(chatId: string, groupName?: string): Promise<PoolEntry> {
     // Evict LRU if at capacity
     if (this.entries.size >= this.poolConfig.max_directors) {
       await this.evictLRU();

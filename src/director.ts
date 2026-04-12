@@ -93,12 +93,20 @@ export class Director extends EventEmitter {
       this.isMain = true;
     }
 
-    // 路径参数化：/tmp/persona/{label}/...
-    this.pipeDir = join(this.config.pipe_dir, this.label);
-    this.pipeIn = join(this.pipeDir, 'director-in');
-    this.pipeOut = join(this.pipeDir, 'director-out');
-    this.sessionFile = join(this.pipeDir, 'session');
-    this.pidFile = join(this.pipeDir, 'director.pid');
+    // 路径参数化：主 Director 保持旧路径（向后兼容），非主用子目录
+    if (this.isMain) {
+      this.pipeDir = this.config.pipe_dir;
+      this.pipeIn = join(this.pipeDir, 'director-in');
+      this.pipeOut = join(this.pipeDir, 'director-out');
+      this.sessionFile = join(this.pipeDir, 'director-session');
+      this.pidFile = this.config.pid_file;
+    } else {
+      this.pipeDir = join(this.config.pipe_dir, this.label);
+      this.pipeIn = join(this.pipeDir, 'director-in');
+      this.pipeOut = join(this.pipeDir, 'director-out');
+      this.sessionFile = join(this.pipeDir, 'session');
+      this.pidFile = join(this.pipeDir, 'director.pid');
+    }
   }
 
   /** State key parameterized by label: 'director:main', 'director:abc12345', etc. */
@@ -108,7 +116,11 @@ export class Director extends EventEmitter {
 
   /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow). Returns restored data or null. */
   restoreState(): DirectorPersistedState | null {
-    const saved = getState<DirectorPersistedState>(this.stateKey);
+    let saved = getState<DirectorPersistedState>(this.stateKey);
+    // 向后兼容：主 Director 旧状态键是 'director'
+    if (!saved && this.isMain) {
+      saved = getState<DirectorPersistedState>('director');
+    }
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
