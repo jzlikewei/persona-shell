@@ -2,19 +2,13 @@ import { createHash } from 'crypto';
 import { Director, type DirectorOptions } from './director.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import type { Config } from './config.js';
+import type { MessagingClient } from './messaging.js';
 import { log } from './logger.js';
 
 export interface PoolConfig {
   max_directors: number;
   idle_timeout_minutes: number;
   small_group_threshold: number;
-}
-
-/** Callbacks for wiring Director events to external systems (feishu, metrics, etc.) */
-export interface PoolEventHandlers {
-  reply: (messageId: string, text: string) => Promise<void>;
-  sendMessage: (chatId: string, text: string) => Promise<string | null>;
-  addReaction: (messageId: string, emoji: string) => Promise<void>;
 }
 
 interface PoolEntry {
@@ -31,19 +25,19 @@ export class DirectorPool {
   private mainDirector: Director;
   private poolConfig: PoolConfig;
   private directorConfig: Config['director'];
-  private handlers: PoolEventHandlers;
+  private messaging: MessagingClient;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     mainDirector: Director,
     poolConfig: PoolConfig,
     directorConfig: Config['director'],
-    handlers: PoolEventHandlers,
+    messaging: MessagingClient,
   ) {
     this.mainDirector = mainDirector;
     this.poolConfig = poolConfig;
     this.directorConfig = directorConfig;
-    this.handlers = handlers;
+    this.messaging = messaging;
 
     // Start idle Director reaper — check every minute, shutdown Directors
     // that have been idle longer than idle_timeout_minutes
@@ -219,7 +213,7 @@ export class DirectorPool {
       const replyWithTiming = `${reply}\n\n(耗时 ${elapsedSec}s)`;
 
       try {
-        await this.handlers.reply(item.messageId, replyWithTiming);
+        await this.messaging.reply(item.messageId, replyWithTiming);
         queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
         console.log(`[pool:${groupName}] Replied to ${item.messageId} (${elapsedSec}s)`);
       } catch (err) {
@@ -236,14 +230,14 @@ export class DirectorPool {
 
     // alert → forward to group chat
     director.on('alert', (message: string) => {
-      this.handlers.sendMessage(chatId, message).catch((err) => {
+      this.messaging.sendMessage(chatId, message).catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send alert:`, err);
       });
     });
 
     // auto-flush-complete → notify group chat
     director.on('auto-flush-complete', () => {
-      this.handlers.sendMessage(chatId, '🔄 上下文已自动刷新').catch((err) => {
+      this.messaging.sendMessage(chatId, '🔄 上下文已自动刷新').catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send flush notification:`, err);
       });
     });

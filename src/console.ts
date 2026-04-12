@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, resolve, extname } from 'path';
 import { homedir } from 'os';
+import type { MessagingClient } from './messaging.js';
 
 /** 从文件尾部读取最多 maxBytes 字节，返回完整行（丢弃首行截断部分） */
 function readTail(filePath: string, maxBytes: number): string {
@@ -279,14 +280,7 @@ export function startConsole(
   queue: MessageQueue,
   config: Config,
   taskRunner?: TaskRunner,
-  feishu?: {
-    getConnectionStatus: () => 'connected' | 'disconnected';
-    getLastChatId: () => string | null;
-    uploadAndSendImage: (chatId: string, filePath: string) => Promise<string | null>;
-    uploadAndReplyImage: (messageId: string, filePath: string) => Promise<void>;
-    uploadAndSendFile: (chatId: string, filePath: string) => Promise<string | null>;
-    uploadAndReplyFile: (messageId: string, filePath: string) => Promise<void>;
-  },
+  messaging?: MessagingClient,
   metrics?: MetricsCollector,
   attachmentBuffer?: AttachmentBuffer,
 ): void {
@@ -316,11 +310,11 @@ export function startConsole(
     const now = Date.now();
 
     // System status
-    const feishuStatus = feishu?.getConnectionStatus() ?? 'disconnected';
+    const messagingStatus = messaging?.getConnectionStatus() ?? 'disconnected';
     let systemStatus: 'healthy' | 'degraded' | 'error';
-    if (feishuStatus === 'connected' && ds.alive) {
+    if (messagingStatus === 'connected' && ds.alive) {
       systemStatus = 'healthy';
-    } else if (feishuStatus === 'connected' || ds.alive) {
+    } else if (messagingStatus === 'connected' || ds.alive) {
       systemStatus = 'degraded';
     } else {
       systemStatus = 'error';
@@ -379,7 +373,7 @@ export function startConsole(
         system: {
           status: systemStatus,
           uptime: now - startedAt,
-          feishu: feishuStatus,
+          messaging: messagingStatus,
           directorAlive: ds.alive,
           sessionId: ds.sessionId,
           sessionName: ds.sessionName,
@@ -483,7 +477,7 @@ export function startConsole(
           }
         }
         default: {
-          // POST /api/send — send arbitrary text to Director (bypass feishu)
+          // POST /api/send — send arbitrary text to Director (bypass messaging)
           if (url.pathname === '/api/send' && req.method === 'POST') {
             const body = await req.json() as { text: string };
             if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
@@ -495,7 +489,7 @@ export function startConsole(
             }
           }
 
-          // POST /api/send-attachment — send image/file to user via feishu
+          // POST /api/send-attachment — send image/file to user via messaging
           if (url.pathname === '/api/send-attachment' && req.method === 'POST') {
             const body = await req.json() as { path: string };
             if (!body.path) return Response.json({ error: 'path is required' }, { status: 400 });
@@ -516,8 +510,8 @@ export function startConsole(
               return Response.json({ error: 'File is empty' }, { status: 400 });
             }
 
-            if (!feishu) {
-              return Response.json({ error: 'Feishu client not available' }, { status: 503 });
+            if (!messaging) {
+              return Response.json({ error: 'Messaging client not available' }, { status: 503 });
             }
 
             // Compositor: if Director is processing a user message, buffer for later delivery
@@ -532,12 +526,12 @@ export function startConsole(
             const isImage = imageExts.has(ext);
 
             try {
-              const lastChatId = feishu.getLastChatId();
+              const lastChatId = messaging.getLastChatId();
               if (!lastChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
               if (isImage) {
-                await feishu.uploadAndSendImage(lastChatId, resolved);
+                await messaging.uploadAndSendImage(lastChatId, resolved);
               } else {
-                await feishu.uploadAndSendFile(lastChatId, resolved);
+                await messaging.uploadAndSendFile(lastChatId, resolved);
               }
               return Response.json({ success: true });
             } catch (err) {

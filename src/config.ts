@@ -7,7 +7,6 @@ export interface Config {
   feishu: {
     app_id: string;
     app_secret: string;
-    quote_max_length: number;
   };
   director: {
     persona_dir: string;
@@ -17,6 +16,7 @@ export interface Config {
     time_sync_interval_ms: number;
     flush_context_limit: number;
     flush_interval_ms: number;
+    quote_max_length: number;
   };
   console: {
     enabled: boolean;
@@ -59,10 +59,7 @@ export function loadConfig(path?: string): Config {
   const con = yaml.console ?? {};
 
   return {
-    feishu: {
-      ...yaml.feishu,
-      quote_max_length: Number(yaml.feishu.quote_max_length ?? 32),
-    },
+    feishu: yaml.feishu,
     director: {
       persona_dir: expandHome(dir.persona_dir ?? '~/.persona'),
       pipe_dir: dir.pipe_dir ?? '/tmp/persona',
@@ -75,6 +72,7 @@ export function loadConfig(path?: string): Config {
       flush_interval_ms: dir.flush_interval_days
         ? Number(dir.flush_interval_days) * 86_400_000
         : 7 * 86_400_000,
+      quote_max_length: Number(dir.quote_max_length ?? 32),
     },
     console: {
       enabled: con.enabled !== false,

@@ -2,6 +2,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { readFileSync, statSync } from 'fs';
 import { extname, basename } from 'path';
 import type { Config } from './config.js';
+import type { MessagingClient, MessageHandler, IncomingMessage } from './messaging.js';
 import { getState, setState } from './task-store.js';
 import { log } from './logger.js';
 
@@ -17,17 +18,6 @@ const FILE_TYPE_MAP: Record<string, "opus" | "mp4" | "pdf" | "doc" | "xls" | "pp
   '.xls': 'xls', '.xlsx': 'xls',
   '.ppt': 'ppt', '.pptx': 'ppt',
 };
-
-export interface ChatMeta {
-  chatType: 'p2p' | 'group';
-  chatMode?: 'group' | 'topic';  // 普通群 vs 话题群（来自 chat.get API）
-  memberCount?: number;
-  chatName?: string;
-  threadId?: string;  // 话题群的 thread_id（omt_ 前缀），用于按话题路由 session
-  quotedText?: string;  // 被引用消息的完整文本（引用回复时有值）
-}
-
-type MessageHandler = (text: string, messageId: string, chatId: string, msgType: string, meta: ChatMeta) => void;
 
 type Mention = { id?: { open_id?: string }; name?: string; key?: string; mentioned_type?: string };
 
@@ -282,19 +272,20 @@ export function createFeishuClient(config: Config['feishu']) {
         }
       }
 
-      // Build ChatMeta (fetch chat info for groups)
-      let meta: ChatMeta = { chatType };
+      // Build IncomingMessage base (fetch chat info for groups)
+      const msg: IncomingMessage = { text: '', messageId: message_id, chatId: chat_id, chatType };
       if (chatType === 'group') {
         const info = await getChatInfo(chat_id);
         if (info) {
-          meta = { chatType, chatMode: info.chatMode, memberCount: info.memberCount, chatName: info.name };
+          msg.memberCount = info.memberCount;
+          msg.groupName = info.name;
         }
       }
 
       // Extract thread_id for topic group routing (field: thread_id or root_id)
       const threadId = (msgRaw?.thread_id ?? msgRaw?.root_id) as string | undefined;
       if (threadId) {
-        meta.threadId = threadId;
+        msg.threadId = threadId;
       }
       /** Replace @_user_N placeholders: remove bot mentions, replace user mentions with real names. */
       const stripMentions = (text: string): string => {
@@ -317,7 +308,7 @@ export function createFeishuClient(config: Config['feishu']) {
         if (!parentId) return;
         const quoted = await fetchMessageText(client, parentId);
         if (quoted) {
-          meta.quotedText = quoted;
+          msg.quotedText = quoted;
           log.debug(`[feishu] fetched quoted message ${parentId} (${quoted.length} chars)`);
         }
       };
@@ -337,8 +328,9 @@ export function createFeishuClient(config: Config['feishu']) {
           await fetchQuote();
           if (!text) return;
 
+          msg.text = text;
           for (const handler of handlers) {
-            try { await handler(text, message_id, chat_id, 'text', meta); } catch (err) {
+            try { await handler(msg); } catch (err) {
               console.error('[feishu] Handler error:', err);
             }
           }
@@ -358,8 +350,9 @@ export function createFeishuClient(config: Config['feishu']) {
           await fetchQuote();
           if (!text) return;
 
+          msg.text = text;
           for (const handler of handlers) {
-            try { await handler(text, message_id, chat_id, 'text', meta); } catch (err) {
+            try { await handler(msg); } catch (err) {
               console.error('[feishu] Handler error:', err);
             }
           }
@@ -369,12 +362,14 @@ export function createFeishuClient(config: Config['feishu']) {
         return;
       }
 
-      // Unsupported message types
-      for (const handler of handlers) {
-        try { await handler('', message_id, chat_id, msgType, meta); } catch (err) {
-          console.error('[feishu] Handler error:', err);
-        }
-      }
+      // Unsupported message types — reject internally
+      console.log(`[feishu] Unsupported message type: ${msgType}`);
+      await withRetry('reply', async () => {
+        await client.im.v1.message.reply({
+          path: { message_id },
+          data: { content: JSON.stringify({ text: `暂不支持 ${msgType} 类型消息，请发送文字消息` }), msg_type: 'text' },
+        });
+      }).catch(() => { /* withRetry already logged */ });
     },
   });
 

@@ -935,8 +935,8 @@
       <span class="hi-value" id="hb-status">--</span>
     </div>
     <div class="hi">
-      <span class="hi-label">Feishu</span>
-      <span class="hi-value" id="hb-feishu">--</span>
+      <span class="hi-label">Messaging</span>
+      <span class="hi-value" id="hb-messaging">--</span>
     </div>
     <div class="hi">
       <span class="hi-label">Director</span>
@@ -1182,7 +1182,7 @@
     if (dir.flushing) state = 'flushing';
     else if ((dir.pendingCount || 0) > 0) state = 'processing';
     return {
-      system: { status: dir.alive ? 'healthy' : 'error', uptime: 0, feishu: 'unknown', directorAlive: !!dir.alive },
+      system: { status: dir.alive ? 'healthy' : 'error', uptime: 0, messaging: 'unknown', directorAlive: !!dir.alive },
       activity: { state: state },
       context: { tokens: tokens, limit: limit, percent: Math.round(pct), lastFlushAgoMs: null },
       metrics: { today: { messagesProcessed: 0, avgResponseSec: 0, totalCostUsd: 0 }, recentMessages: [], recentErrors: [] },
@@ -1384,9 +1384,9 @@
     else if (sys.status === 'degraded') { dot.classList.add('yellow'); st.textContent = 'Degraded'; st.style.color = 'var(--yellow)'; }
     else { dot.classList.add('red'); st.textContent = 'Error'; st.style.color = 'var(--red)'; }
 
-    var fEl = $('hb-feishu');
-    fEl.textContent = sys.feishu === 'connected' ? 'Connected' : (sys.feishu || '--');
-    fEl.style.color = sys.feishu === 'connected' ? 'var(--green)' : 'var(--overlay1)';
+    var fEl = $('hb-messaging');
+    fEl.textContent = sys.messaging === 'connected' ? 'Connected' : (sys.messaging || '--');
+    fEl.style.color = sys.messaging === 'connected' ? 'var(--green)' : 'var(--overlay1)';
 
     var dEl = $('hb-director');
     dEl.textContent = sys.directorAlive ? 'Alive' : 'Dead';

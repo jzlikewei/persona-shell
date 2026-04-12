@@ -1,7 +1,8 @@
 import { loadConfig } from './config.js';
 import { Director } from './director.js';
 import { DirectorPool } from './director-pool.js';
-import { createFeishuClient, type ChatMeta } from './feishu.js';
+import { createFeishuClient } from './feishu.js';
+import type { MessagingClient, IncomingMessage } from './messaging.js';
 import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
 import { TaskRunner, type TaskResult } from './task-runner.js';
@@ -26,7 +27,7 @@ async function main() {
   setLogLevel(config.logging.level);
   const queue = new MessageQueue(config.logging.queue_log);
   const director = new Director(config.director);
-  const feishu = createFeishuClient(config.feishu);
+  const messaging: MessagingClient = createFeishuClient(config.feishu);
   const startTime = Date.now();
 
   // --- In-memory metrics collector ---
@@ -96,11 +97,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.director, {
-    reply: (messageId, text) => feishu.reply(messageId, text),
-    sendMessage: (chatId, text) => feishu.sendMessage(chatId, text),
-    addReaction: (messageId, emoji) => feishu.addReaction(messageId, emoji),
-  });
+  const pool = new DirectorPool(director, config.pool, config.director, messaging);
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
@@ -109,7 +106,7 @@ async function main() {
     defaultTimeoutMs: config.task.default_timeout_ms,
   });
 
-  // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + feishu notification
+  // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + messaging notification
   taskRunner.on('task-started', (taskId: string, spawnArgs: string[]) => {
     updateTask(taskId, {
       status: 'running',
@@ -128,11 +125,11 @@ async function main() {
     });
     const task = getTask(result.taskId);
     const desc = task?.description ?? result.taskId;
-    // Send feishu notification first, capture messageId for Director's reply
-    const lastChatId = feishu.getLastChatId();
+    // Send notification first, capture messageId for Director's reply
+    const lastChatId = messaging.getLastChatId();
     let notifyMsgId: string | undefined;
     if (lastChatId) {
-      notifyMsgId = (await feishu.sendMessage(lastChatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
+      notifyMsgId = (await messaging.sendMessage(lastChatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
     }
     director.notifyTaskDone(result.taskId, true, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task completion:', err);
@@ -157,7 +154,7 @@ async function main() {
       return;
     }
 
-    const lastChatId = feishu.getLastChatId();
+    const lastChatId = messaging.getLastChatId();
     let notifyMsgId: string | undefined;
     if (lastChatId) {
       const desc = task?.description ?? result.taskId;
@@ -165,17 +162,17 @@ async function main() {
       const msg = isCancelled
         ? `🚫 后台任务「${desc}」(${result.taskId}) 已取消`
         : `❌ 后台任务「${desc}」(${result.taskId}) 失败 — ${result.error}`;
-      notifyMsgId = (await feishu.sendMessage(lastChatId, msg)) ?? undefined;
+      notifyMsgId = (await messaging.sendMessage(lastChatId, msg)) ?? undefined;
     }
     director.notifyTaskDone(result.taskId, false, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task failure:', err);
     });
   });
 
-  // 7.3.5: Director's response to task notifications — reply to the feishu notification message
+  // 7.3.5: Director's response to task notifications — reply to the notification message
   director.on('system-response', async (reply: string, replyToMessageId: string) => {
     try {
-      await feishu.reply(replyToMessageId, reply);
+      await messaging.reply(replyToMessageId, reply);
       log.debug(`[shell] System response replied to ${replyToMessageId}`);
     } catch (err) {
       console.warn('[shell] Failed to reply system response:', err);
@@ -195,7 +192,7 @@ async function main() {
   };
 
   // 启动 Web 管理控制台（含 Task API）
-  startConsole(director, queue, config, taskRunner, feishu, metrics, attachmentBuffer);
+  startConsole(director, queue, config, taskRunner, messaging, metrics, attachmentBuffer);
 
   // 7.4: Scheduler — interval-driven cron job automation
   const scheduler = new Scheduler(
@@ -263,9 +260,9 @@ async function main() {
 
   // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
   director.on('auto-flush-complete', () => {
-    const lastChatId = feishu.getLastChatId();
+    const lastChatId = messaging.getLastChatId();
     if (lastChatId) {
-      feishu.sendMessage(lastChatId, '🔄 上下文已自动刷新').catch((err) => {
+      messaging.sendMessage(lastChatId, '🔄 上下文已自动刷新').catch((err) => {
         console.warn('[shell] Failed to send auto-flush notification:', err);
       });
     }
@@ -285,12 +282,12 @@ async function main() {
     }
   });
 
-  // 4.1: Alert notification — forward Director and system alerts to feishu
+  // 4.1: Alert notification — forward Director and system alerts to messaging
   director.on('alert', (message: string) => {
     metrics.addError(message);
-    const lastChatId = feishu.getLastChatId();
+    const lastChatId = messaging.getLastChatId();
     if (lastChatId) {
-      feishu.sendMessage(lastChatId, message).catch((err) => {
+      messaging.sendMessage(lastChatId, message).catch((err) => {
         console.warn('[shell] Failed to send alert notification:', err);
       });
     }
@@ -313,7 +310,7 @@ async function main() {
 
     if (!child.pid || !child.stdout) {
       if (child.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
-      await feishu.reply(messageId, '处理失败，请稍后重试');
+      await messaging.reply(messageId, '处理失败，请稍后重试');
       return;
     }
 
@@ -350,10 +347,10 @@ async function main() {
     const elapsedSec = (elapsedMs / 1000).toFixed(1);
 
     if (timedOut || !responseText) {
-      await feishu.reply(messageId, timedOut ? '处理超时，请稍后重试' : '未生成回复');
+      await messaging.reply(messageId, timedOut ? '处理超时，请稍后重试' : '未生成回复');
     } else {
       const costStr = costUsd != null ? ` $${costUsd.toFixed(3)}` : '';
-      await feishu.reply(messageId, `${responseText}\n\n(one-shot ${elapsedSec}s${costStr})`);
+      await messaging.reply(messageId, `${responseText}\n\n(one-shot ${elapsedSec}s${costStr})`);
     }
 
     metrics.addMessage({ direction: 'out', preview: (responseText || 'timeout').slice(0, 80), timestamp: Date.now(), responseSec: elapsedMs / 1000 });
@@ -365,27 +362,21 @@ async function main() {
     console.log(`[shell] One-shot done ${messageId} (${elapsedSec}s${costUsd ? ` $${costUsd.toFixed(3)}` : ''} timeout=${timedOut})`);
   }
 
-  // Feishu message → queue → director
-  feishu.onMessage(async (text, messageId, chatId, msgType, meta) => {
+  // Messaging → queue → director
+  messaging.onMessage(async (msg) => {
+    const { text, messageId, chatId, chatType } = msg;
     // Log chat metadata
-    const metaLog = meta.chatType === 'group'
-      ? `chatType=${meta.chatType} chatMode=${meta.chatMode ?? '?'} chatName="${meta.chatName ?? ''}" members=${meta.memberCount ?? '?'}`
-      : `chatType=${meta.chatType}`;
+    const metaLog = chatType === 'group'
+      ? `chatType=${chatType} groupName="${msg.groupName ?? ''}" members=${msg.memberCount ?? '?'} threadId=${msg.threadId ?? 'N/A'}`
+      : `chatType=${chatType}`;
     log.debug(`[shell] Message meta: ${metaLog}`);
 
-    // 1.3: Non-text message feedback
-    if (msgType !== 'text') {
-      console.log(`[shell] Non-text message type: ${msgType}`);
-      await feishu.reply(messageId, `暂不支持 ${msgType} 类型消息，请发送文字消息`);
-      return;
-    }
-
     // Pre-compute routingKey for slash commands (same logic as message routing below)
-    const routingKey = (meta.chatMode === 'topic' && meta.threadId)
-      ? meta.threadId                        // 话题群: 按 thread_id 路由
-      : (meta.chatType === 'group')
-        ? chatId                             // 普通群: 按 chatId 路由
-        : undefined;                         // 私聊: 默认 Director
+    const routingKey = msg.threadId
+      ? msg.threadId                           // 话题/线程: 按 threadId 路由
+      : (chatType === 'group')
+        ? chatId                               // 普通群: 按 chatId 路由
+        : undefined;                           // 私聊: 默认 Director
 
     // Helper: resolve the target Director/queue for the current message context
     const getTargetEntry = () => routingKey ? pool.get(routingKey) : undefined;
@@ -398,18 +389,18 @@ async function main() {
         if (cancelled) {
           console.log(`[shell] /esc (group ${poolEntry.groupName}): cancelling ${cancelled.messageId}`);
           await poolEntry.director.interrupt();
-          await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+          await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
         } else {
-          await feishu.reply(messageId, '队列为空，没有可取消的消息');
+          await messaging.reply(messageId, '队列为空，没有可取消的消息');
         }
       } else {
         const cancelled = queue.cancelOldest();
         if (cancelled) {
           console.log(`[shell] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
           await director.interrupt();
-          await feishu.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+          await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
         } else {
-          await feishu.reply(messageId, '队列为空，没有可取消的消息');
+          await messaging.reply(messageId, '队列为空，没有可取消的消息');
         }
       }
       return;
@@ -417,35 +408,35 @@ async function main() {
 
     // /flush — manually flush Director context (routes to correct Director)
     if (text.trim() === '/flush') {
-      feishu.addReaction(messageId, 'Typing').catch(() => {});
+      messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       const targetDirector = poolEntry?.director ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.flush();
       if (success) {
-        await feishu.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`);
+        await messaging.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`);
       } else {
-        await feishu.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`);
+        await messaging.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`);
       }
       return;
     }
 
     // /restart — restart current session's Director (routes to correct Director, preserves session)
     if (text.trim() === '/restart') {
-      feishu.addReaction(messageId, 'Typing').catch(() => {});
+      messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       const targetDirector = poolEntry?.director ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
-      await feishu.reply(messageId, `正在重启 ${label} Director...`);
+      await messaging.reply(messageId, `正在重启 ${label} Director...`);
       console.log(`[shell] /restart: restarting ${label} Director`);
       await targetDirector.restartDirector();
-      await feishu.reply(messageId, `${label} Director 已重启`);
+      await messaging.reply(messageId, `${label} Director 已重启`);
       return;
     }
 
     // /restart-shell — shutdown all Directors + exit Shell (launchd will respawn)
     if (text.trim() === '/restart-shell') {
-      await feishu.reply(messageId, 'Shell 正在重启...');
+      await messaging.reply(messageId, 'Shell 正在重启...');
       console.log('[shell] /restart-shell: shutting down all Directors and exiting for launchd respawn');
       await pool.shutdownAll();
       await director.shutdown();
@@ -465,7 +456,7 @@ async function main() {
           `🔄 Flushing: ${s.flushing ? 'yes' : 'no'}`,
           `⏱️ Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
         ];
-        await feishu.reply(messageId, lines.join('\n'));
+        await messaging.reply(messageId, lines.join('\n'));
       } else {
         const s = director.getStatus();
         const uptime = Math.floor((Date.now() - startTime) / 1000);
@@ -478,7 +469,7 @@ async function main() {
           `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
           `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
         ];
-        await feishu.reply(messageId, lines.join('\n'));
+        await messaging.reply(messageId, lines.join('\n'));
       }
       return;
     }
@@ -494,12 +485,12 @@ async function main() {
         '/restart-shell — 重启整个 Shell 进程（代码更新生效）',
         '/help — 显示此帮助信息',
       ];
-      await feishu.reply(messageId, lines.join('\n'));
+      await messaging.reply(messageId, lines.join('\n'));
       return;
     }
 
     // 1.1: ACK — add emoji reaction to let user know message is received
-    feishu.addReaction(messageId, 'Typing').catch((err) => {
+    messaging.addReaction(messageId, 'Typing').catch((err) => {
       console.warn('[shell] Failed to add reaction:', err);
     });
 
@@ -516,18 +507,18 @@ async function main() {
     // 并行群（配置的特定 chat_id）→ 始终走 DirectorPool，不受人数限制
     const isParallelChat = config.pool.parallel_chat_ids.includes(chatId);
     // 大群(>threshold 人，非并行群) → one-shot 响应，不走 Director
-    if (meta.chatType === 'group' && !isParallelChat && (meta.memberCount ?? 0) > config.pool.small_group_threshold) {
+    if (chatType === 'group' && !isParallelChat && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
       // One-shot 无上下文，引用需要保留全文
-      const quotePrefix = meta.quotedText ? formatQuote(meta.quotedText, 0) : '';
-      const oneShotPrompt = `你在飞书群聊「${meta.chatName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${quotePrefix}${text}`;
+      const quotePrefix = msg.quotedText ? formatQuote(msg.quotedText, 0) : '';
+      const oneShotPrompt = `你在群聊「${msg.groupName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${quotePrefix}${text}`;
 
-      console.log(`[shell] Large group one-shot: ${text.slice(0, 50)}... (members=${meta.memberCount})`);
+      console.log(`[shell] Large group one-shot: ${text.slice(0, 50)}... (members=${msg.memberCount})`);
       metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
 
       handleOneShot(oneShotPrompt, messageId).catch((err) => {
         console.error('[shell] One-shot error:', err);
         metrics.addError(`One-shot failed: ${String(err).slice(0, 200)}`);
-        feishu.reply(messageId, '处理出错，请稍后重试').catch(() => {});
+        messaging.reply(messageId, '处理出错，请稍后重试').catch(() => {});
       });
       return;
     }
@@ -535,14 +526,14 @@ async function main() {
     // Prepend group chat label for Director context
     // 话题群带 thread 后缀以区分不同话题上下文
     // Director 有上下文，引用截断到 quote_max_length
-    const quotePrefix = meta.quotedText ? formatQuote(meta.quotedText, config.feishu.quote_max_length) : '';
+    const quotePrefix = msg.quotedText ? formatQuote(msg.quotedText, config.director.quote_max_length) : '';
     let directorText: string;
-    if (meta.chatType === 'group') {
-      if (meta.chatMode === 'topic' && meta.threadId) {
-        const threadSuffix = meta.threadId.slice(-6);
-        directorText = `[话题群: ${meta.chatName || '未知群'} #${threadSuffix}] ${quotePrefix}${text}`;
+    if (chatType === 'group') {
+      if (msg.threadId) {
+        const threadSuffix = msg.threadId.slice(-6);
+        directorText = `[话题群: ${msg.groupName || '未知群'} #${threadSuffix}] ${quotePrefix}${text}`;
       } else {
-        directorText = `[群聊: ${meta.chatName || '未知群'}] ${quotePrefix}${text}`;
+        directorText = `[群聊: ${msg.groupName || '未知群'}] ${quotePrefix}${text}`;
       }
     } else {
       directorText = `${quotePrefix}${text}`;
@@ -551,7 +542,7 @@ async function main() {
     // Routing: 小群 → DirectorPool, 私聊 → 主 Director
     // (routingKey was computed above, before slash command handling)
     if (routingKey) {
-      log.debug(`[shell] Routing key: ${routingKey} (chatMode=${meta.chatMode}, threadId=${meta.threadId ?? 'N/A'})`);
+      log.debug(`[shell] Routing key: ${routingKey} (threadId=${msg.threadId ?? 'N/A'})`);
     }
 
     console.log(`[shell] Received message: ${directorText.slice(0, 50)}...`);
@@ -560,17 +551,17 @@ async function main() {
     if (routingKey) {
       // 小群/话题群 → DirectorPool
       try {
-        const groupName = meta.chatName ?? chatId.slice(0, 8);
+        const groupName = msg.groupName ?? chatId.slice(0, 8);
         const entry = await pool.getOrCreate(routingKey, groupName);
         await pool.send(routingKey, directorText, messageId);
         console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
       } catch (err) {
         if (String(err).includes('flushing')) {
-          await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
+          await messaging.reply(messageId, '正在刷新上下文，请稍后重试');
         } else {
           console.error(`[shell] pool send failed:`, err);
           metrics.addError(`Pool send failed: ${String(err).slice(0, 200)}`);
-          await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
+          await messaging.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
         }
       }
     } else {
@@ -583,17 +574,17 @@ async function main() {
         // 3.3: All send errors must clean up queue state to prevent orphaned items
         queue.resolve(correlationId);
         if (String(err).includes('flushing')) {
-          await feishu.reply(messageId, '正在刷新上下文，请稍后重试');
+          await messaging.reply(messageId, '正在刷新上下文，请稍后重试');
         } else {
           console.error(`[shell] send failed, queue item cleaned:`, err);
           metrics.addError(`Send failed: ${String(err).slice(0, 200)}`);
-          await feishu.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
+          await messaging.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
         }
       }
     }
   });
 
-  // Director response → resolve oldest → reply feishu
+  // Director response → resolve oldest → reply to user
   director.on('response', async (reply: string, durationMs?: number) => {
     const item = queue.resolveOldest();
 
@@ -623,7 +614,7 @@ async function main() {
     today.totalResponseMs += elapsedMs;
 
     try {
-      await feishu.reply(item.messageId, replyWithTiming);
+      await messaging.reply(item.messageId, replyWithTiming);
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
       console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
 
@@ -634,9 +625,9 @@ async function main() {
           const ext = extname(filePath).toLowerCase();
           const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
           if (imageExts.has(ext)) {
-            await feishu.uploadAndReplyImage(item.messageId, filePath);
+            await messaging.uploadAndReplyImage(item.messageId, filePath);
           } else {
-            await feishu.uploadAndReplyFile(item.messageId, filePath);
+            await messaging.uploadAndReplyFile(item.messageId, filePath);
           }
           log.debug(`[shell] Compositor: sent attachment ${filePath} as reply to ${item.messageId}`);
         } catch (err) {
@@ -654,34 +645,34 @@ async function main() {
     console.error('[shell] Director closed unexpectedly');
     metrics.addError('Director closed unexpectedly');
     // 4.1: Notify before exit
-    const lastChatId = feishu.getLastChatId();
+    const lastChatId = messaging.getLastChatId();
     if (lastChatId) {
       try {
-        await feishu.sendMessage(lastChatId, '🔴 Director 已关闭，Shell 即将退出');
+        await messaging.sendMessage(lastChatId, '🔴 Director 已关闭，Shell 即将退出');
       } catch { /* best-effort */ }
     }
     process.exit(1);
   });
 
-  // Start feishu websocket
-  feishu.start();
+  // Start messaging websocket
+  messaging.start();
 
   console.log('[shell] Persona Shell started');
 
   // Startup notification — check exit reason and send appropriate message
-  const lastChatId = feishu.getLastChatId();
+  const lastChatId = messaging.getLastChatId();
   if (lastChatId) {
     const exitReason = getState<{ reason: string; downSeconds?: number; at?: string }>('exitReason');
     deleteState('exitReason');
 
     let startupMsg = 'Shell 已重启 ✓';
     if (exitReason?.reason === 'feishu_disconnect') {
-      startupMsg = `Shell 已重启 ✓（上次因飞书断连 ${exitReason.downSeconds}s 自动重启）`;
+      startupMsg = `Shell 已重启 ✓（上次因消息通道断连 ${exitReason.downSeconds}s 自动重启）`;
     }
 
     setTimeout(async () => {
       try {
-        await feishu.sendMessage(lastChatId, startupMsg);
+        await messaging.sendMessage(lastChatId, startupMsg);
         console.log('[shell] Startup notification sent');
       } catch (err) {
         console.warn('[shell] Failed to send startup notification:', err);
