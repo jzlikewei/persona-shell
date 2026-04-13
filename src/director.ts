@@ -10,10 +10,8 @@ import { getState, setState, listTasks } from './task-store.js';
 import { spawnPersona } from './persona-process.js';
 import { log } from './logger.js';
 
-/** Sidecar log paths — input (user→Director) and output (Director→user) */
-const DIRECTOR_LOG_DIR = join(import.meta.dirname, '..', 'logs');
-const DIRECTOR_INPUT_LOG = join(DIRECTOR_LOG_DIR, 'director-input.log');
-const DIRECTOR_OUTPUT_LOG = join(DIRECTOR_LOG_DIR, 'director-output.log');
+/** Base log directory */
+const LOG_BASE = join(import.meta.dirname, '..', 'logs');
 
 interface DirectorPersistedState {
   lastFlushAt: number;
@@ -57,6 +55,7 @@ export class Director extends EventEmitter {
   /** 系统消息（cron director_msg 等）的待处理计数，响应会被吸收不转发用户 */
   private systemMessagePending = 0;
   private bootstrapping = false;
+  private bootstrapResolve: (() => void) | null = null;
   private flushCheckpointResolve: (() => void) | null = null;
   private flushBootstrapResolve: (() => void) | null = null;
   private drainResolve: (() => void) | null = null;
@@ -398,7 +397,10 @@ export class Director extends EventEmitter {
   }
 
   /** Send bootstrap message to initialize session and load context.
-   *  Safe to call on every startup — response is absorbed, not emitted to users. */
+   *  Safe to call on every startup — response is absorbed, not emitted to users.
+   *  Returns a Promise that resolves when the bootstrap response is received.
+   *  Callers can `await` to ensure bootstrap completes before sending user messages,
+   *  preventing Claude Code from merging bootstrap + user message into one turn. */
   async bootstrap(): Promise<void> {
     if (!this.writeHandle || this.flushing) return;
     this.bootstrapping = true;
@@ -408,8 +410,16 @@ export class Director extends EventEmitter {
       ? '[系统] 新 session 已启动。请读取 daily/state.md 恢复工作上下文，了解当前待处理事项。'
       : `[系统] 新 session 已启动。你正在为群「${this.groupName ?? this.label}」服务。请读取 daily/state.md 了解全局状态（只读）。`;
 
+    // Set up completion promise before writing to avoid race
+    const done = new Promise<void>((resolve) => {
+      this.bootstrapResolve = resolve;
+    });
+
     await this.writeRaw(msg);
     console.log(`[director:${this.label}] Bootstrap message sent`);
+
+    // Wait for bootstrap response to be fully processed
+    await done;
   }
 
   async send(message: string): Promise<void> {
@@ -776,6 +786,10 @@ export class Director extends EventEmitter {
                 // Startup bootstrap response — absorb, don't emit to users
                 log.debug(`[director:${this.label}] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.bootstrapping = false;
+                if (this.bootstrapResolve) {
+                  this.bootstrapResolve();
+                  this.bootstrapResolve = null;
+                }
               } else if (this.systemReplyQueue.length > 0) {
                 // System message response (task notification) — emit with feishu messageId for reply
                 const replyTo = this.systemReplyQueue.shift()!;
@@ -816,6 +830,12 @@ export class Director extends EventEmitter {
       if (this.drainResolve) {
         this.drainResolve();
         this.drainResolve = null;
+      }
+      // Resolve bootstrap if still waiting — prevents hanging on process crash during bootstrap
+      if (this.bootstrapResolve) {
+        this.bootstrapResolve();
+        this.bootstrapResolve = null;
+        this.bootstrapping = false;
       }
 
       if (this.shuttingDown) {

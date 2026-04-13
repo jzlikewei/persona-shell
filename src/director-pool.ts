@@ -102,10 +102,8 @@ export class DirectorPool {
     const queue = new MessageQueue(`logs/queue-${label}.log`);
 
     await director.start();
-    // Pool directors are always freshly spawned (no reconnect scenario),
-    // but respect the flag for consistency
-    director.bootstrap();
 
+    // Wire events BEFORE bootstrap so response handler is ready
     this.wireEvents(director, queue, chatId, name);
 
     const entry: PoolEntry = {
@@ -116,6 +114,11 @@ export class DirectorPool {
       lastActiveAt: Date.now(),
     };
     this.entries.set(chatId, entry);
+
+    // Await bootstrap completion — ensures user messages sent after getOrCreate()
+    // won't be merged into the bootstrap turn by Claude Code
+    await director.bootstrap();
+
     return entry;
   }
 
