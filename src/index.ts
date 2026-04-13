@@ -31,6 +31,7 @@ async function main() {
   const director = new SessionBridge(config.director);
   const feishu = createFeishuClient(config.feishu, {
     skipMentionChatIds: config.pool.parallel_chat_ids,
+    attachmentDir: join(config.director.persona_dir, 'attachments'),
   });
   const messaging = new MessagingRouter(feishu);
   const startTime = Date.now();

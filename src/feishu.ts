@@ -1,8 +1,8 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { readFileSync, statSync } from 'fs';
-import { extname, basename } from 'path';
+import { readFileSync, statSync, mkdirSync } from 'fs';
+import { extname, basename, join } from 'path';
 import type { Config } from './config.js';
-import type { MessagingClient, MessageHandler, IncomingMessage } from './messaging.js';
+import type { MessagingClient, MessageHandler, IncomingMessage, Attachment } from './messaging.js';
 import { getState, setState } from './task-store.js';
 import { log } from './logger.js';
 
@@ -207,8 +207,10 @@ async function isFeishuReachable(client: Lark.Client): Promise<boolean> {
   }
 }
 
-export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[] }) {
+export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[]; attachmentDir?: string }) {
   const skipMentionSet = new Set(options?.skipMentionChatIds ?? []);
+  const attachmentDir = options?.attachmentDir;
+  if (attachmentDir) mkdirSync(attachmentDir, { recursive: true });
   const client = new Lark.Client({
     appId: config.app_id,
     appSecret: config.app_secret,
@@ -407,6 +409,66 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
           }
         } catch {
           console.error('[feishu] Failed to parse post content:', content);
+        }
+        return;
+      }
+
+      // Attachment message types — download and forward path to handlers
+      if ((msgType === 'image' || msgType === 'file' || msgType === 'audio') && attachmentDir) {
+        try {
+          const parsed = JSON.parse(content);
+          let savePath: string;
+          let fileName: string | undefined;
+          let attachType: Attachment['type'];
+
+          if (msgType === 'image') {
+            const imageKey = parsed.image_key as string;
+            if (!imageKey) return;
+            savePath = join(attachmentDir, `${message_id}.png`);
+            await withRetry('downloadImage', () =>
+              client.im.v1.image.get({ path: { image_key: imageKey } }).then((r) => r.writeFile(savePath)),
+            );
+            attachType = 'image';
+            msg.text = `[用户发送了图片，已保存到 ${savePath}]`;
+          } else if (msgType === 'file') {
+            const fileKey = parsed.file_key as string;
+            fileName = parsed.file_name as string | undefined;
+            if (!fileKey) return;
+            savePath = join(attachmentDir, `${message_id}_${fileName ?? 'file'}`);
+            await withRetry('downloadFile', () =>
+              client.im.v1.file.get({ path: { file_key: fileKey } }).then((r) => r.writeFile(savePath)),
+            );
+            attachType = 'file';
+            msg.text = `[用户发送了文件 ${fileName ?? '未知文件'}，已保存到 ${savePath}]`;
+          } else {
+            // audio
+            const fileKey = parsed.file_key as string;
+            if (!fileKey) return;
+            savePath = join(attachmentDir, `${message_id}.opus`);
+            await withRetry('downloadAudio', () =>
+              client.im.v1.file.get({ path: { file_key: fileKey } }).then((r) => r.writeFile(savePath)),
+            );
+            attachType = 'audio';
+            msg.text = `[用户发送了语音消息，已保存到 ${savePath}]`;
+          }
+
+          msg.attachments = [{ type: attachType, filePath: savePath, fileName }];
+          await fetchQuote();
+
+          for (const handler of handlers) {
+            try { await handler(msg); } catch (err) {
+              console.error('[feishu] Handler error:', err);
+            }
+          }
+        } catch (err) {
+          console.error(`[feishu] Failed to process ${msgType} attachment:`, err);
+          // 下载失败仍通知 handlers，不丢消息
+          msg.text = `[用户发送了${msgType === 'image' ? '图片' : msgType === 'file' ? '文件' : '语音'}，但下载失败]`;
+          for (const handler of handlers) {
+            try { await handler(msg); } catch (e) {
+              console.error('[feishu] Handler error:', e);
+            }
+          }
         }
         return;
       }

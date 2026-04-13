@@ -1,3 +1,9 @@
+export interface Attachment {
+  type: 'image' | 'file' | 'audio';
+  filePath: string;
+  fileName?: string;
+}
+
 /** 平台无关的入站消息 */
 export interface IncomingMessage {
   text: string;
@@ -9,6 +15,7 @@ export interface IncomingMessage {
   threadId?: string;      // 子对话（飞书话题、Slack thread、Telegram topic）
   quotedText?: string;    // 引用回复的原文
   senderOpenId?: string;  // 发送者的飞书 open_id（用于本体识别）
+  attachments?: Attachment[];
 }
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void> | void;
