@@ -1,174 +1,135 @@
-# Web 管理控制台 — 执行方案
+# Web 管理控制台 — 设计与状态
 
 ## 目标
 
-给 persona-shell 加一个 Web 管理控制台，能**完整管理**这个应用：看状态、看操作、看当前和历史会话、执行常用操作。用 xterm.js 做 Web TUI 风格。
+给 persona-shell 加一个 Web 管理控制台，能**完整管理**这个应用：看状态、看操作、看当前和历史会话、管理后台任务。
+
+## 架构
+
+```
+Browser (Catppuccin SPA)
+    ↕ WebSocket + HTTP API
+persona-shell (Bun)
+    ├── index.ts          ← 飞书 ↔ Director ↔ Pool 编排
+    ├── console.ts        ← Web 控制台服务
+    │     ├── Bun.serve()         HTTP + WebSocket
+    │     ├── GET /               单文件 HTML SPA
+    │     ├── WebSocket           推状态(1s) + 推 chunk(实时) + 收命令
+    │     ├── buildSnapshot()     状态快照（含 DirectorPool）
+    │     └── broadcastWs()       chunk / stream-abort 广播
+    └── public/index.html ← 前端 SPA（vanilla JS + marked.js）
+```
+
+嵌入 Shell 进程，不独立部署。原因：Queue 状态在内存里，Director 实例引用在进程内。
 
 ## 数据源
 
 | 数据 | 来源 | 访问方式 |
 |------|------|----------|
-| Director 状态（pid/flushing/tokens/pending） | Director 实例内存 | 进程内直接读 |
-| 消息队列 | MessageQueue 实例内存 | 进程内直接读 |
-| 当前会话消息 | `~/.claude/projects/-Users-ilike--persona/{sessionId}.jsonl` | 读文件 |
-| 历史会话列表 | 同目录下所有 `.jsonl` 文件 | 扫描目录 |
-| 实时 Director 输出 | FIFO 管道（当前 Shell 单消费者） | Shell 读后 fan-out 广播 |
-| 日志 | `logs/queue.log`、`shell.stdout.log`、`director-stderr.log` | 读文件 + tail |
-| 系统统计 | `~/.claude/stats-cache.json` | 读文件 |
+| Director 状态（alive/tokens/pending/activity） | Director.getStatus() | 进程内直接读 |
+| Pool Director 状态 | DirectorPool.getPoolStatus() | 进程内直接读 |
+| 消息队列 | MessageQueue.getSnapshot() | 进程内直接读 |
+| 流式 chunk | Director `chunk` 事件 / Pool re-emit | EventEmitter |
+| 会话消息 | `logs/{label}/output-{date}.log` + `logs/{label}/input-{date}.log` | 读文件（parseConversationLog） |
+| 任务 | task-store.ts SQLite | 进程内读 |
+| 日内统计 | MetricsCollector（内存） | 进程内直接读 |
 
-## 架构
+## WebSocket 协议
 
-```
-Browser (xterm.js)
-    ↕ WebSocket
-persona-shell (Bun)
-    ├── index.ts          ← 现有：飞书 ↔ Director
-    ├── console.ts        ← 新增：Web 控制台服务
-    │     ├── Bun.serve()         HTTP + WebSocket
-    │     ├── GET /               单文件 HTML (xterm.js TUI)
-    │     └── WebSocket           双向：推状态 + 收命令
-    └── console-state.ts  ← 新增：统一状态采集
-          ├── 定时采集 Director/Queue 内存状态
-          ├── 监听 Director 事件（response/flush/restart）
-          └── 对外暴露 getSnapshot() + EventEmitter
-```
+### 服务端推送
 
-嵌入 Shell 进程，不独立部署。原因：Queue 状态在内存里，Director 实例引用在进程内。
+| type | 频率 | 载荷 |
+|------|------|------|
+| `status` | 每 1s | `{ system, activity, context, metrics, queue, tasks, pool }` |
+| `chunk` | 实时 | `{ director: string, text: string }` — 流式文本增量 |
+| `stream-abort` | 事件 | `{ director: string }` — Director 异常关闭，清理前端流式状态 |
+| `command_result` | 事件 | `{ command, ok, message }` |
+| `chat_reply` | 事件 | `{ messageId?, text }` — Director 回复 web chat |
 
-## 功能分期
+### 客户端发送
 
-### Phase 1：状态 + 操作（MVP）
+| type | 载荷 |
+|------|------|
+| `command` | `{ command: 'flush' | 'esc' | 'restart' }` |
+| `chat` | `{ text, messageId }` — web chat 消息 |
 
-最小可用版本。一个页面，能看能操作。
+## HTTP API
 
-**状态面板（只读）：**
-- Director：alive / pid / session_id / flushing / pending_count
-- Token：当前用量 / 阈值 / 使用率百分比
-- 上次 flush 时间 / 距下次自动 flush
-- 队列：深度 + 每条消息摘要
-- Shell uptime
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/messages?limit=N&sessionId=&director=` | GET | 会话消息。`director={label}` 查询 pool Director |
+| `/api/sessions?director=` | GET | 会话列表。`director={label}` 查询 pool Director |
+| `/api/send` | POST | 向 Director 发消息（绕过飞书） |
+| `/api/flush` | POST | 手动 flush |
+| `/api/esc` | POST | 取消最旧消息 |
+| `/api/restart` | POST | 重启 Director |
+| `/api/tasks` | GET/POST | 任务列表 / 创建任务 |
+| `/api/tasks/{id}` | GET | 任务详情 |
+| `/api/tasks/{id}/logs?after=N` | GET | 任务结构化日志 |
+| `/api/tasks/{id}/output` | GET | 任务结果文件 |
+| `/api/tasks/{id}/cancel` | POST | 取消任务 |
+| `/api/cron-jobs` | GET/POST | Cron 列表 / 创建 |
+| `/api/cron-jobs/{id}` | GET/PUT/DELETE | Cron 详情 / 更新 / 删除 |
+| `/api/cron-jobs/{id}/toggle` | POST | 启用/禁用 cron |
+| `/api/send-attachment` | POST | 发送附件（图片/文件） |
 
-**操作：**
-- Flush（手动触发）
-- Esc（取消最旧消息）
-- Restart Director
+## 前端 UI
 
-**技术：**
-- 后端：`Bun.serve()` + WebSocket
-- 前端：单 HTML 文件，内联 xterm.js (CDN)
-- 数据：WebSocket 定时推送状态快照（1s 间隔）+ 事件驱动推送
-- TUI 渲染：服务端生成 ANSI 序列发给 xterm.js
-
-### Phase 2：日志 + 会话查看
-
-**日志查看器：**
-- 多日志源切换（queue.log / shell.stdout / director-stderr）
-- 实时 tail（新日志追加显示）
-- 搜索（xterm-addon-search）
-
-**当前会话查看：**
-- 解析当前 session 的 JSONL
-- 渲染 user/assistant 消息对
-- 折叠 thinking/tool_use 块，展开 text 块
-- 实时追加新消息（Director 响应时）
-
-### Phase 3：历史会话 + 高级功能
-
-**历史会话：**
-- 会话列表（按时间排序，显示消息数/大小/时长）
-- 会话详情查看（复用 Phase 2 的渲染器）
-- 会话搜索（关键词搜索消息内容）
-
-**高级功能：**
-- 手动发消息给 Director（绕过飞书）
-- Token 用量趋势图（基于 stats-cache.json）
-- Persona 子人格/技能目录查看
-- outbox 任务列表和结果查看
-
-## TUI 界面布局（Phase 1）
+### 布局
 
 ```
-┌─ Persona Console ──────────────────────────────────────┐
-│                                                         │
-│  Director: ● ALIVE  pid=54858  session=4cc11ced...      │
-│  Tokens:   ████████░░░░░░░░░░░░  125,000 / 700,000     │
-│  Flush:    2h30m ago  │  Next auto-flush: ~4h           │
-│  Queue:    1 pending                                    │
-│  Uptime:   6h 23m                                       │
-│                                                         │
-│  ── Queue ──────────────────────────────────────────     │
-│  [cid-1775570251] "看下代码，FLUSH 未能完成..."  12s ago  │
-│                                                         │
-│  ── Keys ───────────────────────────────────────────    │
-│  [f] Flush   [e] Esc   [r] Restart   [q] Quit          │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌── Header ────────────────────────────────────────────────┐
+│  Persona Shell  ● Healthy  Connected  Alive +2  3h 12m  │
+├── Sidebar (280px) ──┬── Main Content ────────────────────┤
+│  Activity: ● Idle   │                                    │
+│  Context: ████░ 42% │  Dashboard / Session / Task view   │
+│  Today: 15 msgs     │                                    │
+│                     │  Session view: 流式 streaming      │
+│  Sessions           │  bubble 实时显示 Director 回复     │
+│  ├─ ● live session  │                                    │
+│  └─ ○ old session   │                                    │
+│                     │                                    │
+│  Groups (2)         │                                    │
+│  ├─ ● 干活群 busy   │                                    │
+│  └─ ○ 讨论群 idle   │                                    │
+│                     │                                    │
+│  Tasks (3 running)  │                                    │
+│  Actions            │                                    │
+│  [Flush][Esc][Rst]  │                                    │
+└─────────────────────┴────────────────────────────────────┘
 ```
 
-## 需要改造的现有代码
+### 视图模式
 
-1. **Director 类**：暴露状态 getter（目前大部分字段是 private）
-   - `getStatus()` → 返回 `{ alive, pid, sessionId, flushing, interrupted, pendingCount, lastInputTokens, lastFlushAt }`
-   - 事件扩展：emit `flush:start`, `flush:complete`, `restart` 等
+- **Dashboard**：统计卡片 + 队列 + 最近消息 + 错误
+- **Session**：主 Director 的会话消息（markdown 渲染），支持流式 streaming bubble
+- **Pool Session**：点击 Groups 列表中的群 → 加载对应 pool Director 的会话
+- **Task**：Split view（左：结构化日志，右：任务结果 + metadata）
 
-2. **MessageQueue 类**：暴露队列快照
-   - `getSnapshot()` → 返回当前队列项列表
+### 流式响应渲染
 
-3. **index.ts**：启动控制台服务
-   - 创建 Console 实例，注入 Director 和 Queue 引用
+1. 收到 `chunk` 消息 → 累积到 `streamingChunks[directorLabel]`
+2. 100ms debounce 后渲染 streaming bubble（绿色脉冲左边框 + ▍ 光标）
+3. `processing → idle` 转换或 `stream-abort` → 清除 bubble + 重新加载完整消息
+4. 有 streaming 时隐藏静态 "Processing..." 指示器
 
-## 文件结构（新增）
+## 实现状态
 
-```
-src/
-  console.ts            # Web 服务 + WebSocket 处理
-  console-state.ts      # 状态采集 + 事件聚合
-  console-tui.ts        # ANSI TUI 渲染器
-  public/
-    index.html          # 单文件前端（xterm.js + WebSocket 客户端）
-```
+| 功能 | 状态 |
+|------|------|
+| 状态面板（Director/Token/Queue/Uptime） | ✅ 完成 |
+| 操作（Flush/Esc/Restart） | ✅ 完成 |
+| 会话列表 + 消息查看 | ✅ 完成 |
+| 任务管理（创建/查看/取消/日志） | ✅ 完成 |
+| Cron Jobs 管理 | ✅ 完成 |
+| Web Chat（向 Director 发消息） | ✅ 完成 |
+| DirectorPool 可见性（Groups 列表） | ✅ 完成 (81151b5) |
+| 流式 streaming bubble（Web） | ✅ 完成 (81151b5) |
+| Pool Director 会话查看 | ✅ 完成 (81151b5) |
+| 飞书流式响应（message.update） | 🔲 TODO |
 
-## 先做 Phase 1
+## TODO
 
-预估工作量：~300-400 行新代码 + ~50 行现有代码改造。
-
----
-
-## Execution Checklist
-
-> 唯一需求来源。cron tick 只读此文件确定进度和下一批任务。
-> 规则：严格 layer gate，只做最细粒度的未完成层。下层未关闭时上层保持 `[ ]`。
-
-### Phase 1: Status + Operations (MVP)
-
-Phase 1 代码已提交（`5f619ab`），需运行验证和修复。
-
-- [ ] 1.1 运行验证：启动 Shell（`bun run dev`），访问 `http://localhost:3000`，确认 TUI 界面渲染
-- [ ] 1.2 状态推送验证：确认 WebSocket 1s 间隔推送 Director 状态，数据刷新正常
-- [ ] 1.3 快捷键验证：按 f/e/r 触发 Flush/Esc/Restart，确认命令执行和反馈显示
-- [ ] 1.4 修复验证中发现的问题（如有）
-
-### Phase 2: Logs + Session Viewing
-
-- [ ] 2.1 日志查看器后端
-  - [ ] 2.1.1 日志源抽象：读取 + tail 三个日志文件（queue.log / shell.stdout.log / director-stderr.log）
-  - [ ] 2.1.2 WebSocket 日志频道：按源订阅/取消订阅，实时推送新行
-- [ ] 2.2 日志查看器前端
-  - [ ] 2.2.1 xterm.js 日志视图模式：标签栏切换日志源
-  - [ ] 2.2.2 xterm-addon-search 集成：日志内搜索
-- [ ] 2.3 当前会话查看器后端
-  - [ ] 2.3.1 Session JSONL 解析器：提取 user/assistant 消息
-  - [ ] 2.3.2 WebSocket 会话频道：初始加载 + 实时追加新消息
-- [ ] 2.4 当前会话查看器前端
-  - [ ] 2.4.1 ANSI 格式化消息渲染（user/assistant 消息对，折叠 thinking/tool_use）
-  - [ ] 2.4.2 实时追加 Director 新响应
-
-### Phase 3: History Sessions + Advanced Features
-
-- [ ] 3.1 历史会话列表：扫描 JSONL 目录，按时间排序，显示消息数/大小/时长
-- [ ] 3.2 历史会话详情：复用 Phase 2 渲染器
-- [ ] 3.3 会话搜索：关键词搜索消息内容
-- [ ] 3.4 手动发消息：绕过飞书直接向 Director 发送文本
-- [ ] 3.5 Token 用量趋势：读取 stats-cache.json，渲染趋势图
-- [ ] 3.6 Persona 子人格/技能目录查看
-- [ ] 3.7 Outbox 任务列表和结果查看
+- [ ] 飞书流式响应：StreamingReply 状态机 + `im.v1.message.update` API
+- [ ] 日志查看器（多源切换 + tail）
+- [ ] Token 用量趋势图

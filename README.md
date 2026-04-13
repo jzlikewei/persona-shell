@@ -60,23 +60,52 @@ bun run uninstall-service
 
 ## Console API（运维）
 
-Shell 在 `http://localhost:3000` 提供生命周期管理 API，仅限运维手动操作，不对 Director 暴露。
+Shell 在 `http://localhost:3000` 提供 Web 管理控制台 + HTTP API，仅监听 localhost。
+
+**Web 控制台**：浏览器打开 `http://localhost:3000`，提供：
+- 系统状态面板（Director/Token/Queue/Uptime）
+- 会话消息查看（支持流式 streaming bubble 实时显示回复）
+- DirectorPool 群聊 Director 列表（Groups 面板，点击查看对应群的会话）
+- 后台任务管理 + Cron Jobs 管理
+- 操作按钮：Flush / Esc / Restart
+
+**HTTP API**：
 
 ```bash
+# 生命周期管理
 curl -X POST localhost:3000/api/flush     # 刷新 Director 上下文
 curl -X POST localhost:3000/api/esc       # 取消当前处理中的消息
 curl -X POST localhost:3000/api/restart   # 重启 Director 进程
+
+# 向 Director 发消息（绕过飞书）
+curl -X POST localhost:3000/api/send -H "Content-Type: application/json" -d '{"text":"你好"}'
+
+# 任务管理
+curl localhost:3000/api/tasks                          # 任务列表
+curl -X POST localhost:3000/api/tasks -H "Content-Type: application/json" \
+  -d '{"role":"explorer","description":"测试","prompt":"hello"}'
+curl localhost:3000/api/tasks/{id}                     # 任务详情
+curl -X POST localhost:3000/api/tasks/{id}/cancel      # 取消任务
+
+# 会话查看（支持 ?director={label} 查询 pool Director）
+curl localhost:3000/api/messages?limit=100
+curl localhost:3000/api/sessions
 ```
+
+详细协议见 `docs/web-console-plan.md`。
 
 ## 架构
 
 ```
-飞书消息 → TS Shell → named pipe (FIFO) → Director (Claude Code) → 回复
-                                              │
-                                              ├─ cwd = ~/.persona/
-                                              ├─ --bare + --add-dir (CLAUDE.md)
-                                              ├─ --plugin-dir (personas/, skills/)
-                                              └─ spawn Persona 实例 (claude -p, detached)
+飞书消息 → TS Shell → MessageQueue → Director (主, named pipe)
+              │                         │
+              │  群聊 → DirectorPool ─→ Director (群1)
+              │                    └──→ Director (群2)
+              │
+              └── Web Console (localhost:3000)
+                    ├─ 状态快照 (1s WebSocket)
+                    ├─ 流式 chunk (实时 WebSocket)
+                    └─ HTTP API
 ```
 
 ### FLUSH 机制
@@ -99,12 +128,20 @@ Director session 跨天时 `currentDate` 会过期。Shell 在消息间隔超过
 ```
 persona-shell/               # 本仓库（基础设施代码）
 ├── src/
-│   ├── index.ts               # 入口
+│   ├── index.ts               # 入口，编排层
 │   ├── feishu.ts              # 飞书 WebSocket 客户端
-│   ├── director.ts            # Director 进程管理 + named pipe + FLUSH
+│   ├── messaging.ts           # MessagingClient 接口
+│   ├── messaging-router.ts    # 多渠道路由器
+│   ├── director.ts            # Director 进程管理 + named pipe + FLUSH + chunk 事件
+│   ├── director-pool.ts       # DirectorPool 多 Director 实例管理
 │   ├── queue.ts               # 消息队列（correlation ID + cancel）
-│   ├── persona-runner.ts      # Persona 实例 spawn
-│   └── config.ts              # 配置加载（默认 ~/.persona/config.yaml）
+│   ├── console.ts             # Web 控制台 + API + WebSocket 广播
+│   ├── task-runner.ts         # 后台任务进程管理
+│   ├── task-store.ts          # 任务/Cron SQLite 存储
+│   ├── scheduler.ts           # Cron 调度器
+│   ├── persona-process.ts     # Persona 实例 spawn
+│   ├── config.ts              # 配置加载
+│   └── public/index.html      # Web 控制台前端 SPA
 ├── config.example.yaml
 ├── start.sh                   # launchd wrapper（source shell profile）
 ├── com.persona.shell.plist   # launchd 服务定义

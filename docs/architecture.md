@@ -456,6 +456,62 @@ pool:
 - 主 Director：`读取 daily/state.md 恢复工作上下文，了解当前待处理事项。`
 - 群 Director：`你正在为群「{群名}」服务。请读取 daily/state.md 了解全局状态（只读）。`
 
+### Director 事件体系
+
+Director（EventEmitter）在 stream-json 解析过程中发出以下事件：
+
+| 事件 | 载荷 | 触发时机 |
+|------|------|----------|
+| `chunk` | `(text: string)` | 每个 `assistant` 事件中的 text block 到达时（仅用户可见的响应，排除 flush/bootstrap/system/discard） |
+| `response` | `(text: string, durationMs?: number)` | `result` 事件到达时，完整回复文本 |
+| `stream-abort` | `()` | Director 进程异常关闭或 backoff 耗尽时，通知上层清理流式状态 |
+| `system-response` | `(text: string, replyTo: string)` | 任务通知等系统消息的响应，需回复到指定 messageId |
+| `auto-flush-complete` | `()` | 自动 flush 完成 |
+| `flush-drain-complete` | `()` | flush drain 阶段完成，队列中的孤儿消息应清理 |
+| `alert` | `(message: string)` | 异常告警，转发给用户 |
+| `close` | `()` | 管道关闭（非主 Director 用于 pool 清理） |
+
+DirectorPool 继承 EventEmitter，将池内 Director 的 `chunk` 和 `stream-abort` 事件 re-emit 到 pool 级别（附带 director label），供 Web Console 统一订阅。
+
+### Web Console 与 Pool 集成
+
+Web Console（`localhost:3000`）通过 WebSocket 向前端推送两类数据：
+
+**1. 状态快照（每秒）**
+
+```jsonc
+{
+  "type": "status",
+  "data": {
+    "system": { ... },
+    "activity": { ... },
+    "context": { ... },
+    "pool": [                          // ← DirectorPool 状态
+      {
+        "chatId": "oc_xxx",
+        "groupName": "群名",
+        "label": "2da0f077",           // chatId 的 sha256 前 8 位
+        "activity": "processing",      // idle | processing | flushing
+        "alive": true,
+        "queueLength": 0,
+        "sessionId": "uuid"
+      }
+    ]
+  }
+}
+```
+
+**2. 流式 chunk（实时）**
+
+```jsonc
+{ "type": "chunk", "director": "main", "text": "增量文本" }
+{ "type": "stream-abort", "director": "2da0f077" }
+```
+
+前端在 session view 中渲染 streaming bubble（带光标 ▍ 和脉冲动画），`processing→idle` 或 `stream-abort` 时清除 bubble 并重新加载完整消息。
+
+**API 路由扩展**：`/api/messages` 和 `/api/sessions` 支持 `?director={label}` 查询参数，用于查看 pool Director 的会话历史。
+
 ## 八、Director Daemon 运行机制
 
 ### 运行形态
@@ -588,10 +644,11 @@ last_flush: 2026-04-05T14:30:00
 | 飞书适配器 | MessagingClient 实现，WebSocket 长连接 + 飞书 SDK |
 | Web 控制台适配器 | MessagingClient 实现，复用控制台 WebSocket |
 | 主 Director | Claude Code CLI（detached），stream-json 双向通信 |
-| DirectorPool | 多 Director 实例管理，按群/话题路由，idle 超时回收 |
+| DirectorPool | 多 Director 实例管理，按群/话题路由，idle 超时回收。继承 EventEmitter，re-emit chunk/stream-abort |
 | One-shot 响应 | Claude Code CLI（`-p` 模式），大群无状态事件响应 |
 | Persona 实例 | Claude Code CLI（detached，`-p` 模式），输出写文件 |
 | Director ↔ Shell 通信 | named pipe (FIFO) + stream-json 协议 |
+| Web Console 流式 | Director chunk 事件 → Pool re-emit → Console WS 广播 → 前端 streaming bubble |
 | 记忆存储 | 本地 Markdown 文件 |
 | 通信协议 | Briefing / Report（YAML 结构） |
 | 定时触发 | cron |
