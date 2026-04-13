@@ -570,6 +570,15 @@
       font-size: 12px;
     }
 
+    .chat-msg.streaming .chat-msg-body {
+      border-left: 3px solid var(--green);
+      animation: streaming-pulse 2s ease-in-out infinite;
+    }
+    @keyframes streaming-pulse {
+      0%, 100% { border-left-color: var(--green); }
+      50% { border-left-color: var(--teal); }
+    }
+
     #chat-input-bar {
       display: none;
       flex-shrink: 0;
@@ -1003,6 +1012,14 @@
         </div>
       </div>
 
+      <!-- Group Directors (Pool) -->
+      <div class="sb-section" id="pool-section" style="display:none;flex-direction:column;min-height:0;overflow:hidden">
+        <div class="sb-title">Groups <span id="pool-count" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
+        <div class="sb-scroll" id="pool-list">
+          <div class="empty">No groups</div>
+        </div>
+      </div>
+
       <!-- Tasks -->
       <div class="sb-section" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden">
         <div class="sb-title">Tasks <span id="task-counts" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
@@ -1115,9 +1132,10 @@
   var ws = null;
 
   // View state
-  var viewMode = 'dashboard'; // 'dashboard' | 'session' | 'task'
+  var viewMode = 'dashboard'; // 'dashboard' | 'session' | 'task' | 'pool-session'
   var selectedSessionId = null;
   var selectedTaskId = null;
+  var selectedPoolLabel = null; // for pool-session view
   var sessionMessages = null; // cached messages for selected session
   var sessions = []; // cached session list
   var taskDetail = null; // cached task detail
@@ -1125,6 +1143,11 @@
   var taskLogs = [];
   var taskLogTotalLines = 0;
   var taskLogPollTimer = null;
+
+  // Streaming state
+  var streamingChunks = {}; // director label → accumulated text
+  var prevActivityState = 'idle'; // for detecting processing→idle transition
+  var streamRenderTimer = null; // debounce markdown rendering
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -1187,6 +1210,7 @@
       metrics: { today: { messagesProcessed: 0, avgResponseSec: 0, totalCostUsd: 0 }, recentMessages: [], recentErrors: [] },
       queue: q.map(function(i) { return { correlationId: i.correlationId || '', preview: (i.text || '').slice(0,60), timestamp: i.timestamp, cancelled: !!i.cancelled }; }),
       tasks: { summary: { running: 0, completed: 0, failed: 0 }, recent: [] },
+      pool: [],
     };
   }
 
@@ -1211,8 +1235,33 @@
         if (msg.type === 'status') {
           data = normalize(msg.data);
           lastRecvAt = Date.now();
+
+          // Detect processing→idle transitions to clear streaming
+          var newState = data.activity && data.activity.state || 'idle';
+          if (prevActivityState === 'processing' && newState !== 'processing') {
+            // Main director finished — clear streaming after short delay for trailing chunks
+            setTimeout(function() { clearStreaming('main'); }, 300);
+          }
+          prevActivityState = newState;
+
+          // Same for pool Directors
+          var poolData = data.pool || [];
+          for (var pi = 0; pi < poolData.length; pi++) {
+            var pe = poolData[pi];
+            if (pe.activity !== 'processing' && streamingChunks[pe.label]) {
+              setTimeout(clearStreaming.bind(null, pe.label), 300);
+            }
+          }
+
           renderSidebar();
           if (viewMode === 'dashboard') renderDashboard();
+        } else if (msg.type === 'chunk') {
+          var label = msg.director || 'main';
+          if (!streamingChunks[label]) streamingChunks[label] = '';
+          streamingChunks[label] += msg.text;
+          scheduleStreamRender(label);
+        } else if (msg.type === 'stream-abort') {
+          clearStreaming(msg.director || 'main');
         } else if (msg.type === 'command_result') {
           showToast(msg.message || msg.command, msg.ok);
         } else if (msg.type === 'chat_reply') {
@@ -1259,6 +1308,99 @@
       sessionMessages = [];
       renderSessionView();
     });
+  }
+
+  // ── Pool session loading ──
+  function loadPoolMessages(label) {
+    fetch('/api/messages?limit=200&director=' + encodeURIComponent(label))
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        sessionMessages = d || [];
+        renderSessionView();
+      })
+      .catch(function() {
+        sessionMessages = [];
+        renderSessionView();
+      });
+  }
+
+  window.selectPoolDirector = function(label, groupName) {
+    viewMode = 'pool-session';
+    selectedPoolLabel = label;
+    selectedSessionId = null;
+    $('detail-header-title').textContent = groupName || label;
+    $('detail-content').classList.remove('task-split-mode');
+    $('detail-content').innerHTML = '<div class="chat-view"><div class="chat-scroll" id="chat-scroll"><div id="chat-messages"><div class="empty" style="padding:40px">Loading...</div></div></div></div>';
+    loadPoolMessages(label);
+  };
+
+  // ── Streaming helpers ──
+  function clearStreaming(label) {
+    delete streamingChunks[label];
+    var bubble = document.getElementById('streaming-bubble-' + label);
+    if (bubble) bubble.remove();
+    // Reload messages to get the final response
+    if (viewMode === 'session' || viewMode === 'pool-session') {
+      if (viewMode === 'pool-session' && selectedPoolLabel === label) {
+        loadPoolMessages(label);
+      } else if (viewMode === 'session') {
+        if (selectedSessionId) loadSessionMessages(selectedSessionId);
+        else loadAllMessages();
+      }
+    }
+  }
+
+  function scheduleStreamRender(label) {
+    // Debounce markdown rendering to avoid jank on rapid chunks
+    if (streamRenderTimer) return;
+    streamRenderTimer = setTimeout(function() {
+      streamRenderTimer = null;
+      renderStreamingBubble(label);
+    }, 100);
+  }
+
+  function renderStreamingBubble(label) {
+    // Only render in session/pool-session views for the relevant Director
+    var isRelevant = false;
+    if (viewMode === 'session') {
+      isRelevant = (label === 'main');
+    } else if (viewMode === 'pool-session') {
+      isRelevant = (label === selectedPoolLabel);
+    }
+    if (!isRelevant) return;
+
+    var container = $('chat-messages');
+    if (!container) return;
+
+    var bubbleId = 'streaming-bubble-' + label;
+    var el = document.getElementById(bubbleId);
+    if (!el) {
+      // Remove any existing "Processing..." indicator
+      var proc = container.querySelector('.chat-processing');
+      if (proc) proc.remove();
+
+      el = document.createElement('div');
+      el.id = bubbleId;
+      el.className = 'chat-msg out streaming';
+      el.innerHTML = '<div class="chat-msg-header">' +
+        '<span class="chat-msg-role bot">Director</span>' +
+        '<div class="running-dot" style="margin-left:4px"></div>' +
+        '</div>' +
+        '<div class="chat-msg-body"><div class="md-content" id="streaming-content-' + label + '"></div></div>';
+      container.appendChild(el);
+    }
+
+    var contentEl = document.getElementById('streaming-content-' + label);
+    if (contentEl) {
+      contentEl.innerHTML = renderMd((streamingChunks[label] || '') + ' \u258d');
+    }
+
+    // Auto-scroll if near bottom
+    var scroll = $('chat-scroll');
+    if (scroll) {
+      var nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 150;
+      if (nearBottom) scroll.scrollTop = scroll.scrollHeight;
+    }
   }
 
   function loadTaskDetail(taskId) {
@@ -1399,7 +1541,8 @@
     fEl.style.color = sys.messaging === 'connected' ? 'var(--green)' : 'var(--overlay1)';
 
     var dEl = $('hb-director');
-    dEl.textContent = sys.directorAlive ? 'Alive' : 'Dead';
+    var poolCount = (data.pool || []).length;
+    dEl.textContent = sys.directorAlive ? ('Alive' + (poolCount > 0 ? ' +' + poolCount : '')) : 'Dead';
     dEl.style.color = sys.directorAlive ? 'var(--green)' : 'var(--red)';
 
     $('hb-uptime').textContent = fmtDur(sys.uptime);
@@ -1447,6 +1590,9 @@
 
     // Task list (from status push)
     renderTaskList();
+
+    // Pool list (group Directors)
+    renderPoolList();
   }
 
   function renderSessionList() {
@@ -1478,6 +1624,35 @@
         '<span class="item-icon" style="color:' + dotColor + '">&#9679;</span>' +
         '<span class="item-label">' + esc(s.sessionName || s.sessionId.slice(0, 16)) + (isLive ? ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">live</span>' : '') + '</span>' +
         '<span class="item-meta">' + s.messageCount + '</span></div>';
+    }
+    el.innerHTML = html;
+  }
+
+  function renderPoolList() {
+    if (!data) return;
+    var poolData = data.pool || [];
+    var section = $('pool-section');
+    var el = $('pool-list');
+    var countEl = $('pool-count');
+
+    if (poolData.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+    section.style.display = 'flex';
+    countEl.textContent = '(' + poolData.length + ')';
+
+    var html = '';
+    for (var i = 0; i < poolData.length; i++) {
+      var p = poolData[i];
+      var isActive = viewMode === 'pool-session' && selectedPoolLabel === p.label;
+      var actColor = p.activity === 'processing' ? 'var(--green)' : p.activity === 'flushing' ? 'var(--yellow)' : 'var(--overlay0)';
+      var qBadge = p.queueLength > 0 ? ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">' + p.queueLength + '</span>' : '';
+      html += '<div class="list-item' + (isActive ? ' active' : '') +
+        '" onclick="selectPoolDirector(\'' + esc(p.label) + '\',\'' + esc(p.groupName) + '\')">' +
+        '<span class="item-icon" style="color:' + actColor + '">&#9679;</span>' +
+        '<span class="item-label">' + esc(p.groupName) + qBadge + '</span>' +
+        '<span class="item-meta">' + (p.activity === 'processing' ? 'busy' : 'idle') + '</span></div>';
     }
     el.innerHTML = html;
   }
@@ -1615,10 +1790,12 @@
       html += '</div></div>';
     }
 
-    // Show processing indicator if live session is busy
+    // Show processing indicator if live session is busy (unless streaming is active)
     var isLiveSession = data && data.system &&
       (selectedSessionId === data.system.sessionId || !selectedSessionId);
-    if (isLiveSession && data && data.activity && data.activity.state === 'processing') {
+    var streamLabel = viewMode === 'pool-session' ? selectedPoolLabel : 'main';
+    var hasStreamingChunks = streamLabel && streamingChunks[streamLabel];
+    if (isLiveSession && data && data.activity && data.activity.state === 'processing' && !hasStreamingChunks) {
       html += '<div class="chat-processing"><div class="running-dot"></div><span>Processing...</span></div>';
     }
 
@@ -1630,7 +1807,7 @@
 
     // Show/hide input bar based on live session
     var inputBar = $('chat-input-bar');
-    if (isLiveSession) {
+    if (isLiveSession || viewMode === 'pool-session') {
       inputBar.classList.add('visible');
       setTimeout(function() { $('chat-input').focus(); }, 0);
     } else {

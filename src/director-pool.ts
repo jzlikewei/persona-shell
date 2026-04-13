@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { EventEmitter } from 'events';
 import { Director, type DirectorOptions } from './director.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import type { Config } from './config.js';
@@ -19,7 +20,7 @@ interface PoolEntry {
   lastActiveAt: number;
 }
 
-export class DirectorPool {
+export class DirectorPool extends EventEmitter {
   private entries: Map<string, PoolEntry> = new Map();
   private creating: Map<string, Promise<PoolEntry>> = new Map();
   private mainDirector: Director;
@@ -34,6 +35,7 @@ export class DirectorPool {
     directorConfig: Config['director'],
     messaging: MessagingClient,
   ) {
+    super();
     this.mainDirector = mainDirector;
     this.poolConfig = poolConfig;
     this.directorConfig = directorConfig;
@@ -251,6 +253,14 @@ export class DirectorPool {
       if (orphaned.length > 0) {
         console.log(`[pool:${groupName}] Cleared ${orphaned.length} orphaned queue items after flush drain`);
       }
+    });
+
+    // chunk / stream-abort → re-emit on pool level for console broadcast
+    director.on('chunk', (text: string) => {
+      this.emit('chunk', director.label, text);
+    });
+    director.on('stream-abort', () => {
+      this.emit('stream-abort', director.label);
     });
   }
 

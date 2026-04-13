@@ -618,6 +618,7 @@ export class Director extends EventEmitter {
         process.exit(1);
       } else {
         console.error(`[director:${this.label}] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — giving up, emitting close`);
+        this.emit('stream-abort');
         this.emit('close');
         return;
       }
@@ -726,12 +727,17 @@ export class Director extends EventEmitter {
           case 'assistant':
             if (event.message?.content) {
               const content = event.message.content;
+              // Should we stream chunks to listeners?
+              const shouldStream = !this.flushing && !this.bootstrapping
+                && this.systemMessagePending <= 0 && !this.discardNextResponse;
               if (typeof content === 'string') {
                 currentResponse += content;
+                if (shouldStream && content) this.emit('chunk', content);
               } else if (Array.isArray(content)) {
                 for (const block of content) {
                   if (block.type === 'text') {
                     currentResponse += block.text;
+                    if (shouldStream && block.text) this.emit('chunk', block.text);
                   }
                 }
               }
@@ -885,9 +891,11 @@ export class Director extends EventEmitter {
       } else if (!this.isMain) {
         // Non-main Director: emit 'close' for DirectorPool cleanup, don't exit
         console.log(`[director:${this.label}] Non-main Director closed unexpectedly`);
+        this.emit('stream-abort');
         this.emit('close');
       } else {
         // 4.1: Alert before unexpected restart — this is a genuine crash
+        this.emit('stream-abort');
         this.emit('alert', `🔴 Director 进程意外退出，正在重启...`);
         console.log(`[director:${this.label}] Output pipe closed, restarting...`);
         await this.restart();

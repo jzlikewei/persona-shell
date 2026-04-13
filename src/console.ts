@@ -2,6 +2,7 @@ import { readFileSync, existsSync, statSync, openSync, readSync, closeSync } fro
 import { join, resolve, extname } from 'path';
 import { homedir } from 'os';
 import type { MessagingClient } from './messaging.js';
+import type { DirectorPool } from './director-pool.js';
 
 /** 从文件尾部读取最多 maxBytes 字节，返回完整行（丢弃首行截断部分） */
 function readTail(filePath: string, maxBytes: number): string {
@@ -304,6 +305,7 @@ export function startConsole(
   messaging?: MessagingClient,
   metrics?: MetricsCollector,
   attachmentBuffer?: AttachmentBuffer,
+  pool?: DirectorPool,
 ): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
@@ -438,6 +440,16 @@ export function startConsole(
           summary: taskSummary,
           recent: recentTasks,
         },
+        pool: pool ? pool.getPoolStatus().map((entry) => ({
+          chatId: entry.chatId,
+          groupName: entry.groupName,
+          label: entry.label,
+          lastActiveAt: entry.lastActiveAt,
+          queueLength: entry.queueLength,
+          activity: entry.directorStatus.activityState,
+          alive: entry.directorStatus.alive,
+          sessionId: entry.directorStatus.sessionId,
+        })) : [],
       },
     };
   }
@@ -487,6 +499,29 @@ export function startConsole(
       }
     }
   }, 1000);
+
+  // Chunk / stream-abort broadcast for streaming UI
+  function broadcastWs(payload: string) {
+    for (const ws of clients) {
+      try { ws.send(payload); } catch { clients.delete(ws); }
+    }
+  }
+
+  director.on('chunk', (text: string) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, text }));
+  });
+  director.on('stream-abort', () => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: director.label }));
+  });
+
+  if (pool) {
+    pool.on('chunk', (label: string, text: string) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, text }));
+    });
+    pool.on('stream-abort', (label: string) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label }));
+    });
+  }
 
   const server = Bun.serve({
     port,
@@ -595,12 +630,30 @@ export function startConsole(
           if (url.pathname === '/api/messages' && req.method === 'GET') {
             const limit = Number(url.searchParams.get('limit') ?? 100);
             const sessionId = url.searchParams.get('sessionId') ?? undefined;
-            return Response.json(parseConversationLog(director.inputLogPath, director.outputLogPath, limit, sessionId));
+            const directorLabel = url.searchParams.get('director') ?? undefined;
+            let targetDirector = director;
+            if (directorLabel && pool) {
+              const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
+              if (entry) {
+                const poolEntry = pool.get(entry.chatId);
+                if (poolEntry) targetDirector = poolEntry.director;
+              }
+            }
+            return Response.json(parseConversationLog(targetDirector.inputLogPath, targetDirector.outputLogPath, limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
-            const sessions = parseSessions(director.outputLogPath);
+            const directorLabel = url.searchParams.get('director') ?? undefined;
+            let targetDirector = director;
+            if (directorLabel && pool) {
+              const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
+              if (entry) {
+                const poolEntry = pool.get(entry.chatId);
+                if (poolEntry) targetDirector = poolEntry.director;
+              }
+            }
+            const sessions = parseSessions(targetDirector.outputLogPath);
             // Inject sessionName for the live session from Director status
-            const ds = director.getStatus();
+            const ds = targetDirector.getStatus();
             if (ds.sessionId && ds.sessionName) {
               const live = sessions.find(s => s.sessionId === ds.sessionId);
               if (live) live.sessionName = ds.sessionName;
