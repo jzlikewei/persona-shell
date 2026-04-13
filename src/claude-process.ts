@@ -41,6 +41,7 @@ export class ClaudeProcess {
 
   constructor(paths: ClaudeProcessPaths) {
     this.pipeDir = paths.pipeDir;
+    // pipe 文件名保留 'director-' 前缀以兼容已有运行时路径
     this.pipeIn = join(paths.pipeDir, 'director-in');
     this.pipeOut = join(paths.pipeDir, 'director-out');
     this.pidFile = paths.pidFile;
@@ -59,7 +60,7 @@ export class ClaudeProcess {
     for (const pipe of [this.pipeIn, this.pipeOut]) {
       if (!existsSync(pipe)) {
         execSync(`mkfifo "${pipe}"`);
-        console.log(`[director:${this.label}] Created FIFO: ${pipe}`);
+        console.log(`[bridge:${this.label}] Created FIFO: ${pipe}`);
       }
     }
   }

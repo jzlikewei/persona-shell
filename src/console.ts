@@ -488,7 +488,7 @@ export function startConsole(
           return { ok: false, message: '队列为空，没有可取消的消息' };
         }
         case 'restart': {
-          await director.restartDirector();
+          await director.restartProcess();
           return { ok: true, message: 'Director 已重启' };
         }
         default:

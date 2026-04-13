@@ -21,6 +21,10 @@ export interface PoolEntry {
   lastActiveAt: number;
 }
 
+/** 管理多个 Director 会话实例的生命周期。
+ *
+ *  命名说明："DirectorPool" 是领域概念（管理多个 Director 角色的会话），
+ *  底层实现使用 SessionBridge。保留 "Director" 命名以对齐架构文档和用户心智模型。 */
 export class DirectorPool extends EventEmitter {
   private entries: Map<string, PoolEntry> = new Map();
   private creating: Map<string, Promise<PoolEntry>> = new Map();

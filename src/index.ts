@@ -463,7 +463,7 @@ async function main() {
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       await messaging.reply(messageId, `正在重启 ${label} Director...`);
       console.log(`[shell] /restart: restarting ${label} Director`);
-      await targetDirector.restartDirector();
+      await targetDirector.restartProcess();
       await messaging.reply(messageId, `${label} Director 已重启`);
       return;
     }

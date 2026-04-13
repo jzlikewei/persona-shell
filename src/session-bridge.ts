@@ -11,7 +11,7 @@ import { log } from './logger.js';
 /** Base log directory */
 const LOG_BASE = join(import.meta.dirname, '..', 'logs');
 
-interface DirectorPersistedState {
+interface BridgePersistedState {
   lastFlushAt: number;
   lastInputTokens: number;
   contextWindow: number;
@@ -21,9 +21,9 @@ export interface SessionBridgeOptions {
   config: Config['director'];
   /** 唯一标识，如 'main' 或 chatId 的短 hash */
   label: string;
-  /** 主 Director 标记（默认 true） */
+  /** 主实例标记（默认 true） */
   isMain?: boolean;
-  /** 群聊名称，非主 Director 用于 bootstrap 消息 */
+  /** 群聊名称，非主实例用于 bootstrap 消息 */
   groupName?: string;
 }
 
@@ -106,7 +106,8 @@ export class SessionBridge extends EventEmitter {
       : join(pipeDir, 'session');
   }
 
-  /** State key parameterized by label: 'director:main', 'director:abc12345', etc. */
+  /** State key parameterized by label: 'director:main', 'director:abc12345', etc.
+   *  保留 'director:' 前缀以兼容已有 SQLite 持久化数据。 */
   private get stateKey(): string {
     return `director:${this.label}`;
   }
@@ -132,11 +133,11 @@ export class SessionBridge extends EventEmitter {
   }
 
   /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow). Returns restored data or null. */
-  restoreState(): DirectorPersistedState | null {
-    let saved = getState<DirectorPersistedState>(this.stateKey);
+  restoreState(): BridgePersistedState | null {
+    let saved = getState<BridgePersistedState>(this.stateKey);
     // 向后兼容：主 Director 旧状态键是 'director'
     if (!saved && this.isMain) {
-      saved = getState<DirectorPersistedState>('director');
+      saved = getState<BridgePersistedState>('director');
     }
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
@@ -146,7 +147,7 @@ export class SessionBridge extends EventEmitter {
   }
 
   private persistState(): void {
-    setState<DirectorPersistedState>(this.stateKey, {
+    setState<BridgePersistedState>(this.stateKey, {
       lastFlushAt: this.lastFlushAt,
       lastInputTokens: this.lastInputTokens,
       contextWindow: this.contextWindow,
@@ -161,7 +162,7 @@ export class SessionBridge extends EventEmitter {
 
     let freshStart = true;
     if (this.process.isAlive()) {
-      console.log(`[director:${this.label}] Existing process found (pid: ${this.process.getPid()}), reconnecting...`);
+      console.log(`[bridge:${this.label}] Existing process found (pid: ${this.process.getPid()}), reconnecting...`);
       freshStart = false;
     } else {
       this.process.ensurePipes();
@@ -173,12 +174,12 @@ export class SessionBridge extends EventEmitter {
     const handles = await this.process.openPipes(SessionBridge.PIPE_OPEN_TIMEOUT);
 
     if (!handles) {
-      throw new Error(`[director:${this.label}] Pipe open timeout after ${SessionBridge.PIPE_OPEN_TIMEOUT / 1000}s — process may have died`);
+      throw new Error(`[bridge:${this.label}] Pipe open timeout after ${SessionBridge.PIPE_OPEN_TIMEOUT / 1000}s — process may have died`);
     }
 
     this.writeHandle = handles.writeHandle;
     this.sessionId = this.readSession();
-    console.log(`[director:${this.label}] Pipes connected`);
+    console.log(`[bridge:${this.label}] Pipes connected`);
 
     this.listenOutput(handles.readHandle);
 
@@ -188,7 +189,7 @@ export class SessionBridge extends EventEmitter {
   /** Send SIGINT to cancel current request, then auto-restart with --resume */
   async interrupt(): Promise<void> {
     if (this.flushing) {
-      console.log(`[director:${this.label}] Interrupt skipped: flush in progress`);
+      console.log(`[bridge:${this.label}] Interrupt skipped: flush in progress`);
       return;
     }
 
@@ -196,7 +197,7 @@ export class SessionBridge extends EventEmitter {
     if (!pid) return;
 
     this.interrupted = true;
-    console.log(`[director:${this.label}] Interrupting (pid: ${pid})...`);
+    console.log(`[bridge:${this.label}] Interrupting (pid: ${pid})...`);
 
     this.process.kill('SIGINT');
 
@@ -214,10 +215,10 @@ export class SessionBridge extends EventEmitter {
    */
   private static readonly FLUSH_STEP_TIMEOUT = 5 * 60_000; // 5 minutes
 
-  /** Kill current Director and restart with a fresh session (no --conversation-id) */
+  /** Kill current session and restart with a fresh one (no --conversation-id) */
   async flush(): Promise<boolean> {
     if (this.flushing) {
-      console.log(`[director:${this.label}] FLUSH already in progress, skipping`);
+      console.log(`[bridge:${this.label}] FLUSH already in progress, skipping`);
       return false;
     }
 
@@ -228,19 +229,19 @@ export class SessionBridge extends EventEmitter {
       this.clearSession();
       await this.restart();
       this.finishFlush();
-      console.log(`[director:${this.label}] FLUSH: complete (non-main, no checkpoint)`);
+      console.log(`[bridge:${this.label}] FLUSH: complete (non-main, no checkpoint)`);
       return true;
     }
 
     // 7.x: Warn about running tasks before flush
     const runningTasks = listTasks({ status: 'running' });
     if (runningTasks.length > 0) {
-      console.warn(`[director:${this.label}] FLUSH: ${runningTasks.length} task(s) still running — new Director may miss results`);
+      console.warn(`[bridge:${this.label}] FLUSH: ${runningTasks.length} task(s) still running — new Director may miss results`);
     }
 
     // Wait for interrupt to complete if in progress
     if (this.interrupted) {
-      console.log(`[director:${this.label}] FLUSH: waiting for interrupt to complete...`);
+      console.log(`[bridge:${this.label}] FLUSH: waiting for interrupt to complete...`);
       await new Promise<void>((resolve) => {
         this.once('restarted', resolve);
       });
@@ -250,10 +251,10 @@ export class SessionBridge extends EventEmitter {
 
     // Drain: wait for in-flight messages to complete
     if (this.pendingCount > 0) {
-      console.log(`[director:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
+      console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
       const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
       if (!drained) {
-        console.warn(`[director:${this.label}] FLUSH: drain timeout, aborting flush`);
+        console.warn(`[bridge:${this.label}] FLUSH: drain timeout, aborting flush`);
         this.flushing = false;
         return false;
       }
@@ -264,7 +265,7 @@ export class SessionBridge extends EventEmitter {
     this.emit('flush-drain-complete');
 
     // Step 1 - Checkpoint: ask Director to save state
-    console.log(`[director:${this.label}] FLUSH: starting checkpoint...`);
+    console.log(`[bridge:${this.label}] FLUSH: starting checkpoint...`);
     const checkpointDone = new Promise<void>((resolve) => {
       this.flushCheckpointResolve = resolve;
     });
@@ -278,14 +279,14 @@ export class SessionBridge extends EventEmitter {
       this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!checkpointOk) {
-      console.warn(`[director:${this.label}] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset`);
+      console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset`);
       this.flushCheckpointResolve = null;
       this.discardNextResponse = true;
       // Fall through to kill+restart — don't abort, otherwise the
       // checkpoint message is still in-flight and its late response
       // would leak to users.
     } else {
-      console.log(`[director:${this.label}] FLUSH: checkpoint done`);
+      console.log(`[bridge:${this.label}] FLUSH: checkpoint done`);
     }
 
     // Step 2 - Reset: kill process + clear session + clean pipes
@@ -308,13 +309,13 @@ export class SessionBridge extends EventEmitter {
       this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!bootstrapOk) {
-      console.warn(`[director:${this.label}] FLUSH: bootstrap timeout — forcing flush finish`);
+      console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout — forcing flush finish`);
       this.flushBootstrapResolve = null;
       this.discardNextResponse = true;
       this.finishFlush();
     } else {
       this.finishFlush();
-      console.log(`[director:${this.label}] FLUSH: complete`);
+      console.log(`[bridge:${this.label}] FLUSH: complete`);
     }
     return true;
   }
@@ -331,7 +332,7 @@ export class SessionBridge extends EventEmitter {
     return this.flushing;
   }
 
-  /** 返回 Director 当前状态快照，供控制台使用 */
+  /** 返回当前状态快照，供控制台使用 */
   getStatus(): {
     alive: boolean;
     pid: number | null;
@@ -390,7 +391,7 @@ export class SessionBridge extends EventEmitter {
   }
 
   /** 公开的重启方法：杀掉当前进程并重新启动（保留 session，加载新配置） */
-  async restartDirector(): Promise<void> {
+  async restartProcess(): Promise<void> {
     this.explicitRestart = true;
     this.process.kill('SIGTERM');
     // Wait for close handler to finish restart (it checks explicitRestart flag)
@@ -430,7 +431,7 @@ export class SessionBridge extends EventEmitter {
     });
 
     await this.writeRaw(msg);
-    console.log(`[director:${this.label}] Bootstrap message sent`);
+    console.log(`[bridge:${this.label}] Bootstrap message sent`);
 
     // Wait for bootstrap response with timeout — prevents indefinite hang
     const timedOut = await Promise.race([
@@ -438,7 +439,7 @@ export class SessionBridge extends EventEmitter {
       this.timeout(SessionBridge.BOOTSTRAP_TIMEOUT).then(() => true),
     ]);
     if (timedOut) {
-      console.warn(`[director:${this.label}] Bootstrap timeout after ${SessionBridge.BOOTSTRAP_TIMEOUT / 1000}s, continuing without bootstrap response`);
+      console.warn(`[bridge:${this.label}] Bootstrap timeout after ${SessionBridge.BOOTSTRAP_TIMEOUT / 1000}s, continuing without bootstrap response`);
       this.bootstrapping = false;
       this.bootstrapResolve = null;
       this.decrementPending();
@@ -447,10 +448,10 @@ export class SessionBridge extends EventEmitter {
 
   async send(message: string): Promise<void> {
     if (!this.writeHandle) {
-      throw new Error('Director not started');
+      throw new Error('SessionBridge not started');
     }
     if (this.flushing) {
-      throw new Error('Director is flushing');
+      throw new Error('SessionBridge is flushing');
     }
 
     // Track current message for dashboard
@@ -471,7 +472,7 @@ export class SessionBridge extends EventEmitter {
     await this.writeRaw(content);
   }
 
-  /** 发送系统消息给 Director（如 cron director_msg），响应会被吸收不转发给用户 */
+  /** 发送系统消息（如 cron director_msg），响应会被吸收不转发给用户 */
   async sendSystemMessage(msg: string): Promise<void> {
     if (!this.writeHandle || this.flushing) return;
     this.pendingTypes.push({ type: 'system-absorbed' });
@@ -503,7 +504,7 @@ export class SessionBridge extends EventEmitter {
     await this.writeHandle.write(pipePayload);
   }
 
-  /** 7.3.5: Notify Director that a managed task has completed or failed */
+  /** Notify the AI that a managed task has completed or failed */
   async notifyTaskDone(taskId: string, success: boolean, replyToMessageId?: string): Promise<void> {
     if (!this.writeHandle || this.flushing) return;
     this.pendingCount++;
@@ -531,7 +532,7 @@ export class SessionBridge extends EventEmitter {
     this.writeHandle = null;
   }
 
-  /** Gracefully shut down: kill the Director process and wait for pipe close.
+  /** Gracefully shut down: kill the process and wait for pipe close.
    *  Unlike restart(), this does NOT spawn a new process — used for /restart-shell. */
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
@@ -550,7 +551,7 @@ export class SessionBridge extends EventEmitter {
       // Safety timeout — if pipe close never fires
       setTimeout(() => {
         if (this.shutdownResolve) {
-          console.warn(`[director:${this.label}] Shutdown timeout, forcing`);
+          console.warn(`[bridge:${this.label}] Shutdown timeout, forcing`);
           this.shutdownResolve();
           this.shutdownResolve = null;
         }
@@ -579,7 +580,7 @@ export class SessionBridge extends EventEmitter {
   private decrementPending(): void {
     this.pendingCount--;
     if (this.pendingCount < 0) {
-      console.error(`[director:${this.label}] BUG: pendingCount went negative (${this.pendingCount}), clamping to 0`);
+      console.error(`[bridge:${this.label}] BUG: pendingCount went negative (${this.pendingCount}), clamping to 0`);
       this.pendingCount = 0;
     }
   }
@@ -598,7 +599,7 @@ export class SessionBridge extends EventEmitter {
       const reason = contextOverLimit
         ? `context tokens ${this.lastInputTokens} > ${this.config.flush_context_limit}`
         : `time since last flush exceeded ${this.config.flush_interval_ms}ms`;
-      console.log(`[director:${this.label}] Auto-flush triggered: ${reason}`);
+      console.log(`[bridge:${this.label}] Auto-flush triggered: ${reason}`);
       // Fire and forget — flush is async but we don't block the event loop
       this.flush().then((success) => {
         if (success) {
@@ -608,7 +609,7 @@ export class SessionBridge extends EventEmitter {
           this.emit('alert', `⚠️ 自动 FLUSH 未能完成（reason: ${reason}）`);
         }
       }).catch((err) => {
-        console.error(`[director:${this.label}] Auto-flush failed:`, err);
+        console.error(`[bridge:${this.label}] Auto-flush failed:`, err);
         this.emit('alert', `⚠️ 自动 FLUSH 异常: ${String(err).slice(0, 200)}`);
       });
     }
@@ -623,10 +624,10 @@ export class SessionBridge extends EventEmitter {
     this.restartTimestamps = this.restartTimestamps.filter((t) => now - t < BACKOFF_WINDOW);
     if (this.restartTimestamps.length >= MAX_RESTARTS) {
       if (this.isMain) {
-        console.error(`[director:${this.label}] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — exiting to let launchd handle recovery`);
+        console.error(`[bridge:${this.label}] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — exiting to let launchd handle recovery`);
         process.exit(1);
       } else {
-        console.error(`[director:${this.label}] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — giving up, emitting close`);
+        console.error(`[bridge:${this.label}] ${this.restartTimestamps.length} restarts in ${BACKOFF_WINDOW / 1000}s — giving up, emitting close`);
         this.emit('stream-abort');
         this.emit('close');
         return;
@@ -646,9 +647,9 @@ export class SessionBridge extends EventEmitter {
 
     const savedSession = this.readSession();
     if (savedSession) {
-      console.log(`[director:${this.label}] Resuming session: ${savedSession}`);
+      console.log(`[bridge:${this.label}] Resuming session: ${savedSession}`);
     } else {
-      console.log(`[director:${this.label}] Starting new session`);
+      console.log(`[bridge:${this.label}] Starting new session`);
     }
 
     // 生成语义化 session 名称：director-{label}-{日期T时分}[-{群名}]
@@ -672,7 +673,7 @@ export class SessionBridge extends EventEmitter {
     });
 
     if (pid) {
-      console.log(`[director:${this.label}] Spawned claude process (pid: ${pid})`);
+      console.log(`[bridge:${this.label}] Spawned claude process (pid: ${pid})`);
     }
   }
 
@@ -705,12 +706,12 @@ export class SessionBridge extends EventEmitter {
 
         switch (event.type) {
           case 'system':
-            log.debug(`[director:${this.label}] System event: ${event.subtype}`);
+            log.debug(`[bridge:${this.label}] System event: ${event.subtype}`);
             // Capture session_id from init event
             if (event.subtype === 'init' && event.session_id) {
               this.sessionId = event.session_id;
               this.saveSession(event.session_id);
-              log.debug(`[director:${this.label}] Session ID: ${event.session_id}`);
+              log.debug(`[bridge:${this.label}] Session ID: ${event.session_id}`);
             }
             break;
 
@@ -739,7 +740,7 @@ export class SessionBridge extends EventEmitter {
           case 'result':
             // Handle stale session error — clear session and let close handler restart
             if (event.is_error && event.errors?.some((e: string) => e.includes('No conversation found'))) {
-              console.warn(`[director:${this.label}] Session expired, clearing session for fresh start`);
+              console.warn(`[bridge:${this.label}] Session expired, clearing session for fresh start`);
               this.clearSession();
               break;
             }
@@ -781,21 +782,21 @@ export class SessionBridge extends EventEmitter {
             if (currentResponse) {
               if (this.flushing && this.flushCheckpointResolve) {
                 // Flush checkpoint response — don't emit to users
-                log.debug(`[director:${this.label}] FLUSH checkpoint response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[bridge:${this.label}] FLUSH checkpoint response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushCheckpointResolve();
                 this.flushCheckpointResolve = null;
               } else if (this.flushing && this.flushBootstrapResolve) {
                 // Flush bootstrap response — don't emit to users
-                log.debug(`[director:${this.label}] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[bridge:${this.label}] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushBootstrapResolve();
                 this.flushBootstrapResolve = null;
               } else if (this.discardNextResponse) {
                 // Late response after flush timeout — discard silently
-                log.debug(`[director:${this.label}] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[bridge:${this.label}] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
                 this.discardNextResponse = false;
               } else if (this.bootstrapping) {
                 // Startup bootstrap response — absorb, don't emit to users
-                log.debug(`[director:${this.label}] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
+                log.debug(`[bridge:${this.label}] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.bootstrapping = false;
                 if (this.bootstrapResolve) {
                   this.bootstrapResolve();
@@ -809,12 +810,12 @@ export class SessionBridge extends EventEmitter {
                   this.emit('response', currentResponse.trim(), event.duration_ms);
                 } else if (pending.type === 'system-reply') {
                   this.systemReplyQueue.shift();
-                  log.debug(`[director:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${currentResponse.trim().slice(0, 100)}`);
+                  log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${currentResponse.trim().slice(0, 100)}`);
                   this.emit('system-response', currentResponse.trim(), pending.replyToMessageId);
                 } else {
                   // system-absorbed — cron director_msg, task notification without messageId
                   this.systemMessagePending--;
-                  log.debug(`[director:${this.label}] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
+                  log.debug(`[bridge:${this.label}] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
                 }
               }
               currentResponse = '';
@@ -840,7 +841,7 @@ export class SessionBridge extends EventEmitter {
     rl.on('close', async () => {
       // 3.1: Ignore close events from stale generations
       if (gen !== this.generation) {
-        console.log(`[director:${this.label}] Ignoring stale close event (gen=${gen}, current=${this.generation})`);
+        console.log(`[bridge:${this.label}] Ignoring stale close event (gen=${gen}, current=${this.generation})`);
         return;
       }
 
@@ -862,7 +863,7 @@ export class SessionBridge extends EventEmitter {
 
       if (this.shuttingDown) {
         // Graceful shutdown — do NOT restart
-        console.log(`[director:${this.label}] Shutdown complete`);
+        console.log(`[bridge:${this.label}] Shutdown complete`);
         await this.writeHandle?.close();
         this.writeHandle = null;
         if (this.shutdownResolve) {
@@ -871,20 +872,20 @@ export class SessionBridge extends EventEmitter {
         }
       } else if (this.explicitRestart) {
         this.explicitRestart = false;
-        console.log(`[director:${this.label}] Explicit restart, restarting with --resume...`);
+        console.log(`[bridge:${this.label}] Explicit restart, restarting with --resume...`);
         await this.restart();
         this.emit('restarted');
       } else if (this.interrupted) {
         this.interrupted = false;
-        console.log(`[director:${this.label}] Interrupted, restarting with --resume...`);
+        console.log(`[bridge:${this.label}] Interrupted, restarting with --resume...`);
         await this.restart();
         this.emit('restarted');
       } else if (this.flushing) {
         // Flush handles its own restart — do nothing here
-        console.log(`[director:${this.label}] Pipe closed during flush (expected)`);
+        console.log(`[bridge:${this.label}] Pipe closed during flush (expected)`);
       } else if (!this.isMain) {
-        // Non-main Director: emit 'close' for DirectorPool cleanup, don't exit
-        console.log(`[director:${this.label}] Non-main Director closed unexpectedly`);
+        // Non-main bridge: emit 'close' for pool cleanup, don't exit
+        console.log(`[bridge:${this.label}] Non-main bridge closed unexpectedly`);
         this.emit('stream-abort');
         this.emit('close');
       } else {
@@ -892,7 +893,7 @@ export class SessionBridge extends EventEmitter {
         // Session may be corrupted, clear it and bootstrap fresh
         this.emit('stream-abort');
         this.emit('alert', `🔴 Director 进程意外退出，正在重启...`);
-        console.log(`[director:${this.label}] Output pipe closed, clearing session and restarting...`);
+        console.log(`[bridge:${this.label}] Output pipe closed, clearing session and restarting...`);
         this.clearSession();
         await this.restart();
         await this.bootstrap();
