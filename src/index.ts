@@ -411,11 +411,9 @@ async function main() {
     log.debug(`[shell] Message meta: ${metaLog}`);
 
     // Pre-compute routingKey for slash commands (same logic as message routing below)
-    const routingKey = msg.threadId
-      ? msg.threadId                           // 话题/线程: 按 threadId 路由
-      : (chatType === 'group')
-        ? chatId                               // 普通群: 按 chatId 路由
-        : undefined;                           // 私聊: 默认 Director
+    const routingKey = (chatType === 'group')
+      ? chatId                                   // 群聊: 按 chatId 路由（一个群一个 Director）
+      : undefined;                               // 私聊: 默认 Director
 
     // Helper: resolve the target Director/queue for the current message context
     const getTargetEntry = () => routingKey ? pool.get(routingKey) : undefined;
@@ -570,17 +568,11 @@ async function main() {
     }
 
     // Prepend group chat label for Director context
-    // 话题群带 thread 后缀以区分不同话题上下文
     // Director 有上下文，引用截断到 quote_max_length
     const quotePrefix = msg.quotedText ? formatQuote(msg.quotedText, config.director.quote_max_length) : '';
     let directorText: string;
     if (chatType === 'group') {
-      if (msg.threadId) {
-        const threadSuffix = msg.threadId.slice(-6);
-        directorText = `[话题群: ${msg.groupName || '未知群'} #${threadSuffix}] ${quotePrefix}${text}`;
-      } else {
-        directorText = `[群聊: ${msg.groupName || '未知群'}] ${quotePrefix}${text}`;
-      }
+      directorText = `[群聊: ${msg.groupName || '未知群'}] ${quotePrefix}${text}`;
     } else {
       directorText = `${quotePrefix}${text}`;
     }

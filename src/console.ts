@@ -9,7 +9,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 import type { TaskRunner } from './task-runner.js';
-import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task-store.js';
+import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, getState, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task-store.js';
 
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
 interface WsConnection {
@@ -202,9 +202,16 @@ export function startConsole(
           label: entry.label,
           lastActiveAt: entry.lastActiveAt,
           queueLength: entry.queueLength,
-          activity: entry.directorStatus.activityState,
-          alive: entry.directorStatus.alive,
-          sessionId: entry.directorStatus.sessionId,
+          activity: entry.directorStatus?.activityState ?? null,
+          alive: entry.directorStatus?.alive ?? false,
+          sessionId: entry.directorStatus?.sessionId ?? null,
+          closed: entry.closed ?? false,
+          closedAt: entry.closedAt ?? null,
+          context: entry.directorStatus ? {
+            tokens: entry.directorStatus.lastInputTokens,
+            limit: entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit,
+            lastFlushAt: entry.directorStatus.lastFlushAt,
+          } : null,
         })) : [],
       },
     };
@@ -408,7 +415,13 @@ export function startConsole(
               }
             }
             const sessions = parseSessions(targetDirector.outputLogPath);
-            // Inject sessionName for the live session from Director status
+            // Inject sessionName from persisted mapping + live Director status
+            const nameMap = getState<Record<string, string>>('session:names') ?? {};
+            for (const s of sessions) {
+              if (!s.sessionName && nameMap[s.sessionId]) {
+                s.sessionName = nameMap[s.sessionId];
+              }
+            }
             const ds = targetDirector.getStatus();
             if (ds.sessionId && ds.sessionName) {
               const live = sessions.find(s => s.sessionId === ds.sessionId);

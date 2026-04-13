@@ -642,6 +642,22 @@ export class SessionBridge extends EventEmitter {
     await this.writeHandle?.close();
     this.writeHandle = null;
 
+    // Wait for old process to die before cleaning pipes — SIGTERM is async,
+    // if we clean pipes while the process is still alive, start() will see
+    // isAlive()=true and try to reconnect to non-existent pipes → hang.
+    if (this.process.isAlive()) {
+      const maxWait = 5_000;
+      const start = Date.now();
+      while (this.process.isAlive() && Date.now() - start < maxWait) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (this.process.isAlive()) {
+        console.warn(`[bridge:${this.label}] Process still alive after ${maxWait}ms, sending SIGKILL`);
+        this.process.kill('SIGKILL');
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+
     this.process.cleanPipes();
 
     await this.start();
@@ -679,6 +695,15 @@ export class SessionBridge extends EventEmitter {
 
     if (pid) {
       console.log(`[bridge:${this.label}] Spawned claude process (pid: ${pid})`);
+    }
+
+    // Persist sessionId → sessionName mapping so historical sessions can be named
+    // (Claude CLI doesn't include session_name in log events)
+    if (savedSession || this.sessionId) {
+      const sid = savedSession || this.sessionId!;
+      const nameMap = getState<Record<string, string>>('session:names') ?? {};
+      nameMap[sid] = sessionName;
+      setState('session:names', nameMap);
     }
   }
 

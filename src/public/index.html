@@ -1008,35 +1008,11 @@
         <div style="font-size:11px;color:var(--overlay0);margin-top:4px;font-family:var(--font-mono)" id="ctx-flush">Last flush: --</div>
       </div>
 
-      <div class="sb-section">
-        <div class="sb-title">Today</div>
-        <div class="status-row">
-          <span class="status-label">Messages</span>
-          <span class="status-value" id="st-msgs">0</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">Avg Response</span>
-          <span class="status-value" id="st-avg">0s</span>
-        </div>
-        <div class="status-row">
-          <span class="status-label">Cost</span>
-          <span class="status-value" id="st-cost">$0</span>
-        </div>
-      </div>
-
-      <!-- Sessions -->
+      <!-- Sessions (main + groups unified) -->
       <div class="sb-section" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden">
-        <div class="sb-title">Sessions</div>
+        <div class="sb-title">Sessions <span id="session-count" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
         <div class="sb-scroll" id="session-list">
           <div class="empty">No sessions</div>
-        </div>
-      </div>
-
-      <!-- Group Directors (Pool) -->
-      <div class="sb-section" id="pool-section" style="display:none;flex-direction:column;min-height:0;overflow:hidden">
-        <div class="sb-title">Groups <span id="pool-count" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
-        <div class="sb-scroll" id="pool-list">
-          <div class="empty">No groups</div>
         </div>
       </div>
 
@@ -1165,7 +1141,8 @@
   var selectedTaskId = null;
   var selectedPoolLabel = null; // for pool-session view
   var sessionMessages = null; // cached messages for selected session
-  var sessions = []; // cached session list
+  var sessions = []; // cached session list for current expanded director
+  var expandedDirector = null; // 'main' or pool label — which director's sub-sessions are shown
   var taskDetail = null; // cached task detail
   var taskOutput = null; // cached task output
   var taskLogs = [];
@@ -1257,7 +1234,7 @@
       wsConnected = true;
       $('overlay').classList.add('hidden');
       // Load sessions on connect
-      loadSessions();
+      loadSessions(expandedDirector);
     };
     ws.onclose = function () {
       wsConnected = false;
@@ -1317,8 +1294,10 @@
   }
 
   // ── Data loading ──
-  function loadSessions() {
-    fetch('/api/sessions').then(function(r) { return r.json(); }).then(function(d) {
+  function loadSessions(directorLabel) {
+    var url = '/api/sessions';
+    if (directorLabel && directorLabel !== 'main') url += '?director=' + encodeURIComponent(directorLabel);
+    fetch(url).then(function(r) { return r.json(); }).then(function(d) {
       sessions = d || [];
       renderSessionList();
     }).catch(function() {});
@@ -1365,11 +1344,62 @@
     viewMode = 'pool-session';
     selectedPoolLabel = label;
     selectedSessionId = null;
-    $('dh-title').textContent = groupName || label;
-    $('dh-sub').textContent = label;
+    var shortName = (groupName || label).slice(0, 8);
+    $('dh-title').textContent = shortName + ' (Director)';
+    $('dh-sub').textContent = '';
     $('detail-content').classList.remove('task-split-mode');
     showChat();
+    // Auto-expand sub-sessions
+    if (expandedDirector !== label) {
+      expandedDirector = label;
+      loadSessions(label);
+    } else {
+      renderSessionList();
+    }
     loadPoolMessages(label);
+  };
+
+  /** Toggle sub-session list for a Director */
+  window.toggleDirector = function(label) {
+    if (expandedDirector === label) {
+      expandedDirector = null;
+      sessions = [];
+      renderSessionList();
+    } else {
+      expandedDirector = label;
+      loadSessions(label);
+    }
+  };
+
+  /** Select a sub-session within a Director */
+  window.selectSubSession = function(directorLabel, sessionId, sessionName) {
+    stopLogPolling();
+    selectedSessionId = sessionId;
+    selectedTaskId = null;
+    $('detail-content').classList.remove('task-split-mode');
+    showChat();
+    renderSessionList();
+    if (directorLabel === 'main') {
+      viewMode = 'session';
+      selectedPoolLabel = null;
+      $('dh-title').textContent = 'Main (Director)';
+    } else {
+      viewMode = 'pool-session';
+      selectedPoolLabel = directorLabel;
+      var poolData = (data && data.pool) || [];
+      var match = poolData.find(function(p) { return p.label === directorLabel; });
+      var shortName = match ? match.groupName.slice(0, 8) : directorLabel;
+      $('dh-title').textContent = shortName + ' (Director)';
+    }
+    $('dh-sub').textContent = sessionName || sessionId.slice(0, 16);
+    if (directorLabel === 'main') {
+      loadSessionMessages(sessionId);
+    } else {
+      fetch('/api/messages?limit=200&director=' + encodeURIComponent(directorLabel) + (sessionId ? '&sessionId=' + encodeURIComponent(sessionId) : ''))
+        .then(function(r) { return r.json(); })
+        .then(function(d) { sessionMessages = d || []; renderSessionView(); })
+        .catch(function() { sessionMessages = []; renderSessionView(); });
+    }
   };
 
   // ── Streaming helpers ──
@@ -1495,18 +1525,20 @@
     stopLogPolling();
     viewMode = 'session';
     selectedSessionId = sessionId;
+    selectedPoolLabel = null;
     selectedTaskId = null;
     $('detail-content').classList.remove('task-split-mode');
-    renderSessionList();
-    renderTaskList();
-    $('dh-title').textContent = 'Session';
-    var sessionLabel = 'All Messages';
-    if (sessionId) {
-      var match = sessions.find(function(s) { return s.sessionId === sessionId; });
-      sessionLabel = (match && match.sessionName) || sessionId.slice(0, 12) + '...';
-    }
-    $('dh-sub').textContent = sessionLabel;
+    $('dh-title').textContent = 'Main (Director)';
+    $('dh-sub').textContent = '';
     showChat();
+    // Auto-expand sub-sessions
+    if (expandedDirector !== 'main') {
+      expandedDirector = 'main';
+      loadSessions('main');
+    } else {
+      renderSessionList();
+    }
+    renderTaskList();
     if (sessionId) {
       loadSessionMessages(sessionId);
     } else {
@@ -1558,11 +1590,10 @@
   // ── Render: Sidebar ──
   function renderSidebar() {
     if (!data) return;
+    var now = Date.now();
     var sys = data.system || {};
     var act = data.activity || {};
     var ctx = data.context || {};
-    var met = data.metrics || {};
-    var today = met.today || {};
     var queue = data.queue || [];
     var tasks = data.tasks || {};
 
@@ -1609,90 +1640,136 @@
       elap.textContent = '';
     }
 
-    // Context
-    var pct = ctx.percent || 0;
+    // Context — follows selected session (main or pool Director)
+    var ctxData = ctx; // default: main Director
+    if (viewMode === 'pool-session' && selectedPoolLabel) {
+      var poolData = data.pool || [];
+      for (var ci = 0; ci < poolData.length; ci++) {
+        if (poolData[ci].label === selectedPoolLabel && poolData[ci].context) {
+          var pc = poolData[ci].context;
+          var pcLimit = pc.limit || 0;
+          ctxData = {
+            tokens: pc.tokens,
+            limit: pcLimit,
+            percent: pcLimit > 0 ? Math.round((pc.tokens / pcLimit) * 100) : 0,
+            lastFlushAgoMs: pc.lastFlushAt ? (now - pc.lastFlushAt) : null,
+          };
+          break;
+        }
+      }
+    }
+    var pct = ctxData.percent || 0;
     var bc = pct > 95 ? 'var(--red)' : pct > 80 ? 'var(--yellow)' : 'var(--green)';
     var bar = $('ctx-bar');
     bar.style.width = Math.min(pct, 100) + '%';
     bar.style.background = bc;
-    $('ctx-tokens').textContent = fmtTokens(ctx.tokens) + ' / ' + fmtTokens(ctx.limit);
+    $('ctx-tokens').textContent = fmtTokens(ctxData.tokens) + ' / ' + fmtTokens(ctxData.limit);
     var pe = $('ctx-pct');
     pe.textContent = pct + '%';
     pe.style.color = bc;
-    $('ctx-flush').textContent = 'Last flush: ' + (ctx.lastFlushAgoMs != null ? fmtAgoMs(ctx.lastFlushAgoMs) : '--');
+    $('ctx-flush').textContent = 'Last flush: ' + (ctxData.lastFlushAgoMs != null ? fmtAgoMs(ctxData.lastFlushAgoMs) : '--');
 
-    // Today stats
-    $('st-msgs').textContent = (today.messagesProcessed || 0).toLocaleString();
-    $('st-avg').textContent = (today.avgResponseSec != null ? today.avgResponseSec.toFixed(1) + 's' : '0s');
-    $('st-cost').textContent = fmtCost(today.totalCostUsd);
+    // Session + Pool list (unified)
+    renderSessionList();
 
     // Task list (from status push)
     renderTaskList();
-
-    // Pool list (group Directors)
-    renderPoolList();
   }
 
   function renderSessionList() {
     var el = $('session-list');
-    if (sessions.length === 0) {
-      el.innerHTML = '<div class="list-item' + (viewMode === 'session' && !selectedSessionId ? ' active' : '') +
-        '" onclick="selectSession(null)">' +
-        '<span class="item-icon" style="color:var(--blue)">&#9776;</span>' +
-        '<span class="item-label">All Messages</span></div>';
-      return;
+    var countEl = $('session-count');
+    var poolData = (data && data.pool) || [];
+
+    // Helper: render sub-session list for a director
+    function renderSubSessions(directorLabel) {
+      if (expandedDirector !== directorLabel || !sessions.length) return '';
+      var liveId = null;
+      if (directorLabel === 'main' && data && data.system) liveId = data.system.sessionId;
+      else {
+        var pe = poolData.find(function(p) { return p.label === directorLabel; });
+        if (pe) liveId = pe.sessionId;
+      }
+      var sorted = sessions.slice().sort(function(a, b) {
+        if (a.sessionId === liveId) return -1;
+        if (b.sessionId === liveId) return 1;
+        return (b.lastMessageAt || '').localeCompare(a.lastMessageAt || '');
+      });
+      var h = '';
+      for (var i = 0; i < sorted.length; i++) {
+        var s = sorted[i];
+        var isLive = s.sessionId === liveId;
+        var isSelected = selectedSessionId === s.sessionId;
+        var sColor = isLive ? 'var(--green)' : 'var(--overlay0)';
+        var sName = (s.sessionName || s.sessionId.slice(0, 12));
+        // Strip common prefixes for cleaner display
+        sName = sName.replace(/^director-(main-|[0-9a-f]+-)?/, '');
+        if (sName.length > 20) sName = sName.slice(0, 20) + '…';
+        h += '<div class="list-item' + (isSelected ? ' active' : '') +
+          '" style="padding-left:28px;font-size:12px" onclick="selectSubSession(\'' + esc(directorLabel) + '\',\'' + esc(s.sessionId) + '\',\'' + esc(sName) + '\')">' +
+          '<span class="item-icon" style="color:' + sColor + ';font-size:8px">&#9679;</span>' +
+          '<span class="item-label">' + esc(sName) + (isLive ? ' <span class="badge running" style="font-size:7px;padding:0 3px">live</span>' : '') + '</span>' +
+          '<span class="item-meta">' + s.messageCount + '</span></div>';
+      }
+      return h;
     }
-    var html = '<div class="list-item' + (viewMode === 'session' && !selectedSessionId ? ' active' : '') +
-      '" onclick="selectSession(null)"><span class="item-icon" style="color:var(--blue)">&#9776;</span>' +
-      '<span class="item-label">All Messages</span></div>';
-    // Sort: live session pinned to top, then by lastMessageAt descending
-    var liveId = data && data.system && data.system.sessionId;
-    var sorted = sessions.slice().sort(function(a, b) {
-      if (a.sessionId === liveId && b.sessionId !== liveId) return -1;
-      if (b.sessionId === liveId && a.sessionId !== liveId) return 1;
-      return (b.lastMessageAt || '').localeCompare(a.lastMessageAt || '');
-    });
-    for (var i = 0; i < sorted.length; i++) {
-      var s = sorted[i];
-      var isActive = viewMode === 'session' && selectedSessionId === s.sessionId;
-      var isLive = data && data.system && data.system.sessionId === s.sessionId;
-      var dotColor = isLive ? 'var(--green)' : 'var(--overlay0)';
-      html += '<div class="list-item' + (isActive ? ' active' : '') +
-        '" onclick="selectSession(\'' + esc(s.sessionId) + '\')">' +
+
+    // Main Director entry
+    var mainActivity = (data && data.activity && data.activity.state) || 'idle';
+    var mainAlive = data && data.system && data.system.directorAlive;
+    var mainStatus, mainColor;
+    if (!mainAlive) { mainStatus = 'dead'; mainColor = 'var(--red)'; }
+    else if (mainActivity === 'processing') { mainStatus = 'busy'; mainColor = 'var(--green)'; }
+    else if (mainActivity === 'flushing') { mainStatus = 'flush'; mainColor = 'var(--yellow)'; }
+    else { mainStatus = 'live'; mainColor = 'var(--green)'; }
+
+    var mainIsActive = viewMode === 'session' && !selectedSessionId;
+    var mainExpanded = expandedDirector === 'main';
+    var mainArrow = mainExpanded ? '▾' : '▸';
+    var html = '<div class="list-item' + (mainIsActive ? ' active' : '') + '" style="cursor:pointer">' +
+      '<span style="color:var(--overlay1);font-size:10px;width:12px;display:inline-block;cursor:pointer" onclick="event.stopPropagation();toggleDirector(\'main\')">' + mainArrow + '</span>' +
+      '<span class="item-icon" style="color:' + mainColor + '">&#9679;</span>' +
+      '<span class="item-label" onclick="selectSession(null)">Main (Director)</span>' +
+      '<span class="item-meta">' + mainStatus + '</span></div>';
+    html += renderSubSessions('main');
+
+    // Pool Director entries (active first, then closed)
+    var activePool = [];
+    var closedPool = [];
+    for (var i = 0; i < poolData.length; i++) {
+      if (poolData[i].closed) closedPool.push(poolData[i]);
+      else activePool.push(poolData[i]);
+    }
+    var sortedPool = activePool.concat(closedPool);
+
+    for (var i = 0; i < sortedPool.length; i++) {
+      var p = sortedPool[i];
+      var isActive = viewMode === 'pool-session' && selectedPoolLabel === p.label && !selectedSessionId;
+      var status, dotColor, badgeHtml = '';
+      if (p.closed) { status = 'exited'; dotColor = 'var(--overlay0)'; }
+      else if (!p.alive) { status = 'dead'; dotColor = 'var(--red)'; }
+      else if (p.activity === 'processing') { status = 'busy'; dotColor = 'var(--green)'; }
+      else if (p.activity === 'flushing') { status = 'flush'; dotColor = 'var(--yellow)'; }
+      else { status = 'live'; dotColor = 'var(--green)'; }
+      if (p.queueLength > 0) badgeHtml = ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">' + p.queueLength + '</span>';
+      var shortName = (p.groupName || p.label).slice(0, 8);
+      var poolExpanded = expandedDirector === p.label;
+      var poolArrow = poolExpanded ? '▾' : '▸';
+      html += '<div class="list-item' + (isActive ? ' active' : '') + '" style="cursor:pointer">' +
+        '<span style="color:var(--overlay1);font-size:10px;width:12px;display:inline-block;cursor:pointer" onclick="event.stopPropagation();toggleDirector(\'' + esc(p.label) + '\')">' + poolArrow + '</span>' +
         '<span class="item-icon" style="color:' + dotColor + '">&#9679;</span>' +
-        '<span class="item-label">' + esc(s.sessionName || s.sessionId.slice(0, 16)) + (isLive ? ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">live</span>' : '') + '</span>' +
-        '<span class="item-meta">' + s.messageCount + '</span></div>';
+        '<span class="item-label" onclick="selectPoolDirector(\'' + esc(p.label) + '\',\'' + esc(p.groupName) + '\')">' + esc(shortName) + ' (Director)' + badgeHtml + '</span>' +
+        '<span class="item-meta">' + status + '</span></div>';
+      html += renderSubSessions(p.label);
     }
+
+    var total = 1 + activePool.length + (closedPool.length > 0 ? ' +' + closedPool.length : '');
+    countEl.textContent = '(' + total + ')';
     el.innerHTML = html;
   }
 
   function renderPoolList() {
-    if (!data) return;
-    var poolData = data.pool || [];
-    var section = $('pool-section');
-    var el = $('pool-list');
-    var countEl = $('pool-count');
-
-    if (poolData.length === 0) {
-      section.style.display = 'none';
-      return;
-    }
-    section.style.display = 'flex';
-    countEl.textContent = '(' + poolData.length + ')';
-
-    var html = '';
-    for (var i = 0; i < poolData.length; i++) {
-      var p = poolData[i];
-      var isActive = viewMode === 'pool-session' && selectedPoolLabel === p.label;
-      var actColor = p.activity === 'processing' ? 'var(--green)' : p.activity === 'flushing' ? 'var(--yellow)' : 'var(--overlay0)';
-      var qBadge = p.queueLength > 0 ? ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">' + p.queueLength + '</span>' : '';
-      html += '<div class="list-item' + (isActive ? ' active' : '') +
-        '" onclick="selectPoolDirector(\'' + esc(p.label) + '\',\'' + esc(p.groupName) + '\')">' +
-        '<span class="item-icon" style="color:' + actColor + '">&#9679;</span>' +
-        '<span class="item-label">' + esc(p.groupName) + qBadge + '</span>' +
-        '<span class="item-meta">' + (p.activity === 'processing' ? 'busy' : 'idle') + '</span></div>';
-    }
-    el.innerHTML = html;
+    // Merged into renderSessionList — no-op for backward compat
   }
 
   function renderTaskList() {

@@ -383,19 +383,21 @@ report:
     │
     └─ 群聊(group)
          │
-         ├─ 并行群（chat_id 在配置白名单）─→ DirectorPool（长驻，按 thread_id 路由）
+         ├─ 单人群（user_count ≤ 1）───→ DirectorPool（不需要 @，直接响应）
          │
-         ├─ 大群（成员 > threshold）──────→ One-shot（无状态，用完即释放）
+         ├─ 大群（成员 > threshold）───→ One-shot（无状态，用完即释放）
          │
-         └─ 小群（成员 ≤ threshold）─────→ DirectorPool（长驻，按 chat_id 路由）
+         └─ 小群（成员 ≤ threshold）──→ DirectorPool（需要 @mention）
 ```
+
+**单人群模式**：只有一个用户和 bot 的群，等同于私聊体验——收到消息直接响应，不需要 @mention。适合拉一个专属"干活群"让 bot 持续跟进某个话题。
 
 ### 三种处理模式
 
 | 模式 | 适用场景 | 进程模型 | 上下文 | 记忆 |
 |------|---------|---------|--------|------|
 | 主 Director | 私聊 | 长驻 daemon，named pipe | 跨消息保持 | 完整读写 |
-| DirectorPool | 小群 / 并行群 | 按需创建，idle 超时回收 | 群级隔离 | 共享 soul/memory，只读 state.md |
+| DirectorPool | 单人群 / 小群 | 按需创建，idle 超时回收 | 群级隔离 | 共享 soul/memory，只读 state.md |
 | One-shot | 大群 @mention | 一次性 `claude -p`，回复后退出 | 无状态 | 无 |
 
 ### DirectorPool 机制
@@ -405,28 +407,38 @@ report:
 ```
 DirectorPool
   ├── entries: Map<routingKey, PoolEntry>   # 活跃的 Director 实例
+  ├── closedEntries: Map<routingKey, ...>   # 已退出的 session（最多 50 条，UI 可查看历史）
   ├── creating: Map<routingKey, Promise>    # 竞态锁，防止并发创建
   │
   ├── getOrCreate(key, name)               # 有则复用，无则创建
-  ├── reapIdle()                           # 每分钟检查，超时回收
-  └── evictLRU()                           # 达到上限时淘汰最久未活跃的
+  ├── reapIdle()                           # 每分钟检查，≤3 个不回收，超时才回收
+  ├── evictLRU()                           # 达到上限时淘汰最久未活跃的
+  ├── restoreEntries()                     # 重启后从 SQLite 恢复 + reconnect 存活进程
+  └── killUnknownOrphans()                 # 清理不在记录中的孤儿进程
 ```
+
+**持久化**：pool entries 和 closed entries 均持久化到 SQLite `state` 表（key: `pool:entries` / `pool:closed`），Shell 重启后自动恢复。
 
 **配置参数**：
 
 ```yaml
 pool:
-  max_directors: 5          # 最大并发 Director 数
-  idle_timeout_minutes: 30  # 空闲超时回收
-  small_group_threshold: 5  # 大群/小群人数分界
-  parallel_chat_ids: []     # 并行模式白名单（chat_id 列表）
+  max_directors: 8          # 最大并发 Director 数
+  idle_timeout_minutes: 30  # 空闲超时回收（≤3 个 Director 时不回收）
+  small_group_threshold: 5  # 大群/小群人数分界（user_count）
+  parallel_chat_ids: []     # 免 @mention 白名单（chat_id 列表）
 ```
 
 **路由键（routingKey）**：
 
-- 普通群聊：`chat_id`（一个群一个 Director）
-- 话题群（并行群）：`thread_id`（一个话题一个 Director，实现并行处理）
+- 所有群聊统一按 `chat_id` 路由（一个群一个 Director）
 - 私聊：无路由键，走主 Director
+
+**@mention 规则**：
+
+- 单人群（`user_count ≤ 1`）：不需要 @，直接响应
+- `parallel_chat_ids` 白名单中的群：不需要 @
+- 其他群：需要 @mention bot 才响应
 
 ### One-shot 大群响应
 

@@ -140,8 +140,10 @@ async function fetchMessageText(client: Lark.Client, messageId: string): Promise
 const processedMessageIds = new Set<string>();
 const MAX_DEDUP_SIZE = 200;
 
-const WATCHDOG_INTERVAL = 60_000;      // 每 60s 检查一次
-const MAX_DISCONNECT_TIME = 180_000;   // 断连超过 3 分钟则自杀重启
+const WATCHDOG_INTERVAL = 30_000;      // 每 30s 检查一次
+const MAX_DISCONNECT_TIME = 120_000;   // 断连超过 2 分钟则自杀重启
+const SDK_SELF_HEAL_WINDOW = 30_000;   // 给 SDK 30s 自行重连的窗口
+const FEISHU_API_CHECK_TIMEOUT = 5_000; // 飞书 API 可达性检查超时
 
 const RETRY_DELAYS = [1000, 3000];
 
@@ -169,6 +171,40 @@ async function withRetry<T>(
   }
   console.error(`[feishu] ${label} failed after all retries:`, lastErr);
   throw lastErr;
+}
+
+/** 获取底层 WebSocket 的 readyState（通过访问 SDK 私有属性）
+ *  返回值：0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED, -1=无法获取 */
+function getWsReadyState(wsClient: Lark.WSClient): number {
+  try {
+    const wsInstance = (wsClient as any).wsConfig?.getWSInstance?.()
+      ?? (wsClient as any).wsConfig?.wsInstance;
+    if (wsInstance && typeof wsInstance.readyState === 'number') {
+      return wsInstance.readyState;
+    }
+    return -1;
+  } catch {
+    return -1;
+  }
+}
+
+/** 检查飞书 API 是否可达（轻量 HTTP 请求） */
+async function isFeishuReachable(client: Lark.Client): Promise<boolean> {
+  try {
+    await Promise.race([
+      (client as any).request({
+        method: 'GET',
+        url: '/open-apis/bot/v3/info/',
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), FEISHU_API_CHECK_TIMEOUT)
+      ),
+    ]);
+    return true;
+  } catch (err) {
+    log.debug(`[feishu] Watchdog: feishu API check failed: ${(err as Error)?.message ?? err}`);
+    return false;
+  }
 }
 
 export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[] }) {
@@ -220,7 +256,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       const data = res?.data as Record<string, unknown> | undefined;
       log.debug(`[feishu] chat.get response for ${chatId}: ${JSON.stringify(data)}`);
       const name = (data?.name as string) ?? '';
-      const memberCount = Number(data?.user_count ?? 0) + Number(data?.bot_count ?? 0);
+      const memberCount = Number(data?.user_count ?? 0);
       const chatMode = (data?.chat_mode as string) === 'topic' ? 'topic' as const : 'group' as const;
       chatInfoCache.set(chatId, { name, memberCount, chatMode, fetchedAt: Date.now() });
       return { name, memberCount, chatMode };
@@ -270,12 +306,18 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       if (mentions?.length) log.debug(`[feishu] mentions: ${JSON.stringify(mentions)}`);
 
       // Group chat @mention filter: skip messages that don't mention the bot
-      // Exception: chats in skipMentionSet (e.g. parallel/topic groups with long-lived Directors)
+      // Exceptions:
+      //   1. chats in skipMentionSet (configured parallel groups)
+      //   2. small groups with 1 user — treat like p2p
       if (chatType === 'group' && !skipMentionSet.has(chat_id)) {
-        const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
-        if (!hasBotMention) {
-          log.debug(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
-          return;
+        const info = await getChatInfo(chat_id);
+        const isSmallGroup = info && info.memberCount <= 1;
+        if (!isSmallGroup) {
+          const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
+          if (!hasBotMention) {
+            log.debug(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
+            return;
+          }
         }
       }
 
@@ -388,20 +430,71 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
 
   function startWatchdog() {
     if (watchdogTimer) clearInterval(watchdogTimer);
-    watchdogTimer = setInterval(() => {
-      const info = wsClient.getReconnectInfo();
-      const now = Date.now();
-      const sinceLastConnect = now - info.lastConnectTime;
-      const sdkGaveUp = info.nextConnectTime > 0 && info.nextConnectTime < now - WATCHDOG_INTERVAL;
 
-      if (sinceLastConnect > MAX_DISCONNECT_TIME && sdkGaveUp) {
-        const downSec = Math.round(sinceLastConnect / 1000);
-        console.error(`[feishu] Watchdog: connection down for ${downSec}s. Exiting for launchd restart.`);
-        setState('exitReason', { reason: 'feishu_disconnect', downSeconds: downSec, at: new Date().toISOString() });
-        // exit(0) is intentional — launchd KeepAlive treats successful exit as restartable.
-        // A non-zero exit would be logged as a crash; 0 triggers a clean respawn.
-        process.exit(0);
+    let firstDisconnectAt: number | null = null;
+
+    watchdogTimer = setInterval(async () => {
+      const now = Date.now();
+      const readyState = getWsReadyState(wsClient);
+      const info = wsClient.getReconnectInfo();
+
+      // 健康判断：ws OPEN，或无法获取状态时近期有活动
+      const isWsOpen = readyState === 1;
+      const recentlyActive = (now - lastActiveTime) < MAX_DISCONNECT_TIME;
+      const recentlyConnected = info.lastConnectTime > 0 && (now - info.lastConnectTime) < MAX_DISCONNECT_TIME;
+      const isHealthy = isWsOpen || (readyState === -1 && (recentlyActive || recentlyConnected));
+
+      if (isHealthy) {
+        if (firstDisconnectAt !== null) {
+          const recoveredAfter = Math.round((now - firstDisconnectAt) / 1000);
+          console.log(`[feishu] Watchdog: connection recovered after ${recoveredAfter}s`);
+          firstDisconnectAt = null;
+        }
+        return;
       }
+
+      // 首次检测到断连，记录时间，给 SDK 自愈窗口
+      if (firstDisconnectAt === null) {
+        firstDisconnectAt = now;
+        const stateLabel = readyState === -1 ? 'null(reconnecting)' : readyState;
+        console.warn(`[feishu] Watchdog: disconnect detected (readyState=${stateLabel}), giving SDK ${SDK_SELF_HEAL_WINDOW / 1000}s to self-heal`);
+        return;
+      }
+
+      const disconnectDuration = now - firstDisconnectAt;
+
+      // SDK 自愈窗口内，等待
+      if (disconnectDuration < SDK_SELF_HEAL_WINDOW) {
+        log.debug(`[feishu] Watchdog: still in SDK self-heal window (${Math.round(disconnectDuration / 1000)}s/${SDK_SELF_HEAL_WINDOW / 1000}s)`);
+        return;
+      }
+
+      // 超过自愈窗口但未到最大断连时间
+      if (disconnectDuration < MAX_DISCONNECT_TIME) {
+        console.warn(`[feishu] Watchdog: disconnect persists for ${Math.round(disconnectDuration / 1000)}s (max=${MAX_DISCONNECT_TIME / 1000}s)`);
+        return;
+      }
+
+      // 超过最大断连时间，区分网络 vs WS 问题
+      const feishuUp = await isFeishuReachable(client);
+
+      if (!feishuUp) {
+        console.warn(`[feishu] Watchdog: network unreachable, waiting for recovery (disconnected ${Math.round(disconnectDuration / 1000)}s)`);
+        return;
+      }
+
+      // 飞书 API 通但 WS 断连 → 重启
+      const downSec = Math.round(disconnectDuration / 1000);
+      console.error(`[feishu] Watchdog: WS connection down for ${downSec}s while Feishu API is reachable. Exiting for launchd restart.`);
+      setState('exitReason', {
+        reason: 'feishu_ws_disconnect',
+        downSeconds: downSec,
+        wsReadyState: readyState,
+        feishuApiReachable: true,
+        at: new Date().toISOString(),
+      });
+      // exit(0) is intentional — launchd KeepAlive treats successful exit as restartable.
+      process.exit(0);
     }, WATCHDOG_INTERVAL);
   }
 
@@ -457,10 +550,14 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     },
 
     getConnectionStatus(): 'connected' | 'disconnected' {
+      // 优先检查底层 ws readyState
+      const readyState = getWsReadyState(wsClient);
+      if (readyState === 1) return 'connected'; // WebSocket.OPEN
+
       const now = Date.now();
-      // If we received a message within the last 5 minutes, consider connected
+      // 退化：近期有消息活动
       if (now - lastActiveTime < 5 * 60_000) return 'connected';
-      // Otherwise check SDK reconnect info
+      // 退化：近期有连接记录
       try {
         const info = wsClient.getReconnectInfo();
         if (info.lastConnectTime && now - info.lastConnectTime < 5 * 60_000) return 'connected';

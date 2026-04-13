@@ -34,12 +34,23 @@ export interface PoolEntry {
   lastActiveAt: number;
 }
 
+/** Metadata for closed pool sessions (kept for UI display) */
+interface ClosedPoolEntry {
+  routingKey: string;
+  feishuChatId: string;
+  groupName: string;
+  label: string;
+  lastActiveAt: number;
+  closedAt: number;
+}
+
 /** 管理多个 Director 会话实例的生命周期。
  *
  *  命名说明："DirectorPool" 是领域概念（管理多个 Director 角色的会话），
  *  底层实现使用 SessionBridge。保留 "Director" 命名以对齐架构文档和用户心智模型。 */
 export class DirectorPool extends EventEmitter {
   private entries: Map<string, PoolEntry> = new Map();
+  private closedEntries: Map<string, ClosedPoolEntry> = new Map();
   private creating: Map<string, Promise<PoolEntry>> = new Map();
   private mainBridge: SessionBridge;
   private poolConfig: PoolConfig;
@@ -58,6 +69,14 @@ export class DirectorPool extends EventEmitter {
     this.poolConfig = poolConfig;
     this.directorConfig = directorConfig;
     this.messaging = messaging;
+
+    // Restore closed entries from SQLite
+    const savedClosed = getState<ClosedPoolEntry[]>('pool:closed');
+    if (savedClosed) {
+      for (const entry of savedClosed) {
+        this.closedEntries.set(entry.routingKey, entry);
+      }
+    }
 
     // Start idle Director reaper — check every minute, shutdown Directors
     // that have been idle longer than idle_timeout_minutes
@@ -96,6 +115,9 @@ export class DirectorPool extends EventEmitter {
     const existing = this.entries.get(routingKey);
     if (existing) {
       existing.lastActiveAt = Date.now();
+      if (opts.groupName && opts.groupName !== existing.groupName) {
+        existing.groupName = opts.groupName;
+      }
       return existing;
     }
 
@@ -145,6 +167,7 @@ export class DirectorPool extends EventEmitter {
       lastActiveAt: Date.now(),
     };
     this.entries.set(routingKey, entry);
+    this.closedEntries.delete(routingKey); // re-activated
     this.persistEntries();
     // won't be merged into the bootstrap turn by Claude Code
     await bridge.bootstrap();
@@ -211,6 +234,7 @@ export class DirectorPool extends EventEmitter {
     if (!entry) return;
 
     console.log(`[pool] Shutting down Director for group "${entry.groupName}"`);
+    this.moveToClosedEntries(routingKey, entry);
     this.entries.delete(routingKey);
     this.persistEntries();
     await entry.bridge.shutdown();
@@ -229,16 +253,18 @@ export class DirectorPool extends EventEmitter {
     console.log(`[pool] All ${keys.length} group Director(s) shut down`);
   }
 
-  /** Get status of all pool entries for dashboard */
+  /** Get status of all pool entries (active + closed) for dashboard */
   getPoolStatus(): Array<{
     routingKey: string;
     groupName: string;
     label: string;
     lastActiveAt: number;
-    directorStatus: ReturnType<SessionBridge['getStatus']>;
+    directorStatus: ReturnType<SessionBridge['getStatus']> | null;
     queueLength: number;
+    closed?: boolean;
+    closedAt?: number;
   }> {
-    return [...this.entries.values()].map((entry) => ({
+    const active = [...this.entries.values()].map((entry) => ({
       routingKey: entry.routingKey,
       groupName: entry.groupName,
       label: entry.bridge.label,
@@ -246,6 +272,35 @@ export class DirectorPool extends EventEmitter {
       directorStatus: entry.bridge.getStatus(),
       queueLength: entry.queue.length,
     }));
+    const closed = [...this.closedEntries.values()].map((entry) => ({
+      routingKey: entry.routingKey,
+      groupName: entry.groupName,
+      label: entry.label,
+      lastActiveAt: entry.lastActiveAt,
+      directorStatus: null,
+      queueLength: 0,
+      closed: true as const,
+      closedAt: entry.closedAt,
+    }));
+    return [...active, ...closed];
+  }
+
+  /** Move an active entry to the closed list (max 50, evict oldest) */
+  private moveToClosedEntries(routingKey: string, entry: PoolEntry): void {
+    this.closedEntries.set(routingKey, {
+      routingKey,
+      feishuChatId: entry.feishuChatId,
+      groupName: entry.groupName,
+      label: entry.bridge.label,
+      lastActiveAt: entry.lastActiveAt,
+      closedAt: Date.now(),
+    });
+    // Evict oldest if over limit
+    while (this.closedEntries.size > 50) {
+      const oldest = this.closedEntries.keys().next().value!;
+      this.closedEntries.delete(oldest);
+    }
+    setState('pool:closed', [...this.closedEntries.values()]);
   }
 
   /** Persist pool entries to SQLite for crash recovery */
@@ -355,12 +410,16 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  /** Reap idle Directors that have exceeded idle_timeout_minutes */
+  /** Reap idle Directors that have exceeded idle_timeout_minutes.
+   *  Keeps at least 3 Directors alive regardless of idle time. */
   private reapIdle(): void {
+    if (this.entries.size <= 3) return;
+
     const timeoutMs = this.poolConfig.idle_timeout_minutes * 60_000;
     const now = Date.now();
 
     for (const [routingKey, entry] of this.entries) {
+      if (this.entries.size <= 3) break;
       // Skip Directors with pending messages
       if (entry.queue.length > 0) continue;
 
@@ -412,6 +471,8 @@ export class DirectorPool extends EventEmitter {
     // close → remove from pool
     bridge.on('close', () => {
       console.log(`[pool] Session bridge for group "${groupName}" closed, removing from pool`);
+      const entry = this.entries.get(routingKey);
+      if (entry) this.moveToClosedEntries(routingKey, entry);
       this.entries.delete(routingKey);
       this.persistEntries();
     });

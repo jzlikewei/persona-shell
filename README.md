@@ -20,15 +20,9 @@
 - **多实例** — 主分身 + 群聊 Director Pool，一个分身同时服务多个对话
 - **自维护身份** — soul、skill、memory 全部是你自己仓库里的 Markdown 文件，AI 自己读、自己写、自己迭代
 
-### 自维护的灵魂、技能与记忆
+### 身份数据
 
-Persona Shell 的核心卖点：**你的分身能自己维护自己的人格、技能和记忆。**
-
-传统方案中人格提示词和工具定义由开发者硬编码，用户只能使用预设能力。Persona Shell 反过来——所有身份数据都是 `~/.persona/` 下的普通 Markdown 文件，而 Claude Code 对这个目录有完整的读写权限。这意味着：
-
-- **Soul**（`soul.md`）— 分身的性格、价值观、行为准则。你可以手动编辑，也可以让分身在对话中自己调整（`claude /soul-crafting`）
-- **Skills**（`skills/`）— 每个子目录是一个标准的 [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code/plugins)，包含 slash command、subagent、hook 等。分身可以在运行中自己创建新 skill
-- **Memory**（`daily/`、CLAUDE.md）— 日报、工作状态、长期记忆。分身每天自动写日报，FLUSH 时自动 checkpoint，新 session 自动恢复上下文
+隔离的数据， soul+personas+skills，建议使用独立的git仓库维护
 
 ```
 ~/.persona/                    # 身份仓库（独立 git，AI 可读写）
