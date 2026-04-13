@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "bun src/index.ts",
+    "init": "sh scripts/init.sh",
     "build": "bun build src/index.ts --outdir dist --target node",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && sh scripts/check-no-any.sh",
     "start": "bun dist/index.js",
     "install-service": "sh scripts/install-service.sh",
     "uninstall-service": "sh scripts/uninstall-service.sh"

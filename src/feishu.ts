@@ -393,6 +393,8 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         const downSec = Math.round(sinceLastConnect / 1000);
         console.error(`[feishu] Watchdog: connection down for ${downSec}s. Exiting for launchd restart.`);
         setState('exitReason', { reason: 'feishu_disconnect', downSeconds: downSec, at: new Date().toISOString() });
+        // exit(0) is intentional — launchd KeepAlive treats successful exit as restartable.
+        // A non-zero exit would be logged as a crash; 0 triggers a clean respawn.
         process.exit(0);
       }
     }, WATCHDOG_INTERVAL);

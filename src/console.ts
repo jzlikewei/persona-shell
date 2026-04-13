@@ -1,275 +1,19 @@
-import { readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { readFileSync, existsSync, statSync } from 'fs';
 import { join, resolve, extname } from 'path';
 import { homedir } from 'os';
 import type { MessagingClient } from './messaging.js';
 import type { DirectorPool } from './director-pool.js';
+import { parseConversationLog, parseSessions, parseTaskLog } from './log-parser.js';
 
-/** 从文件尾部读取最多 maxBytes 字节，返回完整行（丢弃首行截断部分） */
-function readTail(filePath: string, maxBytes: number): string {
-  if (!existsSync(filePath)) return '';
-  const stat = statSync(filePath);
-  if (stat.size === 0) return '';
-  const readSize = Math.min(stat.size, maxBytes);
-  const buf = Buffer.alloc(readSize);
-  const fd = openSync(filePath, 'r');
-  try {
-    readSync(fd, buf, 0, readSize, stat.size - readSize);
-  } finally {
-    closeSync(fd);
-  }
-  const raw = buf.toString('utf-8');
-  // 如果不是从文件开头读的，丢弃第一个不完整行
-  if (readSize < stat.size) {
-    const firstNewline = raw.indexOf('\n');
-    return firstNewline >= 0 ? raw.slice(firstNewline + 1) : '';
-  }
-  return raw;
-}
-
-const MAX_LOG_READ_BYTES = 2 * 1024 * 1024; // 2MB
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 import type { TaskRunner } from './task-runner.js';
 import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task-store.js';
 
-/** Director log base directory */
-const LOG_DIR = join(import.meta.dirname, '..', 'logs');
-
-interface ConversationMessage {
-  direction: 'in' | 'out';
-  content: string;
-  sessionId?: string;
-  timestamp?: number;
-}
-
-interface SessionInfo {
-  sessionId: string;
-  sessionName?: string;
-  messageCount: number;
-  firstMessageAt?: string;
-  lastMessageAt?: string;
-}
-
-/** Parse director logs to reconstruct conversation messages */
-function parseConversationLog(inputLog: string, outputLog: string, limit: number, sessionFilter?: string): ConversationMessage[] {
-  // Parse input log — new format has timestamp + director fields
-  const inputs: Array<{ content: string; director?: string; timestamp?: string }> = [];
-  try {
-    const raw = readTail(inputLog, MAX_LOG_READ_BYTES);
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const evt = JSON.parse(line);
-        if (evt?.type === 'user' && evt.message?.content) {
-          inputs.push({ content: evt.message.content, director: evt.director, timestamp: evt.timestamp || evt._ts });
-        }
-      } catch { /* skip malformed lines */ }
-    }
-  } catch { /* file read error */ }
-
-  // Parse output log — extract result events with response text + session_id + director + timestamp
-  const outputs: Array<{ text: string; sessionId?: string; director?: string; timestamp?: string }> = [];
-  try {
-    const raw = readTail(outputLog, MAX_LOG_READ_BYTES);
-    let pendingText = '';
-    let lastSessionId: string | undefined;
-    let lastDirector: string | undefined;
-
-      for (const line of raw.split('\n')) {
-        if (!line.trim()) continue;
-        try {
-          const evt = JSON.parse(line);
-          if (evt._director) lastDirector = evt._director;
-          if (evt.type === 'assistant' && evt.message?.content) {
-            const content = evt.message.content;
-            if (typeof content === 'string') {
-              pendingText += content;
-            } else if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block.type === 'text') pendingText += block.text;
-              }
-            }
-          } else if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
-            lastSessionId = evt.session_id;
-          } else if (evt.type === 'result') {
-            if (evt.session_id) lastSessionId = evt.session_id;
-            const resultText = pendingText || (typeof evt.result === 'string' ? evt.result : '');
-            if (resultText) {
-              outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts });
-            }
-            pendingText = '';
-          }
-        } catch { /* skip malformed lines */ }
-      }
-    } catch { /* file read error */ }
-
-  // Per-director pairing: group inputs and outputs by director label, then pair within each group
-  const directorInputs = new Map<string, Array<{ content: string; timestamp?: string }>>();
-  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string; timestamp?: string }>>();
-
-  for (const inp of inputs) {
-    const key = inp.director ?? 'main';
-    const arr = directorInputs.get(key) ?? [];
-    arr.push({ content: inp.content, timestamp: inp.timestamp });
-    directorInputs.set(key, arr);
-  }
-
-  for (const out of outputs) {
-    const key = out.director ?? 'main';
-    const arr = directorOutputs.get(key) ?? [];
-    arr.push({ text: out.text, sessionId: out.sessionId, timestamp: out.timestamp });
-    directorOutputs.set(key, arr);
-  }
-
-  // Pair within each director group using tail-aligned strategy
-  const messages: ConversationMessage[] = [];
-  const allDirectors = new Set([...directorInputs.keys(), ...directorOutputs.keys()]);
-
-  for (const dir of allDirectors) {
-    const ins = directorInputs.get(dir) ?? [];
-    const outs = directorOutputs.get(dir) ?? [];
-    const offset = Math.max(0, outs.length - ins.length);
-
-    // Orphan outputs
-    for (let i = 0; i < offset; i++) {
-      const o = outs[i];
-      if (sessionFilter && o.sessionId && o.sessionId !== sessionFilter) continue;
-      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId, timestamp: o.timestamp ? new Date(o.timestamp!).getTime() : undefined });
-    }
-
-    // Paired input/output
-    for (let i = 0; i < ins.length; i++) {
-      const oIdx = offset + i;
-      const sessionId = oIdx < outs.length ? outs[oIdx].sessionId : undefined;
-      if (sessionFilter && sessionId && sessionId !== sessionFilter) continue;
-
-      messages.push({ direction: 'in', content: ins[i].content, sessionId, timestamp: ins[i].timestamp ? new Date(ins[i].timestamp!).getTime() : undefined });
-      if (oIdx < outs.length) {
-        messages.push({ direction: 'out', content: outs[oIdx].text, sessionId: outs[oIdx].sessionId, timestamp: outs[oIdx].timestamp ? new Date(outs[oIdx].timestamp!).getTime() : undefined });
-      }
-    }
-  }
-
-  // Sort by timestamp when available (for multi-Director interleaving), then return tail
-  messages.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-  return messages.slice(-limit).reverse();
-}
-
-/** Extract unique session IDs from director output log */
-function parseSessions(outputLog: string): SessionInfo[] {
-  const sessionMap = new Map<string, { count: number; first?: string; last?: string }>();
-
-  if (!existsSync(outputLog)) return [];
-
-  try {
-    const raw = readTail(outputLog, MAX_LOG_READ_BYTES);
-    let currentSession: string | undefined;
-
-    for (const line of raw.split('\n')) {
-      if (!line.trim()) continue;
-      try {
-        const evt = JSON.parse(line);
-        if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
-          currentSession = evt.session_id;
-        }
-        if (evt.type === 'result') {
-          const sid = evt.session_id || currentSession;
-          if (!sid) continue;
-          currentSession = sid;
-
-          const entry = sessionMap.get(sid) || { count: 0 };
-          entry.count++;
-          const timestamp = evt._ts || evt.timestamp || new Date().toISOString();
-          if (!entry.first) entry.first = timestamp;
-          entry.last = timestamp;
-          sessionMap.set(sid, entry);
-        }
-      } catch { /* skip malformed lines */ }
-    }
-  } catch { /* file read error */ }
-
-  return Array.from(sessionMap.entries()).map(([sessionId, info]) => ({
-    sessionId,
-    messageCount: info.count,
-    firstMessageAt: info.first,
-    lastMessageAt: info.last,
-  })).sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
-}
-
-/** Parsed log entry from task stdout */
-interface TaskLogEntry {
-  line: number;
-  type: 'system' | 'text' | 'tool_use' | 'tool_result' | 'result' | 'thinking';
-  content: string;
-  meta?: Record<string, unknown>;
-}
-
-/** Parse a task's stdout log into structured entries for the web console */
-function parseTaskLog(taskId: string, afterLine: number): { entries: TaskLogEntry[]; totalLines: number } {
-  const logPath = join(LOG_DIR, `task-${taskId}.stdout.log`);
-  if (!existsSync(logPath)) return { entries: [], totalLines: 0 };
-
-  let raw: string;
-  try { raw = readFileSync(logPath, 'utf-8'); } catch { return { entries: [], totalLines: 0 }; }
-
-  const allLines = raw.split('\n');
-  const entries: TaskLogEntry[] = [];
-
-  for (let i = afterLine; i < allLines.length; i++) {
-    const lineText = allLines[i].trim();
-    if (!lineText) continue;
-
-    let evt: any;
-    try { evt = JSON.parse(lineText); } catch { continue; }
-
-    if (evt.type === 'system') {
-      if (evt.subtype === 'init') {
-        entries.push({ line: i, type: 'system', content: `Session: ${evt.session_id?.slice(0, 12) ?? '?'}`, meta: { session_id: evt.session_id } });
-      }
-      continue;
-    }
-
-    if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
-      for (const block of evt.message.content) {
-        if (block.type === 'text' && block.text) {
-          entries.push({ line: i, type: 'text', content: block.text });
-        } else if (block.type === 'thinking' && block.thinking) {
-          entries.push({ line: i, type: 'thinking', content: block.thinking });
-        } else if (block.type === 'tool_use') {
-          const input = block.input as Record<string, unknown> | undefined;
-          const trimmed: Record<string, unknown> = {};
-          if (input) {
-            for (const [k, v] of Object.entries(input)) {
-              trimmed[k] = typeof v === 'string' && v.length > 500 ? v.slice(0, 500) + '…' : v;
-            }
-          }
-          entries.push({ line: i, type: 'tool_use', content: block.name ?? 'unknown', meta: { id: block.id, input: trimmed } });
-        }
-      }
-      continue;
-    }
-
-    if (evt.type === 'user' && Array.isArray(evt.message?.content)) {
-      for (const block of evt.message.content) {
-        if (block.type === 'tool_result') {
-          const rc = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
-          entries.push({ line: i, type: 'tool_result', content: rc.length > 500 ? rc.slice(0, 500) + '…' : rc, meta: { is_error: !!block.is_error } });
-        }
-      }
-      continue;
-    }
-
-    if (evt.type === 'result') {
-      entries.push({
-        line: i, type: 'result',
-        content: evt.subtype === 'success' ? 'Completed' : (evt.subtype ?? 'done'),
-        meta: { duration_ms: evt.duration_ms, cost_usd: evt.total_cost_usd, num_turns: evt.num_turns },
-      });
-    }
-  }
-
-  return { entries, totalLines: allLines.length };
+/** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
+interface WsConnection {
+  send(data: string): void;
 }
 
 // Shell 启动时间，用于计算 uptime
@@ -314,7 +58,7 @@ export function startConsole(
   // Web chat 消息处理
   const chatHandlers: Array<(msg: import('./messaging.js').IncomingMessage) => Promise<void> | void> = [];
   // messageId → { ws, createdAt } 连接，用于路由回复
-  const messageWsMap = new Map<string, { ws: any; createdAt: number }>();
+  const messageWsMap = new Map<string, { ws: WsConnection; createdAt: number }>();
 
   // 每 60s 清理超过 5 分钟未回复的 entries，防止内存泄漏
   const MESSAGE_WS_TTL = 5 * 60 * 1000;
@@ -355,7 +99,7 @@ export function startConsole(
   }
 
   // 活跃的 WebSocket 连接集合
-  const clients = new Set<any>();
+  const clients = new Set<WsConnection>();
 
   // 构建状态快照
   function buildSnapshot() {

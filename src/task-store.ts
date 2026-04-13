@@ -2,7 +2,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 
 export interface CreateTaskInput {
   type: 'role' | 'cron';
@@ -36,8 +35,8 @@ export interface Task {
   source_director: string | null;
 }
 
-const DB_DIR = join(homedir(), '.persona', 'state');
-const DB_PATH = join(DB_DIR, 'tasks.db');
+let DB_DIR: string;
+let DB_PATH: string;
 
 const CREATE_TABLE = `
 CREATE TABLE IF NOT EXISTS tasks (
@@ -166,15 +165,30 @@ function rowToTask(row: Record<string, unknown>): Task {
   } as Task;
 }
 
-const db = openDb();
+let db: Database;
+
+/** Initialize the task store with the persona directory path.
+ *  Must be called once before any other task-store function. */
+export function initTaskStore(personaDir: string): void {
+  DB_DIR = join(personaDir, 'state');
+  DB_PATH = join(DB_DIR, 'tasks.db');
+  db = openDb();
+}
+
+/** Get the DB instance, throwing if initTaskStore() was not called. */
+function getDb(): Database {
+  if (!db) throw new Error('task-store not initialized — call initTaskStore(personaDir) first');
+  return db;
+}
 
 export function createTask(input: CreateTaskInput): Task {
-  const id = generateTaskId(db);
+  const d = getDb();
+  const id = generateTaskId(d);
   const now = new Date().toISOString();
   const extra = input.extra ? JSON.stringify(input.extra) : null;
   const sourceDirector = input.source_director ?? null;
 
-  db.run(
+  d.run(
     `INSERT INTO tasks (id, type, role, description, prompt, status, created_at, retry_count, max_retry, extra, source_director)
      VALUES (?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?)`,
     [id, input.type, input.role, input.description, input.prompt, now, input.max_retry ?? 3, extra, sourceDirector],
@@ -184,7 +198,7 @@ export function createTask(input: CreateTaskInput): Task {
 }
 
 export function getTask(id: string): Task | null {
-  const row = db.query('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | null;
+  const row = getDb().query('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | null;
   return row ? rowToTask(row) : null;
 }
 
@@ -204,7 +218,7 @@ export function listTasks(filter?: { status?: string; role?: string; limit?: num
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const limit = filter?.limit ?? 50;
   params.push(limit);
-  const rows = db.query(`SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT ?`).all(...params) as Record<string, unknown>[];
+  const rows = getDb().query(`SELECT * FROM tasks ${where} ORDER BY created_at DESC LIMIT ?`).all(...params) as Record<string, unknown>[];
   return rows.map(rowToTask);
 }
 
@@ -230,11 +244,11 @@ export function updateTask(id: string, update: Partial<Omit<Task, 'id'>>): void 
   if (sets.length === 0) return;
 
   params.push(id as SQLQueryBindings);
-  db.run(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`, params);
+  getDb().run(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
 export function cancelTask(id: string): boolean {
-  const result = db.run(
+  const result = getDb().run(
     `UPDATE tasks SET status = 'failed', error = 'cancelled' WHERE id = ? AND status IN ('dispatched', 'running')`,
     [id],
   );
@@ -252,20 +266,20 @@ export function getOutboxDir(personaDir: string): string {
 // --- State key-value store (replaces state-store.ts + file-based state) ---
 
 export function getState<T>(key: string): T | null {
-  const row = db.query('SELECT value FROM state WHERE key = ?').get(key) as { value: string } | null;
+  const row = getDb().query('SELECT value FROM state WHERE key = ?').get(key) as { value: string } | null;
   if (!row) return null;
   try { return JSON.parse(row.value) as T; } catch { return null; }
 }
 
 export function setState<T>(key: string, data: T): void {
-  db.run(
+  getDb().run(
     'INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?',
     [key, JSON.stringify(data), JSON.stringify(data)],
   );
 }
 
 export function deleteState(key: string): void {
-  db.run('DELETE FROM state WHERE key = ?', [key]);
+  getDb().run('DELETE FROM state WHERE key = ?', [key]);
 }
 
 // --- Cron Jobs CRUD ---
@@ -311,14 +325,15 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
 }
 
 export function createCronJob(input: CreateCronJobInput): CronJob {
-  const id = generateCronId(db);
+  const d = getDb();
+  const id = generateCronId(d);
   const now = new Date().toISOString();
   const enabled = input.enabled !== false ? 1 : 0;
   const actionType = input.action_type ?? 'spawn_role';
   const message = input.message ?? null;
   const actionName = input.action_name ?? null;
 
-  db.run(
+  d.run(
     `INSERT INTO cron_jobs (id, name, role, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, input.name, input.role, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName],
@@ -328,16 +343,16 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
 }
 
 export function getCronJob(id: string): CronJob | null {
-  const row = db.query('SELECT * FROM cron_jobs WHERE id = ?').get(id) as Record<string, unknown> | null;
+  const row = getDb().query('SELECT * FROM cron_jobs WHERE id = ?').get(id) as Record<string, unknown> | null;
   return row ? rowToCronJob(row) : null;
 }
 
 export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
   if (filter?.enabled !== undefined) {
-    const rows = db.query('SELECT * FROM cron_jobs WHERE enabled = ? ORDER BY created_at DESC').all(filter.enabled ? 1 : 0) as Record<string, unknown>[];
+    const rows = getDb().query('SELECT * FROM cron_jobs WHERE enabled = ? ORDER BY created_at DESC').all(filter.enabled ? 1 : 0) as Record<string, unknown>[];
     return rows.map(rowToCronJob);
   }
-  const rows = db.query('SELECT * FROM cron_jobs ORDER BY created_at DESC').all() as Record<string, unknown>[];
+  const rows = getDb().query('SELECT * FROM cron_jobs ORDER BY created_at DESC').all() as Record<string, unknown>[];
   return rows.map(rowToCronJob);
 }
 
@@ -359,16 +374,16 @@ export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | '
   sets.push('updated_at = ?');
   params.push(new Date().toISOString());
   params.push(id);
-  db.run(`UPDATE cron_jobs SET ${sets.join(', ')} WHERE id = ?`, params);
+  getDb().run(`UPDATE cron_jobs SET ${sets.join(', ')} WHERE id = ?`, params);
   return getCronJob(id);
 }
 
 export function deleteCronJob(id: string): boolean {
-  const result = db.run('DELETE FROM cron_jobs WHERE id = ?', [id]);
+  const result = getDb().run('DELETE FROM cron_jobs WHERE id = ?', [id]);
   return result.changes > 0;
 }
 
 export function toggleCronJob(id: string): CronJob | null {
-  db.run('UPDATE cron_jobs SET enabled = 1 - enabled, updated_at = ? WHERE id = ?', [new Date().toISOString(), id]);
+  getDb().run('UPDATE cron_jobs SET enabled = 1 - enabled, updated_at = ? WHERE id = ?', [new Date().toISOString(), id]);
   return getCronJob(id);
 }

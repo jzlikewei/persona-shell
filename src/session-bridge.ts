@@ -47,7 +47,12 @@ export class SessionBridge extends EventEmitter {
   private lastInputTokens = 0;
   private pendingCount = 0;
   private systemReplyQueue: string[] = [];
-  /** 有序响应分派队列 — 每条发出的消息按序记录类型，result 到达时 shift 出来决定如何分派 */
+  /** 有序响应分派队列 — 每条发出的消息按序记录类型，result 到达时 shift 出来决定如何分派。
+   *
+   *  IMPORTANT ASSUMPTION: Claude CLI guarantees FIFO response order — each `result`
+   *  event corresponds to the oldest outstanding input message. If Claude CLI ever
+   *  supports parallel processing or out-of-order responses, this queue-based dispatch
+   *  will break and must be replaced with correlation-id matching. */
   private pendingTypes: Array<
     | { type: 'user' }
     | { type: 'system-absorbed' }

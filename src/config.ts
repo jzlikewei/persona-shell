@@ -47,7 +47,7 @@ function expandHome(p: string): string {
 }
 
 export function loadConfig(path?: string): Config {
-  const configPath = path ?? resolve(import.meta.dirname, '..', 'config.yaml');
+  const configPath = path ?? resolve(homedir(), '.persona', 'config.yaml');
   const raw = readFileSync(configPath, 'utf-8');
   const yaml = load(raw) as Record<string, any>;
 

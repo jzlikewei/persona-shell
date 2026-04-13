@@ -10,7 +10,7 @@ import { TaskRunner, type TaskResult } from './task-runner.js';
 import { spawnPersona } from './persona-process.js';
 import { createInterface } from 'readline';
 import { Scheduler } from './scheduler.js';
-import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob } from './task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore } from './task-store.js';
 import { writeFileSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log } from './logger.js';
@@ -26,6 +26,7 @@ for (const method of ['log', 'warn', 'error'] as const) {
 async function main() {
   const config = loadConfig();
   setLogLevel(config.logging.level);
+  initTaskStore(config.director.persona_dir);
   const queue = new MessageQueue(config.logging.queue_log);
   const director = new SessionBridge(config.director);
   const feishu = createFeishuClient(config.feishu, {
@@ -637,11 +638,6 @@ async function main() {
 
     // Track outgoing message and update daily stats
     metrics.addMessage({ direction: 'out', preview: reply.slice(0, 80), timestamp: Date.now(), responseSec: elapsedMs / 1000 });
-    // Update the corresponding 'in' message with responseSec
-    const inMsg = [...metrics.recentMessages].reverse().find(
-      (m) => m.direction === 'in' && !m.responseSec
-    );
-    if (inMsg) inMsg.responseSec = elapsedMs / 1000;
     // Update daily stats
     const today = metrics.getToday();
     today.messagesProcessed++;

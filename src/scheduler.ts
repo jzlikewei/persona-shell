@@ -147,6 +147,7 @@ export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
 
     // Build today's target timestamp in Asia/Shanghai
     const todayStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    // +08:00 is safe here — China does not observe DST, so Asia/Shanghai is always UTC+8.
     const todayTarget = new Date(`${todayStr}T${dailyMatch[1]}:${dailyMatch[2]}:00+08:00`);
     return new Date(lastRunAt).getTime() < todayTarget.getTime();
   }
