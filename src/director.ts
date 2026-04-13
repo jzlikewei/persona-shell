@@ -27,6 +27,8 @@ export interface DirectorOptions {
   isMain?: boolean;
   /** 群聊名称，非主 Director 用于 bootstrap 消息 */
   groupName?: string;
+  /** Per-Director MCP 配置文件路径（非主 Director 用独立配置以注入 DIRECTOR_LABEL） */
+  mcpConfigPath?: string;
 }
 
 export class Director extends EventEmitter {
@@ -34,6 +36,7 @@ export class Director extends EventEmitter {
   readonly label: string;
   readonly isMain: boolean;
   private groupName?: string;
+  private customMcpConfigPath?: string;
   private pipeIn: string;
   private pipeOut: string;
   private pipeDir: string;
@@ -89,6 +92,7 @@ export class Director extends EventEmitter {
       this.label = configOrOptions.label;
       this.isMain = configOrOptions.isMain ?? true;
       this.groupName = configOrOptions.groupName;
+      this.customMcpConfigPath = configOrOptions.mcpConfigPath;
     } else {
       // Legacy: Config['director'] — backward compatible
       this.config = configOrOptions;
@@ -651,7 +655,9 @@ export class Director extends EventEmitter {
 
   private spawnDirector(): void {
     const personaDir = this.config.persona_dir;
-    const mcpConfigPath = join(personaDir, '.mcp.json');
+    // Per-Director MCP config: non-main Directors use their own config (with DIRECTOR_LABEL),
+    // main Director uses the shared config in persona_dir
+    const mcpConfigPath = this.customMcpConfigPath ?? join(personaDir, '.mcp.json');
 
     const savedSession = this.readSession();
     if (savedSession) {

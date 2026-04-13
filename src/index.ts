@@ -82,12 +82,20 @@ async function main() {
         args: ['run', join(import.meta.dirname, 'task-mcp-server.ts')],
         env: {
           SHELL_PORT: String(config.console.port),
+          DIRECTOR_LABEL: 'main',
           ...(config.console.token ? { SHELL_TOKEN: config.console.token } : {}),
         },
       },
     },
   };
   writeFileSync(join(config.director.persona_dir, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
+
+  // MCP config params for pool Directors (per-Director configs with DIRECTOR_LABEL)
+  const mcpParams = {
+    serverPath: join(import.meta.dirname, 'task-mcp-server.ts'),
+    port: config.console.port,
+    token: config.console.token,
+  };
 
   // Start director process
   const freshStart = await director.start();
@@ -101,7 +109,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.director, messaging);
+  const pool = new DirectorPool(director, config.pool, config.director, messaging, mcpParams);
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
@@ -109,6 +117,32 @@ async function main() {
     personaDir: config.director.persona_dir,
     defaultTimeoutMs: config.task.default_timeout_ms,
   });
+
+  /** Resolve the target chatId and Director for a task callback based on source_director.
+   *  Falls back to main Director + last chatId if source is unknown. */
+  async function resolveTaskTarget(task: { source_director?: string | null }): Promise<{
+    chatId: string | null;
+    notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
+  }> {
+    const source = task.source_director;
+    if (source && source !== 'main') {
+      // Pool Director — look up or revive
+      const poolChatId = pool.getChatIdByLabel(source);
+      if (poolChatId) {
+        return {
+          chatId: poolChatId,
+          notifyDirector: (taskId, success, msgId) => pool.notifyTaskDone(source, taskId, success, msgId),
+        };
+      }
+      // Pool entry lost (no routing context to revive) — fall through to main
+      console.warn(`[shell] Task source_director=${source} not found in pool, falling back to main`);
+    }
+    // Main Director or unknown source
+    return {
+      chatId: messaging.getLastChatId(),
+      notifyDirector: (taskId, success, msgId) => director.notifyTaskDone(taskId, success, msgId),
+    };
+  }
 
   // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + messaging notification
   taskRunner.on('task-started', (taskId: string, spawnArgs: string[]) => {
@@ -129,13 +163,13 @@ async function main() {
     });
     const task = getTask(result.taskId);
     const desc = task?.description ?? result.taskId;
-    // Send notification first, capture messageId for Director's reply
-    const lastChatId = messaging.getLastChatId();
+    // Route notification to the Director/chat that created this task
+    const target = await resolveTaskTarget(task ?? {});
     let notifyMsgId: string | undefined;
-    if (lastChatId) {
-      notifyMsgId = (await messaging.sendMessage(lastChatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
+    if (target.chatId) {
+      notifyMsgId = (await messaging.sendMessage(target.chatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
     }
-    director.notifyTaskDone(result.taskId, true, notifyMsgId).catch((err) => {
+    target.notifyDirector(result.taskId, true, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task completion:', err);
     });
   });
@@ -158,17 +192,18 @@ async function main() {
       return;
     }
 
-    const lastChatId = messaging.getLastChatId();
+    // Route notification to the Director/chat that created this task
+    const target = await resolveTaskTarget(task ?? {});
     let notifyMsgId: string | undefined;
-    if (lastChatId) {
+    if (target.chatId) {
       const desc = task?.description ?? result.taskId;
       const isCancelled = result.error === 'cancelled';
       const msg = isCancelled
         ? `🚫 后台任务「${desc}」(${result.taskId}) 已取消`
         : `❌ 后台任务「${desc}」(${result.taskId}) 失败 — ${result.error}`;
-      notifyMsgId = (await messaging.sendMessage(lastChatId, msg)) ?? undefined;
+      notifyMsgId = (await messaging.sendMessage(target.chatId, msg)) ?? undefined;
     }
-    director.notifyTaskDone(result.taskId, false, notifyMsgId).catch((err) => {
+    target.notifyDirector(result.taskId, false, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task failure:', err);
     });
   });
@@ -557,7 +592,7 @@ async function main() {
       // 小群/话题群 → DirectorPool
       try {
         const groupName = msg.groupName ?? chatId.slice(0, 8);
-        const entry = await pool.getOrCreate(routingKey, groupName);
+        const entry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId });
         await pool.send(routingKey, directorText, messageId);
         console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
       } catch (err) {

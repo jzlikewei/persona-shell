@@ -11,6 +11,8 @@ export interface CreateTaskInput {
   prompt: string;
   max_retry?: number;
   extra?: Record<string, unknown>;
+  /** 发起方 Director 的标识（如 'main' 或 pool label），用于回调路由 */
+  source_director?: string;
 }
 
 export interface Task {
@@ -30,6 +32,8 @@ export interface Task {
   cost_usd: number | null;
   duration_ms: number | null;
   extra: Record<string, unknown> | null;
+  /** 发起方 Director 标识，用于任务回调路由 */
+  source_director: string | null;
 }
 
 const DB_DIR = join(homedir(), '.persona', 'state');
@@ -123,8 +127,9 @@ function openDb(): Database {
   db.run(CREATE_TABLE);
   db.run(CREATE_STATE_TABLE);
   db.run(CREATE_CRON_JOBS_TABLE);
-  // Schema 迁移：为已有 cron_jobs 表添加新列（action_type, message, action_name）
+  // Schema 迁移
   migrateCronJobsTable(db);
+  migrateTasksTable(db);
   return db;
 }
 
@@ -144,6 +149,16 @@ function migrateCronJobsTable(db: Database): void {
   }
 }
 
+/** 安全地为 tasks 表添加新列 */
+function migrateTasksTable(db: Database): void {
+  const columns = db.query("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+  const existing = new Set(columns.map((c) => c.name));
+
+  if (!existing.has('source_director')) {
+    db.run("ALTER TABLE tasks ADD COLUMN source_director TEXT");
+  }
+}
+
 function rowToTask(row: Record<string, unknown>): Task {
   return {
     ...row,
@@ -157,11 +172,12 @@ export function createTask(input: CreateTaskInput): Task {
   const id = generateTaskId(db);
   const now = new Date().toISOString();
   const extra = input.extra ? JSON.stringify(input.extra) : null;
+  const sourceDirector = input.source_director ?? null;
 
   db.run(
-    `INSERT INTO tasks (id, type, role, description, prompt, status, created_at, retry_count, max_retry, extra)
-     VALUES (?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?)`,
-    [id, input.type, input.role, input.description, input.prompt, now, input.max_retry ?? 3, extra],
+    `INSERT INTO tasks (id, type, role, description, prompt, status, created_at, retry_count, max_retry, extra, source_director)
+     VALUES (?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?)`,
+    [id, input.type, input.role, input.description, input.prompt, now, input.max_retry ?? 3, extra, sourceDirector],
   );
 
   return getTask(id)!;
@@ -197,6 +213,7 @@ export function updateTask(id: string, update: Partial<Omit<Task, 'id'>>): void 
     'type', 'role', 'description', 'prompt', 'status',
     'started_at', 'completed_at', 'result_file', 'error',
     'retry_count', 'max_retry', 'cost_usd', 'duration_ms', 'extra',
+    'source_director',
   ] as const;
 
   const sets: string[] = [];

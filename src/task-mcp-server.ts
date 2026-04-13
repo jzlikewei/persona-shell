@@ -2,6 +2,7 @@
 
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
 const SHELL_TOKEN = process.env.SHELL_TOKEN;
+const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
 const TOOLS = [
@@ -142,6 +143,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         description: args.description,
         prompt: args.prompt,
         max_retry: args.max_retry,
+        source_director: DIRECTOR_LABEL,
       });
     case 'get_task':
       return callShell('GET', `/api/tasks/${args.task_id}`);

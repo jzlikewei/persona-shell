@@ -1,4 +1,6 @@
 import { createHash } from 'crypto';
+import { writeFileSync } from 'fs';
+import { join } from 'path';
 import { EventEmitter } from 'events';
 import { Director, type DirectorOptions } from './director.js';
 import { MessageQueue, type QueueItem } from './queue.js';
@@ -12,10 +14,18 @@ export interface PoolConfig {
   small_group_threshold: number;
 }
 
-interface PoolEntry {
+/** MCP 配置模板参数，用于生成 per-Director .mcp.json */
+export interface McpConfigParams {
+  serverPath: string;  // task-mcp-server.ts 的绝对路径
+  port: number;
+  token?: string;
+}
+
+export interface PoolEntry {
   director: Director;
   queue: MessageQueue;
-  chatId: string;
+  routingKey: string;       // Map key（chatId 或 threadId）
+  feishuChatId: string;     // 实际的飞书 chatId（oc_xxx），用于 sendMessage
   groupName: string;
   lastActiveAt: number;
 }
@@ -27,6 +37,7 @@ export class DirectorPool extends EventEmitter {
   private poolConfig: PoolConfig;
   private directorConfig: Config['director'];
   private messaging: MessagingClient;
+  private mcpParams: McpConfigParams;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -34,12 +45,14 @@ export class DirectorPool extends EventEmitter {
     poolConfig: PoolConfig,
     directorConfig: Config['director'],
     messaging: MessagingClient,
+    mcpParams: McpConfigParams,
   ) {
     super();
     this.mainDirector = mainDirector;
     this.poolConfig = poolConfig;
     this.directorConfig = directorConfig;
     this.messaging = messaging;
+    this.mcpParams = mcpParams;
 
     // Start idle Director reaper — check every minute, shutdown Directors
     // that have been idle longer than idle_timeout_minutes
@@ -53,9 +66,17 @@ export class DirectorPool extends EventEmitter {
     return this.mainDirector;
   }
 
-  /** Get a group Director if it exists */
-  get(chatId: string): PoolEntry | undefined {
-    return this.entries.get(chatId);
+  /** Get a group Director if it exists (by routingKey) */
+  get(routingKey: string): PoolEntry | undefined {
+    return this.entries.get(routingKey);
+  }
+
+  /** Find a pool entry by Director label (for task callback routing) */
+  findByLabel(label: string): PoolEntry | undefined {
+    for (const entry of this.entries.values()) {
+      if (entry.director.label === label) return entry;
+    }
+    return undefined;
   }
 
   /** Number of active group Directors */
@@ -63,42 +84,50 @@ export class DirectorPool extends EventEmitter {
     return this.entries.size;
   }
 
-  /** Get or create a Director for a group chat */
-  async getOrCreate(chatId: string, groupName?: string): Promise<PoolEntry> {
-    const existing = this.entries.get(chatId);
+  /** Get or create a Director for a group chat.
+   *  @param routingKey — Map key (chatId for regular groups, threadId for topic groups)
+   *  @param opts — group metadata for creation */
+  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string }): Promise<PoolEntry> {
+    const existing = this.entries.get(routingKey);
     if (existing) {
       existing.lastActiveAt = Date.now();
       return existing;
     }
 
-    // 防止并发创建同一个 chatId 的 Director（竞态锁）
-    const inflight = this.creating.get(chatId);
+    // 防止并发创建同一个 routingKey 的 Director（竞态锁）
+    const inflight = this.creating.get(routingKey);
     if (inflight) return inflight;
 
-    const promise = this._doCreate(chatId, groupName);
-    this.creating.set(chatId, promise);
+    const promise = this._doCreate(routingKey, opts);
+    this.creating.set(routingKey, promise);
     try {
       return await promise;
     } finally {
-      this.creating.delete(chatId);
+      this.creating.delete(routingKey);
     }
   }
 
-  private async _doCreate(chatId: string, groupName?: string): Promise<PoolEntry> {
+  private async _doCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string }): Promise<PoolEntry> {
     // Evict LRU if at capacity
     if (this.entries.size >= this.poolConfig.max_directors) {
       await this.evictLRU();
     }
 
-    const label = chatIdToLabel(chatId);
-    const name = groupName ?? chatId.slice(0, 8);
+    const label = routingKeyToLabel(routingKey);
+    const name = opts.groupName ?? routingKey.slice(0, 8);
     console.log(`[pool] Creating Director for group "${name}" (label=${label})`);
+
+    // Write per-Director MCP config with DIRECTOR_LABEL
+    const pipeDir = join(this.directorConfig.pipe_dir, label);
+    const mcpConfigPath = join(pipeDir, '.mcp.json');
+    this.writeMcpConfig(mcpConfigPath, label);
 
     const director = new Director({
       config: this.directorConfig,
       label,
       isMain: false,
       groupName: name,
+      mcpConfigPath,
     } satisfies DirectorOptions);
 
     const queue = new MessageQueue(`logs/queue-${label}.log`);
@@ -106,16 +135,17 @@ export class DirectorPool extends EventEmitter {
     await director.start();
 
     // Wire events BEFORE bootstrap so response handler is ready
-    this.wireEvents(director, queue, chatId, name);
+    this.wireEvents(director, queue, routingKey, opts.feishuChatId, name);
 
     const entry: PoolEntry = {
       director,
       queue,
-      chatId,
+      routingKey,
+      feishuChatId: opts.feishuChatId,
       groupName: name,
       lastActiveAt: Date.now(),
     };
-    this.entries.set(chatId, entry);
+    this.entries.set(routingKey, entry);
 
     // Await bootstrap completion — ensures user messages sent after getOrCreate()
     // won't be merged into the bootstrap turn by Claude Code
@@ -124,13 +154,31 @@ export class DirectorPool extends EventEmitter {
     return entry;
   }
 
+  /** Write per-Director MCP config to the specified path */
+  private writeMcpConfig(configPath: string, directorLabel: string): void {
+    const config = {
+      mcpServers: {
+        'persona-tasks': {
+          command: 'bun',
+          args: ['run', this.mcpParams.serverPath],
+          env: {
+            SHELL_PORT: String(this.mcpParams.port),
+            DIRECTOR_LABEL: directorLabel,
+            ...(this.mcpParams.token ? { SHELL_TOKEN: this.mcpParams.token } : {}),
+          },
+        },
+      },
+    };
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+  }
+
   /** Send a message to a group Director, managing queue correlation */
-  async send(chatId: string, text: string, messageId: string): Promise<void> {
-    const entry = this.entries.get(chatId);
-    if (!entry) throw new Error(`No Director for chatId ${chatId}`);
+  async send(routingKey: string, text: string, messageId: string): Promise<void> {
+    const entry = this.entries.get(routingKey);
+    if (!entry) throw new Error(`No Director for routingKey ${routingKey}`);
 
     entry.lastActiveAt = Date.now();
-    const correlationId = entry.queue.enqueue({ text, messageId, chatId });
+    const correlationId = entry.queue.enqueue({ text, messageId, chatId: entry.feishuChatId });
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
@@ -141,13 +189,51 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
+  /** Notify a specific pool Director that a task has completed.
+   *  If the Director is dead, revive it first.
+   *  @returns the feishuChatId for sending the notification message */
+  async notifyTaskDone(label: string, taskId: string, success: boolean, notifyMsgId?: string): Promise<void> {
+    let entry = this.findByLabel(label);
+
+    if (!entry) {
+      console.warn(`[pool] Director ${label} not found for task callback, cannot revive (routing context lost)`);
+      // Fallback: notify main Director
+      this.mainDirector.notifyTaskDone(taskId, success, notifyMsgId).catch((err) => {
+        console.warn('[pool] Fallback notifyTaskDone to main failed:', err);
+      });
+      return;
+    }
+
+    // Check if Director is alive, revive if dead
+    if (!entry.director.getStatus().alive) {
+      console.log(`[pool] Reviving dead Director "${entry.groupName}" (label=${label}) for task callback`);
+      // Re-create the Director
+      const routingKey = entry.routingKey;
+      const groupName = entry.groupName;
+      const feishuChatId = entry.feishuChatId;
+      // Remove stale entry
+      this.entries.delete(routingKey);
+      // Create new one
+      const newEntry = await this.getOrCreate(routingKey, { groupName, feishuChatId });
+      entry = newEntry;
+    }
+
+    await entry.director.notifyTaskDone(taskId, success, notifyMsgId);
+  }
+
+  /** Get the feishuChatId for a Director by label (for sending notification messages) */
+  getChatIdByLabel(label: string): string | null {
+    const entry = this.findByLabel(label);
+    return entry?.feishuChatId ?? null;
+  }
+
   /** Shutdown a specific group Director */
-  async shutdown(chatId: string): Promise<void> {
-    const entry = this.entries.get(chatId);
+  async shutdown(routingKey: string): Promise<void> {
+    const entry = this.entries.get(routingKey);
     if (!entry) return;
 
     console.log(`[pool] Shutting down Director for group "${entry.groupName}"`);
-    this.entries.delete(chatId);
+    this.entries.delete(routingKey);
     await entry.director.shutdown();
   }
 
@@ -157,11 +243,11 @@ export class DirectorPool extends EventEmitter {
       clearInterval(this.idleTimer);
       this.idleTimer = null;
     }
-    const chatIds = [...this.entries.keys()];
-    for (const chatId of chatIds) {
-      await this.shutdown(chatId);
+    const keys = [...this.entries.keys()];
+    for (const key of keys) {
+      await this.shutdown(key);
     }
-    console.log(`[pool] All ${chatIds.length} group Director(s) shut down`);
+    console.log(`[pool] All ${keys.length} group Director(s) shut down`);
   }
 
   /** Get status of all pool entries for dashboard */
@@ -174,7 +260,7 @@ export class DirectorPool extends EventEmitter {
     queueLength: number;
   }> {
     return [...this.entries.values()].map((entry) => ({
-      chatId: entry.chatId,
+      chatId: entry.routingKey,
       groupName: entry.groupName,
       label: entry.director.label,
       lastActiveAt: entry.lastActiveAt,
@@ -188,13 +274,13 @@ export class DirectorPool extends EventEmitter {
     const timeoutMs = this.poolConfig.idle_timeout_minutes * 60_000;
     const now = Date.now();
 
-    for (const [chatId, entry] of this.entries) {
+    for (const [routingKey, entry] of this.entries) {
       // Skip Directors with pending messages
       if (entry.queue.length > 0) continue;
 
       if (now - entry.lastActiveAt > timeoutMs) {
         console.log(`[pool] Reaping idle Director for group "${entry.groupName}" (idle ${Math.floor((now - entry.lastActiveAt) / 1000)}s)`);
-        this.shutdown(chatId).catch((err) => {
+        this.shutdown(routingKey).catch((err) => {
           console.error(`[pool] Failed to reap idle Director "${entry.groupName}":`, err);
         });
       }
@@ -202,7 +288,7 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Wire Director events for a group chat Director */
-  private wireEvents(director: Director, queue: MessageQueue, chatId: string, groupName: string): void {
+  private wireEvents(director: Director, queue: MessageQueue, routingKey: string, feishuChatId: string, groupName: string): void {
     // response → resolve oldest queue item → reply to feishu
     director.on('response', async (reply: string, durationMs?: number) => {
       const item = queue.resolveOldest();
@@ -227,22 +313,32 @@ export class DirectorPool extends EventEmitter {
       }
     });
 
+    // system-response → reply to task notification message (same as main Director)
+    director.on('system-response', async (reply: string, replyToMessageId: string) => {
+      try {
+        await this.messaging.reply(replyToMessageId, reply);
+        log.debug(`[pool:${groupName}] System response replied to ${replyToMessageId}`);
+      } catch (err) {
+        console.warn(`[pool:${groupName}] Failed to reply system response:`, err);
+      }
+    });
+
     // close → remove from pool (non-main Director does not exit process)
     director.on('close', () => {
       console.log(`[pool] Director for group "${groupName}" closed, removing from pool`);
-      this.entries.delete(chatId);
+      this.entries.delete(routingKey);
     });
 
-    // alert → forward to group chat
+    // alert → forward to group chat (use feishuChatId, not routingKey)
     director.on('alert', (message: string) => {
-      this.messaging.sendMessage(chatId, message).catch((err) => {
+      this.messaging.sendMessage(feishuChatId, message).catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send alert:`, err);
       });
     });
 
     // auto-flush-complete → notify group chat
     director.on('auto-flush-complete', () => {
-      this.messaging.sendMessage(chatId, '🔄 上下文已自动刷新').catch((err) => {
+      this.messaging.sendMessage(feishuChatId, '🔄 上下文已自动刷新').catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send flush notification:`, err);
       });
     });
@@ -266,22 +362,22 @@ export class DirectorPool extends EventEmitter {
 
   /** Evict the least recently used group Director (skip Directors with pending messages) */
   private async evictLRU(): Promise<void> {
-    let lruChatId: string | null = null;
+    let lruKey: string | null = null;
     let lruTime = Infinity;
 
-    for (const [chatId, entry] of this.entries) {
+    for (const [routingKey, entry] of this.entries) {
       // Skip Directors that are still processing messages
       if (entry.queue.length > 0) continue;
       if (entry.lastActiveAt < lruTime) {
         lruTime = entry.lastActiveAt;
-        lruChatId = chatId;
+        lruKey = routingKey;
       }
     }
 
-    if (lruChatId) {
-      const entry = this.entries.get(lruChatId)!;
+    if (lruKey) {
+      const entry = this.entries.get(lruKey)!;
       console.log(`[pool] Evicting LRU Director for group "${entry.groupName}" (idle ${Math.floor((Date.now() - lruTime) / 1000)}s)`);
-      await this.shutdown(lruChatId);
+      await this.shutdown(lruKey);
     } else {
       // All Directors have pending messages — cannot evict safely
       console.warn(`[pool] All ${this.entries.size} Directors are busy, cannot evict`);
@@ -290,7 +386,8 @@ export class DirectorPool extends EventEmitter {
   }
 }
 
-/** Convert chatId to a short, filesystem-safe label */
-function chatIdToLabel(chatId: string): string {
-  return createHash('sha256').update(chatId).digest('hex').slice(0, 8);
+/** Convert routingKey to a short, filesystem-safe label */
+function routingKeyToLabel(routingKey: string): string {
+  return createHash('sha256').update(routingKey).digest('hex').slice(0, 8);
 }
+
