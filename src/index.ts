@@ -106,6 +106,10 @@ async function main() {
   // DirectorPool for multi-group chat support
   const pool = new DirectorPool(director, config.pool, config.director, messaging);
 
+  // Restore pool entries from previous Shell session + clean up orphans
+  await pool.restoreEntries();
+  await pool.killUnknownOrphans();
+
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
     claudePath: config.director.claude_path,

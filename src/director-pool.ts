@@ -1,10 +1,23 @@
 import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
+import { existsSync, readdirSync } from 'fs';
+import { join } from 'path';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { MessageQueue, type QueueItem } from './queue.js';
+import { ClaudeProcess } from './claude-process.js';
 import type { Config } from './config.js';
 import type { MessagingClient } from './messaging.js';
+import { getState, setState } from './task-store.js';
 import { log } from './logger.js';
+
+/** Pool entry data persisted to SQLite for crash recovery */
+interface PersistedPoolEntry {
+  routingKey: string;
+  feishuChatId: string;
+  groupName: string;
+  label: string;
+  lastActiveAt: number;
+}
 
 export interface PoolConfig {
   max_directors: number;
@@ -132,8 +145,7 @@ export class DirectorPool extends EventEmitter {
       lastActiveAt: Date.now(),
     };
     this.entries.set(routingKey, entry);
-
-    // Await bootstrap completion — ensures user messages sent after getOrCreate()
+    this.persistEntries();
     // won't be merged into the bootstrap turn by Claude Code
     await bridge.bootstrap();
 
@@ -200,6 +212,7 @@ export class DirectorPool extends EventEmitter {
 
     console.log(`[pool] Shutting down Director for group "${entry.groupName}"`);
     this.entries.delete(routingKey);
+    this.persistEntries();
     await entry.bridge.shutdown();
   }
 
@@ -233,6 +246,113 @@ export class DirectorPool extends EventEmitter {
       directorStatus: entry.bridge.getStatus(),
       queueLength: entry.queue.length,
     }));
+  }
+
+  /** Persist pool entries to SQLite for crash recovery */
+  private persistEntries(): void {
+    const data: PersistedPoolEntry[] = [...this.entries.values()].map(e => ({
+      routingKey: e.routingKey,
+      feishuChatId: e.feishuChatId,
+      groupName: e.groupName,
+      label: e.bridge.label,
+      lastActiveAt: e.lastActiveAt,
+    }));
+    setState('pool:entries', data);
+  }
+
+  /** Restore pool entries from SQLite after Shell restart.
+   *  For each persisted entry, check if the Director process is still alive:
+   *  - alive → reconnect (reuse process + session)
+   *  - dead → clean up pipe directory */
+  async restoreEntries(): Promise<void> {
+    const saved = getState<PersistedPoolEntry[]>('pool:entries');
+    if (!saved || saved.length === 0) return;
+
+    const pipeBaseDir = this.directorConfig.pipe_dir;
+    let restored = 0;
+
+    for (const item of saved) {
+      const pipeDir = join(pipeBaseDir, item.label);
+      const pidFile = join(pipeDir, 'director.pid');
+
+      // Check if process is alive
+      const proc = new ClaudeProcess({ pipeDir, pidFile, label: item.label });
+      if (!proc.isAlive()) {
+        console.log(`[pool] Orphan "${item.groupName}" (label=${item.label}) is dead, cleaning up`);
+        proc.cleanPipes();
+        continue;
+      }
+
+      // Alive → reconnect
+      console.log(`[pool] Reconnecting to orphan "${item.groupName}" (label=${item.label}, pid=${proc.getPid()})`);
+      try {
+        const bridge = new SessionBridge({
+          config: this.directorConfig,
+          label: item.label,
+          isMain: false,
+          groupName: item.groupName,
+        } satisfies SessionBridgeOptions);
+
+        const queue = new MessageQueue(`logs/queue-${item.label}.log`);
+        await bridge.start(); // start() detects alive process → reconnect path
+
+        this.wireEvents(bridge, queue, item.routingKey, item.feishuChatId, item.groupName);
+
+        const entry: PoolEntry = {
+          bridge,
+          queue,
+          routingKey: item.routingKey,
+          feishuChatId: item.feishuChatId,
+          groupName: item.groupName,
+          lastActiveAt: item.lastActiveAt,
+        };
+        this.entries.set(item.routingKey, entry);
+        restored++;
+      } catch (err) {
+        console.error(`[pool] Failed to reconnect "${item.groupName}":`, err);
+        // Kill the orphan — we can't talk to it
+        proc.kill('SIGTERM');
+        proc.cleanPipes();
+      }
+    }
+
+    // Update persisted state (remove dead entries)
+    this.persistEntries();
+    console.log(`[pool] Restored ${restored}/${saved.length} pool Director(s)`);
+  }
+
+  /** Kill orphan Director processes not tracked in the pool.
+   *  Scans pipe directories for alive processes that aren't in `entries`. */
+  async killUnknownOrphans(): Promise<void> {
+    const pipeBaseDir = this.directorConfig.pipe_dir;
+    const knownLabels = new Set([...this.entries.values()].map(e => e.bridge.label));
+    // Also exclude main Director's pipe dir
+    knownLabels.add('');  // pipeBaseDir itself has director.pid
+
+    let dirNames: string[];
+    try {
+      dirNames = readdirSync(pipeBaseDir)
+        .map(String)
+        .filter(name => {
+          try { return existsSync(join(pipeBaseDir, name, 'director.pid')); } catch { return false; }
+        });
+    } catch {
+      return; // pipe dir doesn't exist yet
+    }
+
+    for (const name of dirNames) {
+      if (knownLabels.has(name)) continue;
+
+      const pipeDir = join(pipeBaseDir, name);
+      const pidFile = join(pipeDir, 'director.pid');
+
+      const proc = new ClaudeProcess({ pipeDir, pidFile, label: name });
+      if (proc.isAlive()) {
+        console.log(`[pool] Killing unknown orphan ${name} (pid=${proc.getPid()})`);
+        proc.kill('SIGTERM');
+      }
+      proc.cleanPipes();
+    }
   }
 
   /** Reap idle Directors that have exceeded idle_timeout_minutes */
@@ -293,6 +413,7 @@ export class DirectorPool extends EventEmitter {
     bridge.on('close', () => {
       console.log(`[pool] Session bridge for group "${groupName}" closed, removing from pool`);
       this.entries.delete(routingKey);
+      this.persistEntries();
     });
 
     // alert → forward to group chat (use feishuChatId, not routingKey)
