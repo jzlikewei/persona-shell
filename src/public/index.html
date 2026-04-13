@@ -1701,7 +1701,15 @@
         var isLive = s.sessionId === liveId;
         var isSelected = selectedSessionId === s.sessionId;
         var sColor = isLive ? 'var(--green)' : 'var(--overlay0)';
-        var sName = (s.sessionName || s.sessionId.slice(0, 12));
+        var sName = s.sessionName;
+        if (!sName && s.firstMessageAt) {
+          // Fallback: generate name from timestamp (e.g. "20260413T1418")
+          var d = new Date(s.firstMessageAt);
+          var ds = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+          var ts = d.toLocaleTimeString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' }).replace(':', '');
+          sName = ds + 'T' + ts;
+        }
+        if (!sName) sName = s.sessionId.slice(0, 12);
         // Strip common prefixes for cleaner display
         sName = sName.replace(/^director-(main-|[0-9a-f]+-)?/, '');
         if (sName.length > 20) sName = sName.slice(0, 20) + '…';
@@ -1746,7 +1754,7 @@
       var p = sortedPool[i];
       var isActive = viewMode === 'pool-session' && selectedPoolLabel === p.label && !selectedSessionId;
       var status, dotColor, badgeHtml = '';
-      if (p.closed) { status = 'exited'; dotColor = 'var(--overlay0)'; }
+      if (p.closed) { status = 'sleep'; dotColor = 'var(--overlay0)'; }
       else if (!p.alive) { status = 'dead'; dotColor = 'var(--red)'; }
       else if (p.activity === 'processing') { status = 'busy'; dotColor = 'var(--green)'; }
       else if (p.activity === 'flushing') { status = 'flush'; dotColor = 'var(--yellow)'; }
