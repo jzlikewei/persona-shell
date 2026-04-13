@@ -39,10 +39,13 @@ director:
 
 ## 飞书命令
 
-| 命令 | 说明 |
-|------|------|
-| `/esc` | 取消当前正在处理的消息（SIGINT 中断 + 自动重启） |
-| `/flush` | 手动刷新 Director 上下文（checkpoint → 重启 → 恢复） |
+| 命令 | 作用域 | 说明 |
+|------|--------|------|
+| `/esc` | 当前会话 | 取消当前正在处理的消息（SIGINT + resume） |
+| `/flush` | 当前会话 | 有状态的上下文刷新（checkpoint → 杀进程 → 新 session → bootstrap） |
+| `/restart` | 全局 | 重启整个 Shell 进程（launchd 自动拉起，代码更新生效） |
+
+命令语义详见 `docs/architecture.md` 附录 A。
 
 ## 服务化（launchd）
 
@@ -57,6 +60,26 @@ launchctl stop  com.persona.shell
 # 卸载
 bun run uninstall-service
 ```
+
+## 日志
+
+| 日志 | 路径 |
+|------|------|
+| Shell stdout | `logs/bridge.stdout.log` |
+| Shell stderr | `logs/bridge.stderr.log` |
+| 消息队列 | `logs/queue.log` |
+| Director stderr | `/tmp/persona/director-stderr.log` |
+| 会话输出 | `logs/{label}/output-{date}.log` |
+| 会话输入 | `logs/{label}/input-{date}.log` |
+
+## 运行时文件
+
+| 文件 | 路径 | 说明 |
+|------|------|------|
+| Director PID | `/tmp/persona/director.pid` | 主 Director 进程 ID |
+| Director Session | `/tmp/persona/director-session` | 当前 session ID，用于 `--resume` |
+| FIFO 管道 | `/tmp/persona/director-in`, `director-out` | Shell ↔ Director 通信 |
+| Pool Director | `/tmp/persona/{label}/` | 群聊 Director 的 PID / FIFO / session |
 
 ## Console API（运维）
 
