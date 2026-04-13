@@ -97,8 +97,9 @@ async function main() {
   // Claude CLI in stream-json mode doesn't create a session until it receives input.
   // Without this, Director sits idle with no session after restart.
   // Skip on reconnect — the Claude process already has context, sending bootstrap again wastes tokens.
+  // Must await to prevent subsequent user messages from being merged into the bootstrap turn.
   if (freshStart) {
-    director.bootstrap();
+    await director.bootstrap();
   }
 
   // DirectorPool for multi-group chat support

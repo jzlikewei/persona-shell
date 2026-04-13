@@ -165,6 +165,9 @@ export class Director extends EventEmitter {
     });
   }
 
+  /** Timeout for FIFO pipe open — if process died between alive check and open */
+  private static readonly PIPE_OPEN_TIMEOUT = 30_000; // 30 seconds
+
   async start(): Promise<boolean> {
     this.ensurePipeDir();
 
@@ -178,10 +181,20 @@ export class Director extends EventEmitter {
     }
 
     // Open both pipe ends concurrently — this unblocks the shell's FIFO opens
-    const [writeHandle, readHandle] = await Promise.all([
-      open(this.pipeIn, 'w'),
-      open(this.pipeOut, 'r'),
+    // Timeout prevents indefinite hang if the process died between alive check and pipe open
+    const pipeOpenResult = await Promise.race([
+      Promise.all([
+        open(this.pipeIn, 'w'),
+        open(this.pipeOut, 'r'),
+      ]),
+      this.timeout(Director.PIPE_OPEN_TIMEOUT).then(() => null),
     ]);
+
+    if (!pipeOpenResult) {
+      throw new Error(`[director:${this.label}] Pipe open timeout after ${Director.PIPE_OPEN_TIMEOUT / 1000}s — process may have died`);
+    }
+
+    const [writeHandle, readHandle] = pipeOpenResult;
 
     this.writeHandle = writeHandle;
     this.sessionId = this.readSession();
@@ -336,6 +349,7 @@ export class Director extends EventEmitter {
     this.lastFlushAt = Date.now();
     this.lastInputTokens = 0;
     this.flushing = false;
+    this.discardNextResponse = false;
     this.persistState();
   }
 
@@ -422,6 +436,9 @@ export class Director extends EventEmitter {
     });
   }
 
+  /** Timeout for bootstrap response — prevents hanging if Director is alive but unresponsive */
+  private static readonly BOOTSTRAP_TIMEOUT = 3 * 60_000; // 3 minutes
+
   /** Send bootstrap message to initialize session and load context.
    *  Safe to call on every startup — response is absorbed, not emitted to users.
    *  Returns a Promise that resolves when the bootstrap response is received.
@@ -444,8 +461,17 @@ export class Director extends EventEmitter {
     await this.writeRaw(msg);
     console.log(`[director:${this.label}] Bootstrap message sent`);
 
-    // Wait for bootstrap response to be fully processed
-    await done;
+    // Wait for bootstrap response with timeout — prevents indefinite hang
+    const timedOut = await Promise.race([
+      done.then(() => false),
+      this.timeout(Director.BOOTSTRAP_TIMEOUT).then(() => true),
+    ]);
+    if (timedOut) {
+      console.warn(`[director:${this.label}] Bootstrap timeout after ${Director.BOOTSTRAP_TIMEOUT / 1000}s, continuing without bootstrap response`);
+      this.bootstrapping = false;
+      this.bootstrapResolve = null;
+      this.decrementPending();
+    }
   }
 
   async send(message: string): Promise<void> {
@@ -673,9 +699,11 @@ export class Director extends EventEmitter {
       console.log(`[director:${this.label}] Starting new session`);
     }
 
-    // 生成语义化 session 名称：director-{label}-{日期}[-{群名}]
-    const dateStr = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
-    const nameParts = ['director', this.label, dateStr];
+    // 生成语义化 session 名称：director-{label}-{日期T时分}[-{群名}]
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+    const timeStr = now.toLocaleTimeString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' }).replace(':', '');
+    const nameParts = ['director', this.label, `${dateStr}T${timeStr}`];
     if (this.groupName) nameParts.push(this.groupName);
     const sessionName = nameParts.join('-');
     this.sessionName = sessionName;
@@ -913,10 +941,13 @@ export class Director extends EventEmitter {
         this.emit('close');
       } else {
         // 4.1: Alert before unexpected restart — this is a genuine crash
+        // Session may be corrupted, clear it and bootstrap fresh
         this.emit('stream-abort');
         this.emit('alert', `🔴 Director 进程意外退出，正在重启...`);
-        console.log(`[director:${this.label}] Output pipe closed, restarting...`);
+        console.log(`[director:${this.label}] Output pipe closed, clearing session and restarting...`);
+        this.clearSession();
         await this.restart();
+        await this.bootstrap();
       }
     });
   }
