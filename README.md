@@ -18,6 +18,38 @@
 - **持久记忆** — 五层渐进式记忆架构（Soul → Core → Work → Project → Daily），跨会话保留认知
 - **长期运行** — daemon 模式 + 自动上下文刷新（FLUSH），不怕 context window 耗尽
 - **多实例** — 主分身 + 群聊 Director Pool，一个分身同时服务多个对话
+- **自维护身份** — soul、skill、memory 全部是你自己仓库里的 Markdown 文件，AI 自己读、自己写、自己迭代
+
+### 自维护的灵魂、技能与记忆
+
+Persona Shell 的核心卖点：**你的分身能自己维护自己的人格、技能和记忆。**
+
+传统方案中人格提示词和工具定义由开发者硬编码，用户只能使用预设能力。Persona Shell 反过来——所有身份数据都是 `~/.persona/` 下的普通 Markdown 文件，而 Claude Code 对这个目录有完整的读写权限。这意味着：
+
+- **Soul**（`soul.md`）— 分身的性格、价值观、行为准则。你可以手动编辑，也可以让分身在对话中自己调整（`claude /soul-crafting`）
+- **Skills**（`skills/`）— 每个子目录是一个标准的 [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code/plugins)，包含 slash command、subagent、hook 等。分身可以在运行中自己创建新 skill
+- **Memory**（`daily/`、CLAUDE.md）— 日报、工作状态、长期记忆。分身每天自动写日报，FLUSH 时自动 checkpoint，新 session 自动恢复上下文
+
+```
+~/.persona/                    # 身份仓库（独立 git，AI 可读写）
+├── soul.md                      # 灵魂：性格、价值观、行为边界
+├── meta.md                      # 运维指令：FLUSH 流程、日报格式等
+├── CLAUDE.md                    # 项目级指令（Claude Code 自动加载）
+├── personas/                    # 角色人格
+│   ├── director.md                # 主分身人格
+│   ├── explorer.md                # 研究员角色
+│   └── critic.md                  # 审查员角色
+├── skills/                      # 技能（= Claude Code plugin）
+│   ├── code-review/               # 代码审查 skill
+│   ├── feature-dev/               # 功能开发 skill
+│   ├── soul-crafting/             # 自我人格调优 skill
+│   └── ...                        # 用户/AI 可自由增删
+└── daily/                       # 记忆
+    ├── state.md                   # 工作记忆（FLUSH checkpoint）
+    └── 2026-04-13.md              # 日报
+```
+
+这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`），详见 [`docs/claude-code-startup.md`](docs/claude-code-startup.md)。
 
 ## 支持的 Agent 后端
 
@@ -264,15 +296,7 @@ persona-shell/               # 本仓库（基础设施代码）
 ├── docs/                      # 设计文档 + 审查报告
 └── logs/
 
-~/.persona/                    # 身份/记忆仓库（独立 git）
-├── CLAUDE.md                  # Soul 层
-├── config.yaml                # 运行配置（含密钥，不进 git）
-├── personas/                  # 人格定义
-├── skills/                    # Skill 定义
-├── daily/                     # 日报 + state.md
-│   └── state.md               # Director 工作记忆（FLUSH checkpoint）
-├── inbox/ outbox/             # 人格通信
-└── audit_log/                 # 决策日志
+~/.persona/                    # 身份/记忆仓库（独立 git，结构详见"设计理念"）
 ```
 
 ## License
