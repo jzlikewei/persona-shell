@@ -32,10 +32,8 @@ import type { Config } from './config.js';
 import type { TaskRunner } from './task-runner.js';
 import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task-store.js';
 
-/** Director log paths — must match director.ts */
+/** Director log base directory */
 const LOG_DIR = join(import.meta.dirname, '..', 'logs');
-const INPUT_LOG = join(LOG_DIR, 'director-input.log');
-const OUTPUT_LOG = join(LOG_DIR, 'director-output.log');
 
 interface ConversationMessage {
   direction: 'in' | 'out';
@@ -53,11 +51,11 @@ interface SessionInfo {
 }
 
 /** Parse director logs to reconstruct conversation messages */
-function parseConversationLog(limit: number, sessionFilter?: string): ConversationMessage[] {
+function parseConversationLog(inputLog: string, outputLog: string, limit: number, sessionFilter?: string): ConversationMessage[] {
   // Parse input log — new format has timestamp + director fields
   const inputs: Array<{ content: string; director?: string; timestamp?: string }> = [];
   try {
-    const raw = readTail(INPUT_LOG, MAX_LOG_READ_BYTES);
+    const raw = readTail(inputLog, MAX_LOG_READ_BYTES);
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
@@ -72,7 +70,7 @@ function parseConversationLog(limit: number, sessionFilter?: string): Conversati
   // Parse output log — extract result events with response text + session_id + director
   const outputs: Array<{ text: string; sessionId?: string; director?: string }> = [];
   try {
-    const raw = readTail(OUTPUT_LOG, MAX_LOG_READ_BYTES);
+    const raw = readTail(outputLog, MAX_LOG_READ_BYTES);
     let pendingText = '';
     let lastSessionId: string | undefined;
     let lastDirector: string | undefined;
@@ -158,13 +156,13 @@ function parseConversationLog(limit: number, sessionFilter?: string): Conversati
 }
 
 /** Extract unique session IDs from director output log */
-function parseSessions(): SessionInfo[] {
+function parseSessions(outputLog: string): SessionInfo[] {
   const sessionMap = new Map<string, { count: number; first?: string; last?: string }>();
 
-  if (!existsSync(OUTPUT_LOG)) return [];
+  if (!existsSync(outputLog)) return [];
 
   try {
-    const raw = readTail(OUTPUT_LOG, MAX_LOG_READ_BYTES);
+    const raw = readTail(outputLog, MAX_LOG_READ_BYTES);
     let currentSession: string | undefined;
 
     for (const line of raw.split('\n')) {
@@ -597,10 +595,10 @@ export function startConsole(
           if (url.pathname === '/api/messages' && req.method === 'GET') {
             const limit = Number(url.searchParams.get('limit') ?? 100);
             const sessionId = url.searchParams.get('sessionId') ?? undefined;
-            return Response.json(parseConversationLog(limit, sessionId));
+            return Response.json(parseConversationLog(director.inputLogPath, director.outputLogPath, limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
-            const sessions = parseSessions();
+            const sessions = parseSessions(director.outputLogPath);
             // Inject sessionName for the live session from Director status
             const ds = director.getStatus();
             if (ds.sessionId && ds.sessionName) {

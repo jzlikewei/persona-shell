@@ -117,6 +117,26 @@ export class Director extends EventEmitter {
     return `director:${this.label}`;
   }
 
+  /** Log directory for this Director: logs/{label}/ */
+  private get logDir(): string {
+    return join(LOG_BASE, this.label);
+  }
+
+  /** Today's date string for log file names (YYYYMMDD, Shanghai timezone) */
+  private get logDate(): string {
+    return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+  }
+
+  /** Current input log path: logs/{label}/input-{YYYYMMDD}.log */
+  get inputLogPath(): string {
+    return join(this.logDir, `input-${this.logDate}.log`);
+  }
+
+  /** Current output log path: logs/{label}/output-{YYYYMMDD}.log */
+  get outputLogPath(): string {
+    return join(this.logDir, `output-${this.logDate}.log`);
+  }
+
   /** Restore persisted state (lastFlushAt, lastInputTokens, contextWindow). Returns restored data or null. */
   restoreState(): DirectorPersistedState | null {
     let saved = getState<DirectorPersistedState>(this.stateKey);
@@ -468,9 +488,10 @@ export class Director extends EventEmitter {
     const pipePayload = JSON.stringify(msg) + '\n';
 
     try {
-      if (!existsSync(DIRECTOR_LOG_DIR)) mkdirSync(DIRECTOR_LOG_DIR, { recursive: true });
+      const logDir = this.logDir;
+      if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
       const logPayload = JSON.stringify({ ...msg, timestamp: new Date().toISOString(), director: this.label }) + '\n';
-      appendFileSync(DIRECTOR_INPUT_LOG, logPayload);
+      appendFileSync(this.inputLogPath, logPayload);
     } catch { /* best-effort logging */ }
 
     await this.writeHandle.write(pipePayload);
@@ -675,16 +696,17 @@ export class Director extends EventEmitter {
     rl.on('line', (line) => {
       if (!line.trim()) return;
 
-      // 4.2: Sidecar raw output to logs/director-output.log before parsing
+      // 4.2: Sidecar raw output to logs/{label}/output-{date}.log before parsing
       try {
-        if (!existsSync(DIRECTOR_LOG_DIR)) mkdirSync(DIRECTOR_LOG_DIR, { recursive: true });
+        const logDir = this.logDir;
+        if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
         const parsed = JSON.parse(line);
         parsed._ts = new Date().toISOString();
         parsed._director = this.label;
-        appendFileSync(DIRECTOR_OUTPUT_LOG, JSON.stringify(parsed) + '\n');
+        appendFileSync(this.outputLogPath, JSON.stringify(parsed) + '\n');
       } catch {
         // JSON parse failed — write raw line as fallback
-        try { appendFileSync(DIRECTOR_OUTPUT_LOG, line + '\n'); } catch { /* best-effort */ }
+        try { appendFileSync(this.outputLogPath, line + '\n'); } catch { /* best-effort */ }
       }
 
       try {
