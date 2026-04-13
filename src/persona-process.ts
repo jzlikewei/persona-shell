@@ -124,6 +124,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   // foreground (Director) 专用参数
   if (options.mode === 'foreground') {
     args.push('--input-format', 'stream-json', '--bare', '--effort', 'max');
+    args.push('--include-partial-messages');  // 启用 token 级流式输出
     if (options.mcpConfigPath) args.push('--mcp-config', options.mcpConfigPath);
     if (options.sessionId) args.push('--resume', options.sessionId);
     if (options.sessionName) args.push('--name', options.sessionName);

@@ -694,13 +694,17 @@ export class SessionBridge extends EventEmitter {
       if (!line.trim()) return;
 
       // 4.2: Sidecar raw output to logs/{label}/output-{date}.log before parsing
+      // Skip stream_event (partial message deltas) to avoid log bloat —
+      // assistant events already contain the complete content
       try {
         const logDir = this.logDir;
         if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
         const parsed = JSON.parse(line);
-        parsed._ts = new Date().toISOString();
-        parsed._director = this.label;
-        appendFileSync(this.outputLogPath, JSON.stringify(parsed) + '\n');
+        if (parsed.type !== 'stream_event') {
+          parsed._ts = new Date().toISOString();
+          parsed._director = this.label;
+          appendFileSync(this.outputLogPath, JSON.stringify(parsed) + '\n');
+        }
       } catch {
         // JSON parse failed — write raw line as fallback
         try { appendFileSync(this.outputLogPath, line + '\n'); } catch { /* best-effort */ }
@@ -723,24 +727,34 @@ export class SessionBridge extends EventEmitter {
           case 'assistant':
             if (event.message?.content) {
               const content = event.message.content;
-              // Should we stream chunks to listeners?
-              // Peek at pendingTypes head to know if current response is for a user message
-              const headType = this.pendingTypes[0]?.type;
-              const shouldStream = !this.flushing && !this.bootstrapping
-                && headType === 'user' && !this.discardNextResponse;
+              // Accumulate response text (chunk emission is handled by stream_event deltas)
               if (typeof content === 'string') {
                 currentResponse += content;
-                if (shouldStream && content) this.emit('chunk', content);
               } else if (Array.isArray(content)) {
                 for (const block of content) {
                   if (block.type === 'text') {
                     currentResponse += block.text;
-                    if (shouldStream && block.text) this.emit('chunk', block.text);
                   }
                 }
               }
             }
             break;
+
+          case 'stream_event': {
+            // Token-level streaming from --include-partial-messages
+            const streamEvt = event.event;
+            if (streamEvt?.type === 'content_block_delta'
+              && streamEvt.delta?.type === 'text_delta') {
+              const text = streamEvt.delta.text;
+              if (text) {
+                const headType = this.pendingTypes[0]?.type;
+                const shouldStream = !this.flushing && !this.bootstrapping
+                  && headType === 'user' && !this.discardNextResponse;
+                if (shouldStream) this.emit('chunk', text);
+              }
+            }
+            break;
+          }
 
           case 'result':
             // Handle stale session error — clear session and let close handler restart

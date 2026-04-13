@@ -108,7 +108,8 @@
     /* ── Sidebar ── */
     #sidebar {
       width: var(--sidebar-w);
-      min-width: var(--sidebar-w);
+      min-width: 180px;
+      max-width: 500px;
       background: var(--mantle);
       border-right: 1px solid var(--surface0);
       display: flex;
@@ -648,6 +649,7 @@
     .td-section {
       margin-top: 16px;
     }
+    .td-section.expanded .td-prompt { display: block !important; }
     .td-section-title {
       font-size: 11px;
       text-transform: uppercase;
@@ -716,14 +718,13 @@
       flex: 6;
       display: flex;
       flex-direction: column;
-      min-width: 0;
-      border-right: 1px solid var(--surface0);
+      min-width: 200px;
     }
     .td-result-panel {
       flex: 4;
       display: flex;
       flex-direction: column;
-      min-width: 0;
+      min-width: 200px;
     }
     .td-panel-header {
       display: flex;
@@ -922,8 +923,26 @@
     @media (max-width: 800px) {
       :root { --sidebar-w: 0px; }
       #sidebar { display: none; }
+      .resize-handle.sidebar-resize { display: none; }
       .dash-grid { grid-template-columns: 1fr; }
     }
+
+    /* ── Resize Handles ── */
+    .resize-handle {
+      flex-shrink: 0;
+      width: 5px;
+      cursor: col-resize;
+      background: transparent;
+      position: relative;
+      z-index: 10;
+      transition: background .15s;
+    }
+    .resize-handle:hover,
+    .resize-handle.dragging {
+      background: var(--blue);
+      opacity: .5;
+    }
+    .resize-handle.dragging { opacity: .7; }
   </style>
 </head>
 <body>
@@ -1044,6 +1063,8 @@
       </div>
 
     </aside>
+
+    <div class="resize-handle sidebar-resize" id="sidebar-resize"></div>
 
     <!-- Main content area -->
     <div id="main">
@@ -1858,6 +1879,9 @@
     html += '<div class="td-log-scroll" id="td-log-scroll"><div id="td-log-entries"></div></div>';
     html += '</div>';
 
+    // Resize handle between log and result panels
+    html += '<div class="resize-handle" id="task-split-resize"></div>';
+
     // Right panel — result + meta
     html += '<div class="td-result-panel">';
     html += '<div class="td-panel-header">';
@@ -1890,6 +1914,7 @@
 
     html += '<div class="td-meta" style="margin-bottom:12px">';
     html += '<div class="td-field"><div class="td-field-label">Task ID</div><div class="td-field-value">' + esc(t.id) + '</div></div>';
+    html += '<div class="td-field"><div class="td-field-label">Role</div><div class="td-field-value">' + esc(t.role || '--') + '</div></div>';
     html += '<div class="td-field"><div class="td-field-label">Created</div><div class="td-field-value">' + esc(t.created_at || '--') + '</div></div>';
     if (t.duration_ms != null) {
       html += '<div class="td-field"><div class="td-field-label">Duration</div><div class="td-field-value">' + fmtDur(t.duration_ms) + '</div></div>';
@@ -1901,6 +1926,24 @@
 
     if (t.description) {
       html += '<div style="font-size:13px;color:var(--subtext1);margin-bottom:12px">' + esc(t.description) + '</div>';
+    }
+
+    // Prompt section
+    if (t.prompt) {
+      html += '<div class="td-section">';
+      html += '<div class="td-section-title">Prompt</div>';
+      html += '<div class="td-prompt">' + esc(t.prompt) + '</div>';
+      html += '</div>';
+    }
+
+    // Spawn args section (collapsible)
+    var spawnArgs = t.extra && t.extra.spawnArgs;
+    if (spawnArgs && spawnArgs.length > 0) {
+      html += '<div class="td-section">';
+      html += '<div class="td-section-title" style="cursor:pointer" onclick="var s=this.parentNode;s.classList.toggle(\'expanded\');this.textContent=s.classList.contains(\'expanded\')?\'\u25be Spawn Args (' + spawnArgs.length + ')\':\'\u25b8 Spawn Args (' + spawnArgs.length + ')\'">' +
+        '\u25b8 Spawn Args (' + spawnArgs.length + ')</div>';
+      html += '<div class="td-prompt" style="display:none;font-size:11px">' + esc(spawnArgs.join(' \\\n  ')) + '</div>';
+      html += '</div>';
     }
 
     if (t.status === 'running' || t.status === 'dispatched') {
@@ -2059,6 +2102,70 @@
   setInterval(function () {
     if (wsConnected) loadSessions();
   }, 30000);
+
+  // ── Resize handles (drag to resize panels) ──
+  (function initResizeHandles() {
+    var activeHandle = null;
+    var startX = 0;
+    var startW = 0;
+    var targetEl = null;
+    var onDrag = null;
+
+    // Sidebar resize
+    var sidebarHandle = $('sidebar-resize');
+    sidebarHandle.addEventListener('mousedown', function(e) {
+      e.preventDefault();
+      var sidebar = $('sidebar');
+      startX = e.clientX;
+      startW = sidebar.offsetWidth;
+      targetEl = sidebar;
+      activeHandle = sidebarHandle;
+      activeHandle.classList.add('dragging');
+      onDrag = function(dx) {
+        var w = Math.max(180, Math.min(500, startW + dx));
+        targetEl.style.width = w + 'px';
+      };
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+
+    // Task split resize — delegated (element is dynamically created)
+    document.addEventListener('mousedown', function(e) {
+      if (e.target.id !== 'task-split-resize') return;
+      e.preventDefault();
+      var logPanel = e.target.previousElementSibling;
+      var resultPanel = e.target.nextElementSibling;
+      if (!logPanel || !resultPanel) return;
+      var container = e.target.parentNode;
+      var containerW = container.offsetWidth;
+      startX = e.clientX;
+      startW = logPanel.offsetWidth;
+      activeHandle = e.target;
+      activeHandle.classList.add('dragging');
+      onDrag = function(dx) {
+        var newLogW = Math.max(200, Math.min(containerW - 205, startW + dx));
+        logPanel.style.flex = 'none';
+        logPanel.style.width = newLogW + 'px';
+        resultPanel.style.flex = '1';
+      };
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', function(e) {
+      if (!activeHandle) return;
+      onDrag(e.clientX - startX);
+    });
+
+    document.addEventListener('mouseup', function() {
+      if (!activeHandle) return;
+      activeHandle.classList.remove('dragging');
+      activeHandle = null;
+      onDrag = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    });
+  })();
 
   // ── Boot ──
   connect();
