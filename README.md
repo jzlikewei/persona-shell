@@ -8,6 +8,8 @@
 > - 仅在你信任的机器上运行
 > - 不要将 Shell 暴露到公网（Web 控制台默认仅监听 localhost）
 > - 了解你的 `soul.md` 和 `personas/` 中定义的行为边界
+>
+> **当前的 `master_id` 机制仅做基础的本体识别，没有经过严格的权限模型设计。不推荐将 Bot 暴露给任意不可信用户。** 如果你的飞书 Bot 可被组织外成员触达，请自行在网络层或飞书应用可见范围中做额外限制。
 
 ## 设计理念
 
@@ -71,6 +73,7 @@ bun run dev
 feishu:
   app_id: "cli_xxxx"
   app_secret: "xxxx"
+  master_id: "ou_xxxx"                       # 本体的飞书 open_id（见下文）
 
 director:
   persona_dir: "~/.persona"               # 身份/记忆仓库路径
@@ -86,9 +89,14 @@ director:
 
 | 命令 | 作用域 | 说明 |
 |------|--------|------|
-| `/esc` | 当前会话 | 取消当前正在处理的消息（SIGINT + resume） |
-| `/flush` | 当前会话 | 有状态的上下文刷新（checkpoint → 杀进程 → 新 session → bootstrap） |
-| `/restart` | 全局 | 重启整个 Shell 进程（launchd 自动拉起，代码更新生效） |
+| `/esc` | 当前会话 | 取消当前正在处理的消息（SIGINT + resume）🔒 |
+| `/flush` | 当前会话 | 有状态的上下文刷新（checkpoint → 杀进程 → 新 session → bootstrap）🔒 |
+| `/restart` | 当前会话 | 重启当前 Director（保留 session，加载新配置）🔒 |
+| `/restart-shell` | 全局 | 重启整个 Shell 进程（launchd 自动拉起，代码更新生效）🔒 |
+| `/status` | 当前会话 | 查看 Director 状态摘要 |
+| `/help` | 全局 | 显示可用命令列表 |
+
+🔒 标记的命令仅限本体执行。配置 `feishu.master_id` 后，非本体发送这些命令会被静默忽略。未配置时所有用户均可执行（向后兼容）。
 
 命令语义详见 `docs/architecture.md` 附录 A。
 

@@ -416,8 +416,12 @@ async function main() {
     // Helper: resolve the target Director/queue for the current message context
     const getTargetEntry = () => routingKey ? pool.get(routingKey) : undefined;
 
+    /** 本体检查：配置了 master_id 时，仅本体可执行危险命令 */
+    const isMaster = !config.feishu.master_id || msg.senderOpenId === config.feishu.master_id;
+
     // /esc — cancel the oldest pending message (routes to correct Director)
     if (text.trim() === '/esc') {
+      if (!isMaster) return;
       const poolEntry = getTargetEntry();
       if (poolEntry) {
         const cancelled = poolEntry.queue.cancelOldest();
@@ -443,6 +447,7 @@ async function main() {
 
     // /flush — manually flush Director context (routes to correct Director)
     if (text.trim() === '/flush') {
+      if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       const targetDirector = poolEntry?.bridge ?? director;
@@ -458,6 +463,7 @@ async function main() {
 
     // /restart — restart current session's Director (routes to correct Director, preserves session)
     if (text.trim() === '/restart') {
+      if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       const targetDirector = poolEntry?.bridge ?? director;
@@ -471,6 +477,7 @@ async function main() {
 
     // /restart-shell — shutdown all Directors + exit Shell (launchd will respawn)
     if (text.trim() === '/restart-shell') {
+      if (!isMaster) return;
       await messaging.reply(messageId, 'Shell 正在重启...');
       console.log('[shell] /restart-shell: shutting down all Directors and exiting for launchd respawn');
       await pool.shutdownAll();
@@ -689,7 +696,7 @@ async function main() {
 
   console.log('[shell] Persona Shell started');
 
-  // Startup notification — check exit reason and send appropriate message
+  // Startup notification — send to p2p chat (lastChatId only tracks p2p)
   const lastChatId = messaging.getLastChatId();
   if (lastChatId) {
     const exitReason = getState<{ reason: string; downSeconds?: number; at?: string }>('exitReason');

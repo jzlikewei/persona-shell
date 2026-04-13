@@ -2,6 +2,7 @@
 feishu:
   app_id: "cli_xxxx"
   app_secret: "xxxx"
+  master_id: ""               # 本体的飞书 open_id（配置后仅本体可执行 /restart 等命令）
 
 director:
   persona_dir: "~/.persona"

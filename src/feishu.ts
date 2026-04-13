@@ -234,6 +234,8 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     'im.message.receive_v1': async (data) => {
       lastActiveTime = Date.now();
       const message = data.message;
+      const sender = (data as Record<string, unknown>).sender as { sender_id?: { open_id?: string } } | undefined;
+      const senderOpenId = sender?.sender_id?.open_id;
       const msgRaw = message as Record<string, unknown> | undefined;
       log.debug(`[feishu] event received: message_id=${message?.message_id ?? 'N/A'} chat_type=${msgRaw?.chat_type ?? 'N/A'} chat_mode=${msgRaw?.chat_mode ?? 'N/A'} thread_id=${msgRaw?.thread_id ?? msgRaw?.root_id ?? 'N/A'}`);
       if (!message) return;
@@ -252,13 +254,16 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         processedMessageIds.delete(first);
       }
 
-      // Persist chat_id to DB
-      setState('lastChatId', chat_id);
-
       const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
       const mentions = (message as Record<string, unknown>).mentions as Mention[] | undefined;
       const parentId = (message as Record<string, unknown>).parent_id as string | undefined;
       const chatType = ((message as Record<string, unknown>).chat_type as string) === 'group' ? 'group' : 'p2p';
+
+      // Persist p2p chat_id for main Director notifications.
+      // Group chats have their own chatId in DirectorPool entries — no need to track globally.
+      if (chatType === 'p2p') {
+        setState('lastChatId', chat_id);
+      }
 
       // Log raw message for debugging
       log.debug(`[feishu] raw ${msgType} content (${chatType}): ${content}`);
@@ -275,7 +280,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       }
 
       // Build IncomingMessage base (fetch chat info for groups)
-      const msg: IncomingMessage = { text: '', messageId: message_id, chatId: chat_id, chatType };
+      const msg: IncomingMessage = { text: '', messageId: message_id, chatId: chat_id, chatType, senderOpenId };
       if (chatType === 'group') {
         const info = await getChatInfo(chat_id);
         if (info) {

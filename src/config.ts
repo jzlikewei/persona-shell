@@ -7,6 +7,7 @@ export interface Config {
   feishu: {
     app_id: string;
     app_secret: string;
+    master_id?: string;
   };
   director: {
     persona_dir: string;
