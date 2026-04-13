@@ -94,8 +94,9 @@ function extractPostText(parsed: Record<string, unknown>, mentions?: Mention[]):
   return parts.join('\n');
 }
 
-/** Fetch a message by ID and extract its plain text (for quote-reply context). */
-async function fetchMessageText(client: Lark.Client, messageId: string): Promise<string> {
+/** Fetch a message by ID and extract its plain text (for quote-reply context).
+ *  When attachmentDir is provided, image/file/audio messages are downloaded and the path is returned. */
+async function fetchMessageText(client: Lark.Client, messageId: string, attachmentDir?: string): Promise<string> {
   try {
     const res = await client.im.v1.message.get({
       path: { message_id: messageId },
@@ -126,9 +127,31 @@ async function fetchMessageText(client: Lark.Client, messageId: string): Promise
       return extractPostText(parsed);
     }
 
-    if (msgType === 'image') return '[图片]';
-    if (msgType === 'file') return '[文件]';
-    if (msgType === 'audio') return '[语音]';
+    if (msgType === 'image') {
+      if (attachmentDir && parsed.image_key) {
+        const savePath = join(attachmentDir, `${messageId}.png`);
+        await client.im.v1.image.get({ path: { image_key: parsed.image_key } }).then((r) => r.writeFile(savePath));
+        return `[图片，已保存到 ${savePath}]`;
+      }
+      return '[图片]';
+    }
+    if (msgType === 'file') {
+      if (attachmentDir && parsed.file_key) {
+        const fileName = parsed.file_name as string | undefined;
+        const savePath = join(attachmentDir, `${messageId}_${fileName ?? 'file'}`);
+        await client.im.v1.file.get({ path: { file_key: parsed.file_key } }).then((r) => r.writeFile(savePath));
+        return `[文件 ${fileName ?? '未知文件'}，已保存到 ${savePath}]`;
+      }
+      return '[文件]';
+    }
+    if (msgType === 'audio') {
+      if (attachmentDir && parsed.file_key) {
+        const savePath = join(attachmentDir, `${messageId}.opus`);
+        await client.im.v1.file.get({ path: { file_key: parsed.file_key } }).then((r) => r.writeFile(savePath));
+        return `[语音，已保存到 ${savePath}]`;
+      }
+      return '[语音]';
+    }
     return '';
   } catch (err) {
     console.error(`[feishu] fetchMessageText ${messageId} failed:`, err);
@@ -357,7 +380,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
        *  Formatting and truncation is left to the consumer (routing layer). */
       const fetchQuote = async (): Promise<void> => {
         if (!parentId) return;
-        const quoted = await fetchMessageText(client, parentId);
+        const quoted = await fetchMessageText(client, parentId, attachmentDir);
         if (quoted) {
           msg.quotedText = quoted;
           log.debug(`[feishu] fetched quoted message ${parentId} (${quoted.length} chars)`);
