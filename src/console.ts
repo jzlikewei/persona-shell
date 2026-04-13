@@ -62,14 +62,14 @@ function parseConversationLog(inputLog: string, outputLog: string, limit: number
       try {
         const evt = JSON.parse(line);
         if (evt?.type === 'user' && evt.message?.content) {
-          inputs.push({ content: evt.message.content, director: evt.director, timestamp: evt.timestamp });
+          inputs.push({ content: evt.message.content, director: evt.director, timestamp: evt.timestamp || evt._ts });
         }
       } catch { /* skip malformed lines */ }
     }
   } catch { /* file read error */ }
 
-  // Parse output log — extract result events with response text + session_id + director
-  const outputs: Array<{ text: string; sessionId?: string; director?: string }> = [];
+  // Parse output log — extract result events with response text + session_id + director + timestamp
+  const outputs: Array<{ text: string; sessionId?: string; director?: string; timestamp?: string }> = [];
   try {
     const raw = readTail(outputLog, MAX_LOG_READ_BYTES);
     let pendingText = '';
@@ -96,7 +96,7 @@ function parseConversationLog(inputLog: string, outputLog: string, limit: number
             if (evt.session_id) lastSessionId = evt.session_id;
             const resultText = pendingText || (typeof evt.result === 'string' ? evt.result : '');
             if (resultText) {
-              outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector });
+              outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts });
             }
             pendingText = '';
           }
@@ -105,21 +105,20 @@ function parseConversationLog(inputLog: string, outputLog: string, limit: number
     } catch { /* file read error */ }
 
   // Per-director pairing: group inputs and outputs by director label, then pair within each group
-  // This handles multi-Director log mixing correctly
-  const directorInputs = new Map<string, string[]>();
-  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string }>>();
+  const directorInputs = new Map<string, Array<{ content: string; timestamp?: string }>>();
+  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string; timestamp?: string }>>();
 
   for (const inp of inputs) {
     const key = inp.director ?? 'main';
     const arr = directorInputs.get(key) ?? [];
-    arr.push(inp.content);
+    arr.push({ content: inp.content, timestamp: inp.timestamp });
     directorInputs.set(key, arr);
   }
 
   for (const out of outputs) {
     const key = out.director ?? 'main';
     const arr = directorOutputs.get(key) ?? [];
-    arr.push({ text: out.text, sessionId: out.sessionId });
+    arr.push({ text: out.text, sessionId: out.sessionId, timestamp: out.timestamp });
     directorOutputs.set(key, arr);
   }
 
@@ -136,7 +135,7 @@ function parseConversationLog(inputLog: string, outputLog: string, limit: number
     for (let i = 0; i < offset; i++) {
       const o = outs[i];
       if (sessionFilter && o.sessionId && o.sessionId !== sessionFilter) continue;
-      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId });
+      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId, timestamp: o.timestamp ? new Date(o.timestamp!).getTime() : undefined });
     }
 
     // Paired input/output
@@ -145,14 +144,15 @@ function parseConversationLog(inputLog: string, outputLog: string, limit: number
       const sessionId = oIdx < outs.length ? outs[oIdx].sessionId : undefined;
       if (sessionFilter && sessionId && sessionId !== sessionFilter) continue;
 
-      messages.push({ direction: 'in', content: ins[i], sessionId });
+      messages.push({ direction: 'in', content: ins[i].content, sessionId, timestamp: ins[i].timestamp ? new Date(ins[i].timestamp!).getTime() : undefined });
       if (oIdx < outs.length) {
-        messages.push({ direction: 'out', content: outs[oIdx].text, sessionId: outs[oIdx].sessionId });
+        messages.push({ direction: 'out', content: outs[oIdx].text, sessionId: outs[oIdx].sessionId, timestamp: outs[oIdx].timestamp ? new Date(outs[oIdx].timestamp!).getTime() : undefined });
       }
     }
   }
 
-  // Sort by original order (approximate: use array indices as proxy) and return
+  // Sort by timestamp when available (for multi-Director interleaving), then return tail
+  messages.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
   return messages.slice(-limit).reverse();
 }
 
@@ -180,7 +180,7 @@ function parseSessions(outputLog: string): SessionInfo[] {
 
           const entry = sessionMap.get(sid) || { count: 0 };
           entry.count++;
-          const timestamp = new Date().toISOString(); // approximate
+          const timestamp = evt._ts || evt.timestamp || new Date().toISOString();
           if (!entry.first) entry.first = timestamp;
           entry.last = timestamp;
           sessionMap.set(sid, entry);
@@ -313,8 +313,17 @@ export function startConsole(
 
   // Web chat 消息处理
   const chatHandlers: Array<(msg: import('./messaging.js').IncomingMessage) => Promise<void> | void> = [];
-  // messageId → WebSocket 连接，用于路由回复
-  const messageWsMap = new Map<string, any>();
+  // messageId → { ws, createdAt } 连接，用于路由回复
+  const messageWsMap = new Map<string, { ws: any; createdAt: number }>();
+
+  // 每 60s 清理超过 5 分钟未回复的 entries，防止内存泄漏
+  const MESSAGE_WS_TTL = 5 * 60 * 1000;
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, entry] of messageWsMap) {
+      if (now - entry.createdAt > MESSAGE_WS_TTL) messageWsMap.delete(id);
+    }
+  }, 60_000);
 
   if (!config.console.enabled) {
     console.log('[console] Web console disabled by config');
@@ -337,8 +346,11 @@ export function startConsole(
   /** 检查请求是否携带有效 token，未配置 token 时放行 */
   function checkAuth(req: Request): Response | null {
     if (!token) return null; // 未配置 token，放行
+    // 支持 Bearer token (HTTP API) 和 query param ?token=xxx (WebSocket)
     const auth = req.headers.get('Authorization');
     if (auth === `Bearer ${token}`) return null;
+    const url = new URL(req.url);
+    if (url.searchParams.get('token') === token) return null;
     return new Response('Unauthorized', { status: 401 });
   }
 
@@ -762,6 +774,10 @@ export function startConsole(
       },
       close(ws) {
         clients.delete(ws);
+        // Clean up pending chat entries for this connection
+        for (const [id, entry] of messageWsMap) {
+          if (entry.ws === ws) messageWsMap.delete(id);
+        }
       },
       async message(ws, data) {
         try {
@@ -776,7 +792,7 @@ export function startConsole(
           } else if (msg.type === 'chat' && msg.text) {
             // Web chat 消息 → 走 MessagingClient handler
             const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-            messageWsMap.set(messageId, ws);
+            messageWsMap.set(messageId, { ws, createdAt: Date.now() });
             for (const handler of chatHandlers) {
               try {
                 await handler({
@@ -804,9 +820,9 @@ export function startConsole(
     start() { /* already started above */ },
     onMessage(handler) { chatHandlers.push(handler); },
     async reply(messageId, text) {
-      const ws = messageWsMap.get(messageId);
-      if (ws) {
-        ws.send(JSON.stringify({ type: 'chat_reply', messageId, text }));
+      const entry = messageWsMap.get(messageId);
+      if (entry) {
+        try { entry.ws.send(JSON.stringify({ type: 'chat_reply', messageId, text })); } catch { /* client gone */ }
         messageWsMap.delete(messageId);
       }
     },
