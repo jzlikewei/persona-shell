@@ -441,7 +441,7 @@ export function startConsole(
           recent: recentTasks,
         },
         pool: pool ? pool.getPoolStatus().map((entry) => ({
-          chatId: entry.chatId,
+          routingKey: entry.routingKey,
           groupName: entry.groupName,
           label: entry.label,
           lastActiveAt: entry.lastActiveAt,
@@ -635,7 +635,7 @@ export function startConsole(
             if (directorLabel && pool) {
               const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
               if (entry) {
-                const poolEntry = pool.get(entry.chatId);
+                const poolEntry = pool.get(entry.routingKey);
                 if (poolEntry) targetDirector = poolEntry.director;
               }
             }
@@ -647,7 +647,7 @@ export function startConsole(
             if (directorLabel && pool) {
               const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
               if (entry) {
-                const poolEntry = pool.get(entry.chatId);
+                const poolEntry = pool.get(entry.routingKey);
                 if (poolEntry) targetDirector = poolEntry.director;
               }
             }

@@ -27,8 +27,6 @@ export interface DirectorOptions {
   isMain?: boolean;
   /** 群聊名称，非主 Director 用于 bootstrap 消息 */
   groupName?: string;
-  /** Per-Director MCP 配置文件路径（非主 Director 用独立配置以注入 DIRECTOR_LABEL） */
-  mcpConfigPath?: string;
 }
 
 export class Director extends EventEmitter {
@@ -36,7 +34,6 @@ export class Director extends EventEmitter {
   readonly label: string;
   readonly isMain: boolean;
   private groupName?: string;
-  private customMcpConfigPath?: string;
   private pipeIn: string;
   private pipeOut: string;
   private pipeDir: string;
@@ -55,6 +52,12 @@ export class Director extends EventEmitter {
   private lastInputTokens = 0;
   private pendingCount = 0;
   private systemReplyQueue: string[] = [];
+  /** 有序响应分派队列 — 每条发出的消息按序记录类型，result 到达时 shift 出来决定如何分派 */
+  private pendingTypes: Array<
+    | { type: 'user' }
+    | { type: 'system-absorbed' }
+    | { type: 'system-reply'; replyToMessageId: string }
+  > = [];
   /** 系统消息（cron director_msg 等）的待处理计数，响应会被吸收不转发用户 */
   private systemMessagePending = 0;
   private bootstrapping = false;
@@ -92,7 +95,6 @@ export class Director extends EventEmitter {
       this.label = configOrOptions.label;
       this.isMain = configOrOptions.isMain ?? true;
       this.groupName = configOrOptions.groupName;
-      this.customMcpConfigPath = configOrOptions.mcpConfigPath;
     } else {
       // Legacy: Config['director'] — backward compatible
       this.config = configOrOptions;
@@ -467,6 +469,7 @@ export class Director extends EventEmitter {
       this.lastTimeSyncAt = now;
     }
 
+    this.pendingTypes.push({ type: 'user' });
     this.pendingCount++;
     await this.writeRaw(content);
   }
@@ -474,11 +477,13 @@ export class Director extends EventEmitter {
   /** 发送系统消息给 Director（如 cron director_msg），响应会被吸收不转发给用户 */
   async sendSystemMessage(msg: string): Promise<void> {
     if (!this.writeHandle || this.flushing) return;
+    this.pendingTypes.push({ type: 'system-absorbed' });
     this.systemMessagePending++;
     this.pendingCount++;
     try {
       await this.writeRaw(msg);
     } catch {
+      this.pendingTypes.pop();
       this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
       this.decrementPending();
     }
@@ -506,7 +511,10 @@ export class Director extends EventEmitter {
     if (!this.writeHandle || this.flushing) return;
     this.pendingCount++;
     if (replyToMessageId) {
+      this.pendingTypes.push({ type: 'system-reply', replyToMessageId });
       this.systemReplyQueue.push(replyToMessageId);
+    } else {
+      this.pendingTypes.push({ type: 'system-absorbed' });
     }
     const tag = success ? 'TASK_DONE' : 'TASK_FAILED';
     const msg = success
@@ -516,6 +524,7 @@ export class Director extends EventEmitter {
       await this.writeRaw(msg);
     } catch {
       this.decrementPending();
+      this.pendingTypes.pop();
       if (replyToMessageId) this.systemReplyQueue.pop();
     }
   }
@@ -655,9 +664,7 @@ export class Director extends EventEmitter {
 
   private spawnDirector(): void {
     const personaDir = this.config.persona_dir;
-    // Per-Director MCP config: non-main Directors use their own config (with DIRECTOR_LABEL),
-    // main Director uses the shared config in persona_dir
-    const mcpConfigPath = this.customMcpConfigPath ?? join(personaDir, '.mcp.json');
+    const mcpConfigPath = join(personaDir, '.mcp.json');
 
     const savedSession = this.readSession();
     if (savedSession) {
@@ -684,6 +691,7 @@ export class Director extends EventEmitter {
       pipeIn: this.pipeIn,
       pipeOut: this.pipeOut,
       stderrPath: join(this.pipeDir, 'director-stderr.log'),
+      env: { DIRECTOR_LABEL: this.label },
     });
 
     if (child.pid) {
@@ -734,8 +742,10 @@ export class Director extends EventEmitter {
             if (event.message?.content) {
               const content = event.message.content;
               // Should we stream chunks to listeners?
+              // Peek at pendingTypes head to know if current response is for a user message
+              const headType = this.pendingTypes[0]?.type;
               const shouldStream = !this.flushing && !this.bootstrapping
-                && this.systemMessagePending <= 0 && !this.discardNextResponse;
+                && headType === 'user' && !this.discardNextResponse;
               if (typeof content === 'string') {
                 currentResponse += content;
                 if (shouldStream && content) this.emit('chunk', content);
@@ -786,11 +796,6 @@ export class Director extends EventEmitter {
               this.totalCostUsd += event.cost_usd;
             }
 
-            // Increment daily message counter for user-facing responses
-            if (!this.flushing && this.systemMessagePending <= 0 && !this.discardNextResponse) {
-              this.messagesProcessedToday++;
-            }
-
             // Clear current message tracking
             this.currentMessagePreview = null;
             this.currentMessageStartedAt = null;
@@ -808,10 +813,6 @@ export class Director extends EventEmitter {
                 log.debug(`[director:${this.label}] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushBootstrapResolve();
                 this.flushBootstrapResolve = null;
-              } else if (this.systemMessagePending > 0) {
-                // 系统消息响应（cron director_msg 等）— 吸收，不转发用户
-                log.debug(`[director:${this.label}] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
-                this.systemMessagePending--;
               } else if (this.discardNextResponse) {
                 // Late response after flush timeout — discard silently
                 log.debug(`[director:${this.label}] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
@@ -824,13 +825,21 @@ export class Director extends EventEmitter {
                   this.bootstrapResolve();
                   this.bootstrapResolve = null;
                 }
-              } else if (this.systemReplyQueue.length > 0) {
-                // System message response (task notification) — emit with feishu messageId for reply
-                const replyTo = this.systemReplyQueue.shift()!;
-                log.debug(`[director:${this.label}] System message response (replyTo=${replyTo}): ${currentResponse.trim().slice(0, 100)}`);
-                this.emit('system-response', currentResponse.trim(), replyTo);
               } else {
-                this.emit('response', currentResponse.trim(), event.duration_ms);
+                // Ordered dispatch: shift from pendingTypes to determine response type
+                const pending = this.pendingTypes.shift();
+                if (!pending || pending.type === 'user') {
+                  this.messagesProcessedToday++;
+                  this.emit('response', currentResponse.trim(), event.duration_ms);
+                } else if (pending.type === 'system-reply') {
+                  this.systemReplyQueue.shift();
+                  log.debug(`[director:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${currentResponse.trim().slice(0, 100)}`);
+                  this.emit('system-response', currentResponse.trim(), pending.replyToMessageId);
+                } else {
+                  // system-absorbed — cron director_msg, task notification without messageId
+                  this.systemMessagePending--;
+                  log.debug(`[director:${this.label}] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
+                }
               }
               currentResponse = '';
             }
@@ -861,6 +870,9 @@ export class Director extends EventEmitter {
 
       // Reset pending count — any in-flight messages are lost with the pipe
       this.pendingCount = 0;
+      this.pendingTypes = [];
+      this.systemReplyQueue = [];
+      this.systemMessagePending = 0;
       if (this.drainResolve) {
         this.drainResolve();
         this.drainResolve = null;

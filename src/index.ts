@@ -75,6 +75,7 @@ async function main() {
   }
 
   // 7.0: Write .mcp.json BEFORE director.start() so Claude Code discovers task MCP server on spawn
+  // DIRECTOR_LABEL is NOT in this config — it's injected via process env by each Director's spawn
   const mcpConfig = {
     mcpServers: {
       'persona-tasks': {
@@ -82,20 +83,12 @@ async function main() {
         args: ['run', join(import.meta.dirname, 'task-mcp-server.ts')],
         env: {
           SHELL_PORT: String(config.console.port),
-          DIRECTOR_LABEL: 'main',
           ...(config.console.token ? { SHELL_TOKEN: config.console.token } : {}),
         },
       },
     },
   };
   writeFileSync(join(config.director.persona_dir, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
-
-  // MCP config params for pool Directors (per-Director configs with DIRECTOR_LABEL)
-  const mcpParams = {
-    serverPath: join(import.meta.dirname, 'task-mcp-server.ts'),
-    port: config.console.port,
-    token: config.console.token,
-  };
 
   // Start director process
   const freshStart = await director.start();
@@ -109,7 +102,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.director, messaging, mcpParams);
+  const pool = new DirectorPool(director, config.pool, config.director, messaging);
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({

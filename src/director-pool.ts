@@ -1,6 +1,4 @@
 import { createHash } from 'crypto';
-import { writeFileSync } from 'fs';
-import { join } from 'path';
 import { EventEmitter } from 'events';
 import { Director, type DirectorOptions } from './director.js';
 import { MessageQueue, type QueueItem } from './queue.js';
@@ -12,13 +10,6 @@ export interface PoolConfig {
   max_directors: number;
   idle_timeout_minutes: number;
   small_group_threshold: number;
-}
-
-/** MCP 配置模板参数，用于生成 per-Director .mcp.json */
-export interface McpConfigParams {
-  serverPath: string;  // task-mcp-server.ts 的绝对路径
-  port: number;
-  token?: string;
 }
 
 export interface PoolEntry {
@@ -37,7 +28,6 @@ export class DirectorPool extends EventEmitter {
   private poolConfig: PoolConfig;
   private directorConfig: Config['director'];
   private messaging: MessagingClient;
-  private mcpParams: McpConfigParams;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
@@ -45,14 +35,12 @@ export class DirectorPool extends EventEmitter {
     poolConfig: PoolConfig,
     directorConfig: Config['director'],
     messaging: MessagingClient,
-    mcpParams: McpConfigParams,
   ) {
     super();
     this.mainDirector = mainDirector;
     this.poolConfig = poolConfig;
     this.directorConfig = directorConfig;
     this.messaging = messaging;
-    this.mcpParams = mcpParams;
 
     // Start idle Director reaper — check every minute, shutdown Directors
     // that have been idle longer than idle_timeout_minutes
@@ -117,17 +105,11 @@ export class DirectorPool extends EventEmitter {
     const name = opts.groupName ?? routingKey.slice(0, 8);
     console.log(`[pool] Creating Director for group "${name}" (label=${label})`);
 
-    // Write per-Director MCP config with DIRECTOR_LABEL
-    const pipeDir = join(this.directorConfig.pipe_dir, label);
-    const mcpConfigPath = join(pipeDir, '.mcp.json');
-    this.writeMcpConfig(mcpConfigPath, label);
-
     const director = new Director({
       config: this.directorConfig,
       label,
       isMain: false,
       groupName: name,
-      mcpConfigPath,
     } satisfies DirectorOptions);
 
     const queue = new MessageQueue(`logs/queue-${label}.log`);
@@ -152,24 +134,6 @@ export class DirectorPool extends EventEmitter {
     await director.bootstrap();
 
     return entry;
-  }
-
-  /** Write per-Director MCP config to the specified path */
-  private writeMcpConfig(configPath: string, directorLabel: string): void {
-    const config = {
-      mcpServers: {
-        'persona-tasks': {
-          command: 'bun',
-          args: ['run', this.mcpParams.serverPath],
-          env: {
-            SHELL_PORT: String(this.mcpParams.port),
-            DIRECTOR_LABEL: directorLabel,
-            ...(this.mcpParams.token ? { SHELL_TOKEN: this.mcpParams.token } : {}),
-          },
-        },
-      },
-    };
-    writeFileSync(configPath, JSON.stringify(config, null, 2));
   }
 
   /** Send a message to a group Director, managing queue correlation */
@@ -198,9 +162,7 @@ export class DirectorPool extends EventEmitter {
     if (!entry) {
       console.warn(`[pool] Director ${label} not found for task callback, cannot revive (routing context lost)`);
       // Fallback: notify main Director
-      this.mainDirector.notifyTaskDone(taskId, success, notifyMsgId).catch((err) => {
-        console.warn('[pool] Fallback notifyTaskDone to main failed:', err);
-      });
+      await this.mainDirector.notifyTaskDone(taskId, success, notifyMsgId);
       return;
     }
 
@@ -252,7 +214,7 @@ export class DirectorPool extends EventEmitter {
 
   /** Get status of all pool entries for dashboard */
   getPoolStatus(): Array<{
-    chatId: string;
+    routingKey: string;
     groupName: string;
     label: string;
     lastActiveAt: number;
@@ -260,7 +222,7 @@ export class DirectorPool extends EventEmitter {
     queueLength: number;
   }> {
     return [...this.entries.values()].map((entry) => ({
-      chatId: entry.routingKey,
+      routingKey: entry.routingKey,
       groupName: entry.groupName,
       label: entry.director.label,
       lastActiveAt: entry.lastActiveAt,

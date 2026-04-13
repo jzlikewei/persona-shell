@@ -37,6 +37,8 @@ export interface PersonaSpawnOptions {
   stderrPath?: string;
   /** 额外 CLI 参数 */
   extraArgs?: string[];
+  /** 额外环境变量（与 process.env 合并后传给子进程） */
+  env?: Record<string, string>;
 }
 
 export interface SpawnResult {
@@ -143,6 +145,11 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   if (!existsSync(stderrDir)) mkdirSync(stderrDir, { recursive: true });
   const stderrFd = openSync(stderrPath, 'a');
 
+  // Merge extra env vars (e.g. DIRECTOR_LABEL) into process env for child
+  const childEnv = options.env
+    ? { ...process.env, ...options.env }
+    : undefined;  // undefined = inherit parent env as-is
+
   let child: ChildProcess;
 
   if (options.mode === 'foreground' && options.pipeIn && options.pipeOut) {
@@ -152,6 +159,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       detached: true,
       stdio: ['ignore', 'ignore', stderrFd],
       cwd: options.personaDir,
+      env: childEnv,
     });
   } else {
     // background：stdout pipe 用于读取 stream-json 输出
@@ -159,6 +167,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       detached: true,
       stdio: ['ignore', 'pipe', stderrFd],
       cwd: options.personaDir,
+      env: childEnv,
     });
   }
 
