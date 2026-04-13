@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
-import { Director, type DirectorOptions } from './director.js';
+import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import type { Config } from './config.js';
 import type { MessagingClient } from './messaging.js';
@@ -13,7 +13,7 @@ export interface PoolConfig {
 }
 
 export interface PoolEntry {
-  director: Director;
+  bridge: SessionBridge;
   queue: MessageQueue;
   routingKey: string;       // Map key（chatId 或 threadId）
   feishuChatId: string;     // 实际的飞书 chatId（oc_xxx），用于 sendMessage
@@ -24,20 +24,20 @@ export interface PoolEntry {
 export class DirectorPool extends EventEmitter {
   private entries: Map<string, PoolEntry> = new Map();
   private creating: Map<string, Promise<PoolEntry>> = new Map();
-  private mainDirector: Director;
+  private mainBridge: SessionBridge;
   private poolConfig: PoolConfig;
   private directorConfig: Config['director'];
   private messaging: MessagingClient;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
-    mainDirector: Director,
+    mainBridge: SessionBridge,
     poolConfig: PoolConfig,
     directorConfig: Config['director'],
     messaging: MessagingClient,
   ) {
     super();
-    this.mainDirector = mainDirector;
+    this.mainBridge = mainBridge;
     this.poolConfig = poolConfig;
     this.directorConfig = directorConfig;
     this.messaging = messaging;
@@ -49,9 +49,9 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  /** Get the main (p2p) Director */
-  getMain(): Director {
-    return this.mainDirector;
+  /** Get the main (p2p) SessionBridge */
+  getMain(): SessionBridge {
+    return this.mainBridge;
   }
 
   /** Get a group Director if it exists (by routingKey) */
@@ -62,7 +62,7 @@ export class DirectorPool extends EventEmitter {
   /** Find a pool entry by Director label (for task callback routing) */
   findByLabel(label: string): PoolEntry | undefined {
     for (const entry of this.entries.values()) {
-      if (entry.director.label === label) return entry;
+      if (entry.bridge.label === label) return entry;
     }
     return undefined;
   }
@@ -103,24 +103,24 @@ export class DirectorPool extends EventEmitter {
 
     const label = routingKeyToLabel(routingKey);
     const name = opts.groupName ?? routingKey.slice(0, 8);
-    console.log(`[pool] Creating Director for group "${name}" (label=${label})`);
+    console.log(`[pool] Creating session bridge for group "${name}" (label=${label})`);
 
-    const director = new Director({
+    const bridge = new SessionBridge({
       config: this.directorConfig,
       label,
       isMain: false,
       groupName: name,
-    } satisfies DirectorOptions);
+    } satisfies SessionBridgeOptions);
 
     const queue = new MessageQueue(`logs/queue-${label}.log`);
 
-    await director.start();
+    await bridge.start();
 
     // Wire events BEFORE bootstrap so response handler is ready
-    this.wireEvents(director, queue, routingKey, opts.feishuChatId, name);
+    this.wireEvents(bridge, queue, routingKey, opts.feishuChatId, name);
 
     const entry: PoolEntry = {
-      director,
+      bridge,
       queue,
       routingKey,
       feishuChatId: opts.feishuChatId,
@@ -131,7 +131,7 @@ export class DirectorPool extends EventEmitter {
 
     // Await bootstrap completion — ensures user messages sent after getOrCreate()
     // won't be merged into the bootstrap turn by Claude Code
-    await director.bootstrap();
+    await bridge.bootstrap();
 
     return entry;
   }
@@ -146,7 +146,7 @@ export class DirectorPool extends EventEmitter {
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
-      await entry.director.send(text);
+      await entry.bridge.send(text);
     } catch (err) {
       entry.queue.resolve(correlationId);
       throw err;
@@ -162,12 +162,12 @@ export class DirectorPool extends EventEmitter {
     if (!entry) {
       console.warn(`[pool] Director ${label} not found for task callback, cannot revive (routing context lost)`);
       // Fallback: notify main Director
-      await this.mainDirector.notifyTaskDone(taskId, success, notifyMsgId);
+      await this.mainBridge.notifyTaskDone(taskId, success, notifyMsgId);
       return;
     }
 
     // Check if Director is alive, revive if dead
-    if (!entry.director.getStatus().alive) {
+    if (!entry.bridge.getStatus().alive) {
       console.log(`[pool] Reviving dead Director "${entry.groupName}" (label=${label}) for task callback`);
       // Re-create the Director
       const routingKey = entry.routingKey;
@@ -180,7 +180,7 @@ export class DirectorPool extends EventEmitter {
       entry = newEntry;
     }
 
-    await entry.director.notifyTaskDone(taskId, success, notifyMsgId);
+    await entry.bridge.notifyTaskDone(taskId, success, notifyMsgId);
   }
 
   /** Get the feishuChatId for a Director by label (for sending notification messages) */
@@ -196,7 +196,7 @@ export class DirectorPool extends EventEmitter {
 
     console.log(`[pool] Shutting down Director for group "${entry.groupName}"`);
     this.entries.delete(routingKey);
-    await entry.director.shutdown();
+    await entry.bridge.shutdown();
   }
 
   /** Shutdown all non-main Directors */
@@ -218,15 +218,15 @@ export class DirectorPool extends EventEmitter {
     groupName: string;
     label: string;
     lastActiveAt: number;
-    directorStatus: ReturnType<Director['getStatus']>;
+    directorStatus: ReturnType<SessionBridge['getStatus']>;
     queueLength: number;
   }> {
     return [...this.entries.values()].map((entry) => ({
       routingKey: entry.routingKey,
       groupName: entry.groupName,
-      label: entry.director.label,
+      label: entry.bridge.label,
       lastActiveAt: entry.lastActiveAt,
-      directorStatus: entry.director.getStatus(),
+      directorStatus: entry.bridge.getStatus(),
       queueLength: entry.queue.length,
     }));
   }
@@ -249,10 +249,10 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  /** Wire Director events for a group chat Director */
-  private wireEvents(director: Director, queue: MessageQueue, routingKey: string, feishuChatId: string, groupName: string): void {
+  /** Wire SessionBridge events for a group chat */
+  private wireEvents(bridge: SessionBridge, queue: MessageQueue, routingKey: string, feishuChatId: string, groupName: string): void {
     // response → resolve oldest queue item → reply to feishu
-    director.on('response', async (reply: string, durationMs?: number) => {
+    bridge.on('response', async (reply: string, durationMs?: number) => {
       const item = queue.resolveOldest();
       if (!item) {
         console.warn(`[pool:${groupName}] Got response but queue is empty`);
@@ -275,8 +275,8 @@ export class DirectorPool extends EventEmitter {
       }
     });
 
-    // system-response → reply to task notification message (same as main Director)
-    director.on('system-response', async (reply: string, replyToMessageId: string) => {
+    // system-response → reply to task notification message
+    bridge.on('system-response', async (reply: string, replyToMessageId: string) => {
       try {
         await this.messaging.reply(replyToMessageId, reply);
         log.debug(`[pool:${groupName}] System response replied to ${replyToMessageId}`);
@@ -285,28 +285,28 @@ export class DirectorPool extends EventEmitter {
       }
     });
 
-    // close → remove from pool (non-main Director does not exit process)
-    director.on('close', () => {
-      console.log(`[pool] Director for group "${groupName}" closed, removing from pool`);
+    // close → remove from pool
+    bridge.on('close', () => {
+      console.log(`[pool] Session bridge for group "${groupName}" closed, removing from pool`);
       this.entries.delete(routingKey);
     });
 
     // alert → forward to group chat (use feishuChatId, not routingKey)
-    director.on('alert', (message: string) => {
+    bridge.on('alert', (message: string) => {
       this.messaging.sendMessage(feishuChatId, message).catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send alert:`, err);
       });
     });
 
     // auto-flush-complete → notify group chat
-    director.on('auto-flush-complete', () => {
+    bridge.on('auto-flush-complete', () => {
       this.messaging.sendMessage(feishuChatId, '🔄 上下文已自动刷新').catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send flush notification:`, err);
       });
     });
 
     // flush-drain-complete → clear orphaned queue items
-    director.on('flush-drain-complete', () => {
+    bridge.on('flush-drain-complete', () => {
       const orphaned = queue.clearAll();
       if (orphaned.length > 0) {
         console.log(`[pool:${groupName}] Cleared ${orphaned.length} orphaned queue items after flush drain`);
@@ -314,11 +314,11 @@ export class DirectorPool extends EventEmitter {
     });
 
     // chunk / stream-abort → re-emit on pool level for console broadcast
-    director.on('chunk', (text: string) => {
-      this.emit('chunk', director.label, text);
+    bridge.on('chunk', (text: string) => {
+      this.emit('chunk', bridge.label, text);
     });
-    director.on('stream-abort', () => {
-      this.emit('stream-abort', director.label);
+    bridge.on('stream-abort', () => {
+      this.emit('stream-abort', bridge.label);
     });
   }
 

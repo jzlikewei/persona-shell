@@ -1,13 +1,11 @@
 import { EventEmitter } from 'events';
-import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
-import { open } from 'fs/promises';
 import { join } from 'path';
 import { createInterface } from 'readline';
 import type { Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
 import { getState, setState, listTasks } from './task-store.js';
-import { spawnPersona } from './persona-process.js';
+import { ClaudeProcess } from './claude-process.js';
 import { log } from './logger.js';
 
 /** Base log directory */
@@ -19,7 +17,7 @@ interface DirectorPersistedState {
   contextWindow: number;
 }
 
-export interface DirectorOptions {
+export interface SessionBridgeOptions {
   config: Config['director'];
   /** 唯一标识，如 'main' 或 chatId 的短 hash */
   label: string;
@@ -29,15 +27,12 @@ export interface DirectorOptions {
   groupName?: string;
 }
 
-export class Director extends EventEmitter {
+export class SessionBridge extends EventEmitter {
   private config: Config['director'];
   readonly label: string;
   readonly isMain: boolean;
   private groupName?: string;
-  private pipeIn: string;
-  private pipeOut: string;
-  private pipeDir: string;
-  private pidFile: string;
+  private process: ClaudeProcess;
   private writeHandle: FileHandle | null = null;
   private sessionFile: string;
   private sessionId: string | null = null;
@@ -84,13 +79,13 @@ export class Director extends EventEmitter {
 
   /**
    * @param configOrOptions — 兼容两种调用方式：
-   *   - `new Director(config.director)` — 向后兼容，默认 label='main', isMain=true
-   *   - `new Director({ config, label, isMain, groupName })` — 新版多实例
+   *   - `new SessionBridge(config.director)` — 向后兼容，默认 label='main', isMain=true
+   *   - `new SessionBridge({ config, label, isMain, groupName })` — 新版多实例
    */
-  constructor(configOrOptions: Config['director'] | DirectorOptions) {
+  constructor(configOrOptions: Config['director'] | SessionBridgeOptions) {
     super();
     if ('config' in configOrOptions) {
-      // New-style: DirectorOptions
+      // New-style: SessionBridgeOptions
       this.config = configOrOptions.config;
       this.label = configOrOptions.label;
       this.isMain = configOrOptions.isMain ?? true;
@@ -103,19 +98,12 @@ export class Director extends EventEmitter {
     }
 
     // 路径参数化：主 Director 保持旧路径（向后兼容），非主用子目录
-    if (this.isMain) {
-      this.pipeDir = this.config.pipe_dir;
-      this.pipeIn = join(this.pipeDir, 'director-in');
-      this.pipeOut = join(this.pipeDir, 'director-out');
-      this.sessionFile = join(this.pipeDir, 'director-session');
-      this.pidFile = this.config.pid_file;
-    } else {
-      this.pipeDir = join(this.config.pipe_dir, this.label);
-      this.pipeIn = join(this.pipeDir, 'director-in');
-      this.pipeOut = join(this.pipeDir, 'director-out');
-      this.sessionFile = join(this.pipeDir, 'session');
-      this.pidFile = join(this.pipeDir, 'director.pid');
-    }
+    const pipeDir = this.isMain ? this.config.pipe_dir : join(this.config.pipe_dir, this.label);
+    const pidFile = this.isMain ? this.config.pid_file : join(pipeDir, 'director.pid');
+    this.process = new ClaudeProcess({ pipeDir, pidFile, label: this.label });
+    this.sessionFile = this.isMain
+      ? join(pipeDir, 'director-session')
+      : join(pipeDir, 'session');
   }
 
   /** State key parameterized by label: 'director:main', 'director:abc12345', etc. */
@@ -169,38 +157,30 @@ export class Director extends EventEmitter {
   private static readonly PIPE_OPEN_TIMEOUT = 30_000; // 30 seconds
 
   async start(): Promise<boolean> {
-    this.ensurePipeDir();
+    this.process.ensurePipeDir();
 
     let freshStart = true;
-    if (this.isDirectorAlive()) {
-      console.log(`[director:${this.label}] Existing director process found (pid: ${this.readPid()}), reconnecting...`);
+    if (this.process.isAlive()) {
+      console.log(`[director:${this.label}] Existing process found (pid: ${this.process.getPid()}), reconnecting...`);
       freshStart = false;
     } else {
-      this.ensurePipes();
-      this.spawnDirector();
+      this.process.ensurePipes();
+      this.spawnProcess();
     }
 
-    // Open both pipe ends concurrently — this unblocks the shell's FIFO opens
+    // Open both pipe ends concurrently — this unblocks the FIFO handshake
     // Timeout prevents indefinite hang if the process died between alive check and pipe open
-    const pipeOpenResult = await Promise.race([
-      Promise.all([
-        open(this.pipeIn, 'w'),
-        open(this.pipeOut, 'r'),
-      ]),
-      this.timeout(Director.PIPE_OPEN_TIMEOUT).then(() => null),
-    ]);
+    const handles = await this.process.openPipes(SessionBridge.PIPE_OPEN_TIMEOUT);
 
-    if (!pipeOpenResult) {
-      throw new Error(`[director:${this.label}] Pipe open timeout after ${Director.PIPE_OPEN_TIMEOUT / 1000}s — process may have died`);
+    if (!handles) {
+      throw new Error(`[director:${this.label}] Pipe open timeout after ${SessionBridge.PIPE_OPEN_TIMEOUT / 1000}s — process may have died`);
     }
 
-    const [writeHandle, readHandle] = pipeOpenResult;
-
-    this.writeHandle = writeHandle;
+    this.writeHandle = handles.writeHandle;
     this.sessionId = this.readSession();
     console.log(`[director:${this.label}] Pipes connected`);
 
-    this.listenOutput(readHandle);
+    this.listenOutput(handles.readHandle);
 
     return freshStart;
   }
@@ -212,13 +192,13 @@ export class Director extends EventEmitter {
       return;
     }
 
-    const pid = this.readPid();
+    const pid = this.process.getPid();
     if (!pid) return;
 
     this.interrupted = true;
     console.log(`[director:${this.label}] Interrupting (pid: ${pid})...`);
 
-    try { process.kill(-pid, 'SIGINT'); } catch { /* already dead */ }
+    this.process.kill('SIGINT');
 
     // Wait for close handler to finish restart
     await new Promise<void>((resolve) => {
@@ -244,10 +224,7 @@ export class Director extends EventEmitter {
     // Non-main Directors: skip checkpoint, just kill and restart
     if (!this.isMain) {
       this.flushing = true;
-      const pid = this.readPid();
-      if (pid) {
-        try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
-      }
+      this.process.kill('SIGTERM');
       this.clearSession();
       await this.restart();
       this.finishFlush();
@@ -274,7 +251,7 @@ export class Director extends EventEmitter {
     // Drain: wait for in-flight messages to complete
     if (this.pendingCount > 0) {
       console.log(`[director:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
-      const drained = await this.waitForDrain(Director.FLUSH_STEP_TIMEOUT);
+      const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
       if (!drained) {
         console.warn(`[director:${this.label}] FLUSH: drain timeout, aborting flush`);
         this.flushing = false;
@@ -298,7 +275,7 @@ export class Director extends EventEmitter {
 
     const checkpointOk = await Promise.race([
       checkpointDone.then(() => true),
-      this.timeout(Director.FLUSH_STEP_TIMEOUT).then(() => false),
+      this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!checkpointOk) {
       console.warn(`[director:${this.label}] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset`);
@@ -312,10 +289,7 @@ export class Director extends EventEmitter {
     }
 
     // Step 2 - Reset: kill process + clear session + clean pipes
-    const pid = this.readPid();
-    if (pid) {
-      try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
-    }
+    this.process.kill('SIGTERM');
 
     this.clearSession();
     await this.restart();
@@ -331,7 +305,7 @@ export class Director extends EventEmitter {
 
     const bootstrapOk = await Promise.race([
       bootstrapDone.then(() => true),
-      this.timeout(Director.FLUSH_STEP_TIMEOUT).then(() => false),
+      this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!bootstrapOk) {
       console.warn(`[director:${this.label}] FLUSH: bootstrap timeout — forcing flush finish`);
@@ -396,8 +370,8 @@ export class Director extends EventEmitter {
     }
 
     return {
-      alive: this.isDirectorAlive(),
-      pid: this.readPid(),
+      alive: this.process.isAlive(),
+      pid: this.process.getPid(),
       sessionId: this.sessionId,
       sessionName: this.sessionName,
       flushing: this.flushing,
@@ -418,10 +392,7 @@ export class Director extends EventEmitter {
   /** 公开的重启方法：杀掉当前进程并重新启动（保留 session，加载新配置） */
   async restartDirector(): Promise<void> {
     this.explicitRestart = true;
-    const pid = this.readPid();
-    if (pid) {
-      try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
-    }
+    this.process.kill('SIGTERM');
     // Wait for close handler to finish restart (it checks explicitRestart flag)
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -464,10 +435,10 @@ export class Director extends EventEmitter {
     // Wait for bootstrap response with timeout — prevents indefinite hang
     const timedOut = await Promise.race([
       done.then(() => false),
-      this.timeout(Director.BOOTSTRAP_TIMEOUT).then(() => true),
+      this.timeout(SessionBridge.BOOTSTRAP_TIMEOUT).then(() => true),
     ]);
     if (timedOut) {
-      console.warn(`[director:${this.label}] Bootstrap timeout after ${Director.BOOTSTRAP_TIMEOUT / 1000}s, continuing without bootstrap response`);
+      console.warn(`[director:${this.label}] Bootstrap timeout after ${SessionBridge.BOOTSTRAP_TIMEOUT / 1000}s, continuing without bootstrap response`);
       this.bootstrapping = false;
       this.bootstrapResolve = null;
       this.decrementPending();
@@ -566,8 +537,7 @@ export class Director extends EventEmitter {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
 
-    const pid = this.readPid();
-    if (!pid || !this.isDirectorAlive()) {
+    if (!this.process.isAlive()) {
       // Already dead, just clean up
       await this.writeHandle?.close();
       this.writeHandle = null;
@@ -576,7 +546,7 @@ export class Director extends EventEmitter {
 
     return new Promise<void>((resolve) => {
       this.shutdownResolve = resolve;
-      try { process.kill(-pid, 'SIGTERM'); } catch { /* already dead */ }
+      this.process.kill('SIGTERM');
       // Safety timeout — if pipe close never fires
       setTimeout(() => {
         if (this.shutdownResolve) {
@@ -666,31 +636,13 @@ export class Director extends EventEmitter {
     await this.writeHandle?.close();
     this.writeHandle = null;
 
-    for (const pipe of [this.pipeIn, this.pipeOut]) {
-      try { unlinkSync(pipe); } catch { /* ok */ }
-    }
+    this.process.cleanPipes();
 
     await this.start();
   }
 
-  private ensurePipeDir(): void {
-    if (!existsSync(this.pipeDir)) {
-      mkdirSync(this.pipeDir, { recursive: true });
-    }
-  }
-
-  private ensurePipes(): void {
-    for (const pipe of [this.pipeIn, this.pipeOut]) {
-      if (!existsSync(pipe)) {
-        execSync(`mkfifo "${pipe}"`);
-        console.log(`[director:${this.label}] Created FIFO: ${pipe}`);
-      }
-    }
-  }
-
-  private spawnDirector(): void {
+  private spawnProcess(): void {
     const personaDir = this.config.persona_dir;
-    const mcpConfigPath = join(personaDir, '.mcp.json');
 
     const savedSession = this.readSession();
     if (savedSession) {
@@ -708,23 +660,19 @@ export class Director extends EventEmitter {
     const sessionName = nameParts.join('-');
     this.sessionName = sessionName;
 
-    const { child } = spawnPersona({
+    const pid = this.process.spawn({
       role: 'director',
       personaDir,
       claudePath: this.config.claude_path,
-      mode: 'foreground',
-      mcpConfigPath,
+      mcpConfigPath: join(personaDir, '.mcp.json'),
       sessionId: savedSession ?? undefined,
       sessionName,
-      pipeIn: this.pipeIn,
-      pipeOut: this.pipeOut,
-      stderrPath: join(this.pipeDir, 'director-stderr.log'),
+      stderrPath: join(this.process.pipeDir, 'director-stderr.log'),
       env: { DIRECTOR_LABEL: this.label },
     });
 
-    if (child.pid) {
-      writeFileSync(this.pidFile, String(child.pid));
-      console.log(`[director:${this.label}] Spawned claude process (pid: ${child.pid})`);
+    if (pid) {
+      console.log(`[director:${this.label}] Spawned claude process (pid: ${pid})`);
     }
   }
 
@@ -950,27 +898,6 @@ export class Director extends EventEmitter {
         await this.bootstrap();
       }
     });
-  }
-
-  private isDirectorAlive(): boolean {
-    const pid = this.readPid();
-    if (!pid) return false;
-
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private readPid(): number | null {
-    try {
-      const raw = readFileSync(this.pidFile, 'utf-8').trim();
-      return parseInt(raw, 10) || null;
-    } catch {
-      return null;
-    }
   }
 
   private saveSession(sessionId: string): void {

@@ -1,5 +1,5 @@
 import { loadConfig } from './config.js';
-import { Director } from './director.js';
+import { SessionBridge } from './session-bridge.js';
 import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './feishu.js';
 import { MessagingRouter } from './messaging-router.js';
@@ -27,7 +27,7 @@ async function main() {
   const config = loadConfig();
   setLogLevel(config.logging.level);
   const queue = new MessageQueue(config.logging.queue_log);
-  const director = new Director(config.director);
+  const director = new SessionBridge(config.director);
   const feishu = createFeishuClient(config.feishu, {
     skipMentionChatIds: config.pool.parallel_chat_ids,
   });
@@ -422,7 +422,7 @@ async function main() {
         const cancelled = poolEntry.queue.cancelOldest();
         if (cancelled) {
           console.log(`[shell] /esc (group ${poolEntry.groupName}): cancelling ${cancelled.messageId}`);
-          await poolEntry.director.interrupt();
+          await poolEntry.bridge.interrupt();
           await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
         } else {
           await messaging.reply(messageId, '队列为空，没有可取消的消息');
@@ -444,7 +444,7 @@ async function main() {
     if (text.trim() === '/flush') {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
-      const targetDirector = poolEntry?.director ?? director;
+      const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.flush();
       if (success) {
@@ -459,7 +459,7 @@ async function main() {
     if (text.trim() === '/restart') {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
-      const targetDirector = poolEntry?.director ?? director;
+      const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       await messaging.reply(messageId, `正在重启 ${label} Director...`);
       console.log(`[shell] /restart: restarting ${label} Director`);
@@ -481,7 +481,7 @@ async function main() {
     if (text.trim() === '/status') {
       const poolEntry = getTargetEntry();
       if (poolEntry) {
-        const s = poolEntry.director.getStatus();
+        const s = poolEntry.bridge.getStatus();
         const label = poolEntry.groupName;
         const lines = [
           `🟢 [${label}] Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,

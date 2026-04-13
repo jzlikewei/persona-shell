@@ -27,7 +27,7 @@ function readTail(filePath: string, maxBytes: number): string {
 }
 
 const MAX_LOG_READ_BYTES = 2 * 1024 * 1024; // 2MB
-import type { Director } from './director.js';
+import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 import type { TaskRunner } from './task-runner.js';
@@ -298,7 +298,7 @@ export interface MetricsCollector {
  * 用 Bun.serve() 提供单页 TUI 前端 + 实时状态推送 + 命令接收
  */
 export function startConsole(
-  director: Director,
+  director: SessionBridge,
   queue: MessageQueue,
   config: Config,
   taskRunner?: TaskRunner,
@@ -648,7 +648,7 @@ export function startConsole(
               const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
               if (entry) {
                 const poolEntry = pool.get(entry.routingKey);
-                if (poolEntry) targetDirector = poolEntry.director;
+                if (poolEntry) targetDirector = poolEntry.bridge;
               }
             }
             return Response.json(parseConversationLog(targetDirector.inputLogPath, targetDirector.outputLogPath, limit, sessionId));
@@ -660,7 +660,7 @@ export function startConsole(
               const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
               if (entry) {
                 const poolEntry = pool.get(entry.routingKey);
-                if (poolEntry) targetDirector = poolEntry.director;
+                if (poolEntry) targetDirector = poolEntry.bridge;
               }
             }
             const sessions = parseSessions(targetDirector.outputLogPath);
