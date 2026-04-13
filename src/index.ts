@@ -28,7 +28,9 @@ async function main() {
   setLogLevel(config.logging.level);
   const queue = new MessageQueue(config.logging.queue_log);
   const director = new Director(config.director);
-  const feishu = createFeishuClient(config.feishu);
+  const feishu = createFeishuClient(config.feishu, {
+    skipMentionChatIds: config.pool.parallel_chat_ids,
+  });
   const messaging = new MessagingRouter(feishu);
   const startTime = Date.now();
 

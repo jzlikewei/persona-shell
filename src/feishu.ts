@@ -171,7 +171,8 @@ async function withRetry<T>(
   throw lastErr;
 }
 
-export function createFeishuClient(config: Config['feishu']) {
+export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[] }) {
+  const skipMentionSet = new Set(options?.skipMentionChatIds ?? []);
   const client = new Lark.Client({
     appId: config.app_id,
     appSecret: config.app_secret,
@@ -264,7 +265,8 @@ export function createFeishuClient(config: Config['feishu']) {
       if (mentions?.length) log.debug(`[feishu] mentions: ${JSON.stringify(mentions)}`);
 
       // Group chat @mention filter: skip messages that don't mention the bot
-      if (chatType === 'group') {
+      // Exception: chats in skipMentionSet (e.g. parallel/topic groups with long-lived Directors)
+      if (chatType === 'group' && !skipMentionSet.has(chat_id)) {
         const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
         if (!hasBotMention) {
           log.debug(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
