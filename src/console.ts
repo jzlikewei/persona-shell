@@ -324,8 +324,11 @@ export function startConsole(
         default: {
           // Serve static files from /css/ and /js/ subdirectories
           if (url.pathname.startsWith('/css/') || url.pathname.startsWith('/js/')) {
-            const safePath = url.pathname.replace(/\.\./g, '');
-            const filePath = join(publicDir, safePath);
+            const filePath = resolve(publicDir, url.pathname.slice(1));
+            // Prevent path traversal — resolved path must stay inside publicDir
+            if (!filePath.startsWith(publicDir + '/')) {
+              return new Response('Forbidden', { status: 403 });
+            }
             if (existsSync(filePath) && statSync(filePath).isFile()) {
               const ext = extname(filePath).toLowerCase();
               const mimeTypes: Record<string, string> = {

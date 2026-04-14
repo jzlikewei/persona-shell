@@ -3,7 +3,9 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
-/** Return current time as ISO string in local timezone (e.g. "2026-04-14T15:00:00.000+08:00") */
+/** Return current time as ISO string in local timezone (e.g. "2026-04-14T15:00:00.000+08:00").
+ *  Uses the system/process timezone (process.env.TZ).
+ *  In Docker containers where TZ is unset, this defaults to UTC. */
 export function localNow(): string {
   const now = new Date();
   const offsetMin = now.getTimezoneOffset(); // minutes, negative for east of UTC

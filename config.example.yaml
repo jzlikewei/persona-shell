@@ -48,6 +48,8 @@ logging:
 console:
   enabled: true
   port: 3000
+  # token: "your-secret-token"     # 配置后 HTTP API 和 WebSocket 需携带 token 认证
+                                    # ⚠️ WebSocket 通过 ?token=xxx query param 传递，勿暴露到公网
 
 task:
   default_timeout_minutes: 30       # 后台任务默认超时
