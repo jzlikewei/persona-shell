@@ -597,7 +597,12 @@ async function main() {
     // 并行群（配置的特定 chat_id）→ 始终走 DirectorPool，不受人数限制
     const isParallelChat = config.pool.parallel_chat_ids.includes(chatId);
     // 大群(>threshold 人，非并行群) → one-shot 响应，不走 Director
-    if (chatType === 'group' && !isParallelChat && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
+    if (
+      config.pool.large_group_one_shot
+      && chatType === 'group'
+      && !isParallelChat
+      && (msg.memberCount ?? 0) > config.pool.small_group_threshold
+    ) {
       // One-shot 无上下文，引用需要保留全文
       const quotePrefix = msg.quotedText ? formatQuote(msg.quotedText, 0) : '';
       const oneShotPrompt = `你在群聊「${msg.groupName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${quotePrefix}${text}`;

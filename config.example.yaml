@@ -36,6 +36,7 @@ director:
 pool:
   max_directors: 5                  # 最大并发 Director 数（不含主 Director）
   idle_timeout_minutes: 30          # 群聊 Director 空闲超时自动回收（分钟）
+  large_group_one_shot: false       # 是否对大群走 one-shot，无上下文；false 则默认全部走热会话
   small_group_threshold: 5          # 群成员 ≤ 此值走 DirectorPool，> 此值走 one-shot
   parallel_chat_ids: []             # 配置为"并行模式"的群 chat_id 列表，始终走 DirectorPool 不受人数限制
   # parallel_chat_ids:
