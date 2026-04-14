@@ -79,6 +79,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
     let pendingText = '';
     let lastSessionId: string | undefined;
     let lastDirector: string | undefined;
+    let codexTurnTimestamp: string | undefined;
 
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
@@ -96,6 +97,16 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
           }
         } else if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
           lastSessionId = evt.session_id;
+        } else if (evt.type === 'thread.started' && evt.thread_id) {
+          lastSessionId = evt.thread_id;
+        } else if (evt.type === 'item.completed' && evt.item?.type === 'agent_message' && typeof evt.item.text === 'string') {
+          pendingText += evt.item.text;
+        } else if (evt.type === 'turn.completed') {
+          if (pendingText) {
+            outputs.push({ text: pendingText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts || codexTurnTimestamp });
+          }
+          pendingText = '';
+          codexTurnTimestamp = evt._ts || evt.timestamp;
         } else if (evt.type === 'result') {
           if (evt.session_id) lastSessionId = evt.session_id;
           const resultText = pendingText || (typeof evt.result === 'string' ? evt.result : '');
@@ -177,10 +188,24 @@ export function parseSessions(outputLog: string): SessionInfo[] {
         if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
           currentSession = evt.session_id;
         }
+        if (evt.type === 'thread.started' && evt.thread_id) {
+          currentSession = evt.thread_id;
+        }
         if (evt.type === 'result') {
           const sid = evt.session_id || currentSession;
           if (!sid) continue;
           currentSession = sid;
+
+          const entry = sessionMap.get(sid) || { count: 0 };
+          entry.count++;
+          const timestamp = evt._ts || evt.timestamp || new Date().toISOString();
+          if (!entry.first) entry.first = timestamp;
+          entry.last = timestamp;
+          sessionMap.set(sid, entry);
+        }
+        if (evt.type === 'turn.completed') {
+          const sid = currentSession;
+          if (!sid) continue;
 
           const entry = sessionMap.get(sid) || { count: 0 };
           entry.count++;

@@ -1,11 +1,14 @@
 import { EventEmitter } from 'events';
+import type { ChildProcess } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
-import type { Config } from './config.js';
+import { resolveAgentProvider, type Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
 import { getState, setState, listTasks } from './task-store.js';
 import { ClaudeProcess } from './claude-process.js';
+import type { AgentRuntimeConfig } from './persona-process.js';
+import { spawnPersona } from './persona-process.js';
 import { log } from './logger.js';
 
 /** Base log directory */
@@ -20,6 +23,8 @@ interface BridgePersistedState {
 export interface SessionBridgeOptions {
   agents: Config['agents'];
   config: Config['director'];
+  /** 可选：覆盖 director 默认 agent（如 codex） */
+  directorAgentName?: string;
   /** 唯一标识，如 'main' 或 chatId 的短 hash */
   label: string;
   /** 主实例标记（默认 true） */
@@ -34,11 +39,15 @@ export class SessionBridge extends EventEmitter {
   readonly label: string;
   readonly isMain: boolean;
   private groupName?: string;
-  private process: ClaudeProcess;
+  private directorAgent: AgentRuntimeConfig;
+  private process: ClaudeProcess | null;
   private writeHandle: FileHandle | null = null;
   private sessionFile: string;
   private sessionId: string | null = null;
   private sessionName: string | null = null;
+  private activeChild: ChildProcess | null = null;
+  private codexQueue: string[] = [];
+  private codexRunning = false;
   private interrupted = false;
   private flushing = false;
   private shuttingDown = false;
@@ -92,11 +101,14 @@ export class SessionBridge extends EventEmitter {
     this.label = configOrOptions.label;
     this.isMain = configOrOptions.isMain ?? true;
     this.groupName = configOrOptions.groupName;
+    this.directorAgent = resolveAgentProvider(this.agents, 'director', configOrOptions.directorAgentName);
 
     // 路径参数化：主 Director 保持旧路径（向后兼容），非主用子目录
     const pipeDir = this.isMain ? this.config.pipe_dir : join(this.config.pipe_dir, this.label);
     const pidFile = this.isMain ? this.config.pid_file : join(pipeDir, 'director.pid');
-    this.process = new ClaudeProcess({ pipeDir, pidFile, label: this.label });
+    this.process = this.directorAgent.type === 'claude'
+      ? new ClaudeProcess({ pipeDir, pidFile, label: this.label })
+      : null;
     this.sessionFile = this.isMain
       ? join(pipeDir, 'director-session')
       : join(pipeDir, 'session');
@@ -111,6 +123,10 @@ export class SessionBridge extends EventEmitter {
   /** Log directory for this Director: logs/{label}/ */
   private get logDir(): string {
     return join(LOG_BASE, this.label);
+  }
+
+  private get isCodex(): boolean {
+    return this.directorAgent.type === 'codex';
   }
 
   /** Today's date string for log file names (YYYYMMDD, Shanghai timezone) */
@@ -154,20 +170,38 @@ export class SessionBridge extends EventEmitter {
   private static readonly PIPE_OPEN_TIMEOUT = 30_000; // 30 seconds
 
   async start(): Promise<boolean> {
-    this.process.ensurePipeDir();
+    if (this.isCodex) {
+      const restoredSession = this.readSession();
+      this.sessionId = restoredSession;
+      if (restoredSession) {
+        const nameMap = getState<Record<string, string>>('session:names') ?? {};
+        this.sessionName = nameMap[restoredSession] ?? null;
+        console.log(`[bridge:${this.label}] Codex session ready${this.sessionName ? ` (${this.sessionName})` : ''}`);
+        return false;
+      }
+      console.log(`[bridge:${this.label}] Codex session ready (new)`);
+      return true;
+    }
+
+    const process = this.process;
+    if (!process) {
+      throw new Error('Claude process is not initialized');
+    }
+
+    process.ensurePipeDir();
 
     let freshStart = true;
-    if (this.process.isAlive()) {
-      console.log(`[bridge:${this.label}] Existing process found (pid: ${this.process.getPid()}), reconnecting...`);
+    if (process.isAlive()) {
+      console.log(`[bridge:${this.label}] Existing process found (pid: ${process.getPid()}), reconnecting...`);
       freshStart = false;
     } else {
-      this.process.ensurePipes();
+      process.ensurePipes();
       this.spawnProcess();
     }
 
     // Open both pipe ends concurrently — this unblocks the FIFO handshake
     // Timeout prevents indefinite hang if the process died between alive check and pipe open
-    const handles = await this.process.openPipes(SessionBridge.PIPE_OPEN_TIMEOUT);
+    const handles = await process.openPipes(SessionBridge.PIPE_OPEN_TIMEOUT);
 
     if (!handles) {
       throw new Error(`[bridge:${this.label}] Pipe open timeout after ${SessionBridge.PIPE_OPEN_TIMEOUT / 1000}s — process may have died`);
@@ -184,18 +218,28 @@ export class SessionBridge extends EventEmitter {
 
   /** Send SIGINT to cancel current request, then auto-restart with --resume */
   async interrupt(): Promise<void> {
+    if (this.isCodex) {
+      if (!this.activeChild?.pid) return;
+      this.interrupted = true;
+      this.killActiveChild('SIGINT');
+      await new Promise<void>((resolve) => {
+        this.once('restarted', resolve);
+      });
+      return;
+    }
+
     if (this.flushing) {
       console.log(`[bridge:${this.label}] Interrupt skipped: flush in progress`);
       return;
     }
 
-    const pid = this.process.getPid();
+    const pid = this.process?.getPid();
     if (!pid) return;
 
     this.interrupted = true;
     console.log(`[bridge:${this.label}] Interrupting (pid: ${pid})...`);
 
-    this.process.kill('SIGINT');
+    this.process?.kill('SIGINT');
 
     // Wait for close handler to finish restart
     await new Promise<void>((resolve) => {
@@ -221,7 +265,11 @@ export class SessionBridge extends EventEmitter {
     // Non-main Directors: skip checkpoint, just kill and restart
     if (!this.isMain) {
       this.flushing = true;
-      this.process.kill('SIGTERM');
+      if (this.isCodex) {
+        this.killActiveChild('SIGTERM');
+      } else {
+        this.process?.kill('SIGTERM');
+      }
       this.clearSession();
       await this.restart();
       this.finishFlush();
@@ -286,7 +334,11 @@ export class SessionBridge extends EventEmitter {
     }
 
     // Step 2 - Reset: kill process + clear session + clean pipes
-    this.process.kill('SIGTERM');
+    if (this.isCodex) {
+      this.killActiveChild('SIGTERM');
+    } else {
+      this.process?.kill('SIGTERM');
+    }
 
     this.clearSession();
     await this.restart();
@@ -324,7 +376,11 @@ export class SessionBridge extends EventEmitter {
       return false;
     }
     this.flushing = true;
-    this.process.kill('SIGTERM');
+    if (this.isCodex) {
+      this.killActiveChild('SIGTERM');
+    } else {
+      this.process?.kill('SIGTERM');
+    }
     this.clearSession();
     await this.restart();
     this.finishFlush();
@@ -383,8 +439,8 @@ export class SessionBridge extends EventEmitter {
     }
 
     return {
-      alive: this.process.isAlive(),
-      pid: this.process.getPid(),
+      alive: this.isCodex ? true : this.process?.isAlive() ?? false,
+      pid: this.isCodex ? (this.activeChild?.pid ?? null) : (this.process?.getPid() ?? null),
       sessionId: this.sessionId,
       sessionName: this.sessionName,
       flushing: this.flushing,
@@ -404,8 +460,26 @@ export class SessionBridge extends EventEmitter {
 
   /** 公开的重启方法：杀掉当前进程并重新启动（保留 session，加载新配置） */
   async restartProcess(): Promise<void> {
+    if (this.isCodex) {
+      if (!this.activeChild?.pid) return;
+      this.explicitRestart = true;
+      this.killActiveChild('SIGTERM');
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          this.removeListener('restarted', onRestart);
+          resolve();
+        }, 30_000);
+        const onRestart = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        this.once('restarted', onRestart);
+      });
+      return;
+    }
+
     this.explicitRestart = true;
-    this.process.kill('SIGTERM');
+    this.process?.kill('SIGTERM');
     // Wait for close handler to finish restart (it checks explicitRestart flag)
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
@@ -429,7 +503,7 @@ export class SessionBridge extends EventEmitter {
    *  Callers can `await` to ensure bootstrap completes before sending user messages,
    *  preventing Claude Code from merging bootstrap + user message into one turn. */
   async bootstrap(): Promise<void> {
-    if (!this.writeHandle || this.flushing) return;
+    if ((!this.isCodex && !this.writeHandle) || this.flushing) return;
     this.bootstrapping = true;
     this.pendingCount++;
 
@@ -459,7 +533,7 @@ export class SessionBridge extends EventEmitter {
   }
 
   async send(message: string): Promise<void> {
-    if (!this.writeHandle) {
+    if (!this.isCodex && !this.writeHandle) {
       throw new Error('SessionBridge not started');
     }
     if (this.flushing) {
@@ -486,7 +560,7 @@ export class SessionBridge extends EventEmitter {
 
   /** 发送系统消息（如 cron director_msg），响应会被吸收不转发给用户 */
   async sendSystemMessage(msg: string): Promise<void> {
-    if (!this.writeHandle || this.flushing) return;
+    if ((!this.isCodex && !this.writeHandle) || this.flushing) return;
     this.pendingTypes.push({ type: 'system-absorbed' });
     this.systemMessagePending++;
     this.pendingCount++;
@@ -501,7 +575,7 @@ export class SessionBridge extends EventEmitter {
 
   /** 发送 cron 消息给 Director，响应会通过 'cron-response' 事件转发给用户 */
   async sendCronMessage(msg: string): Promise<void> {
-    if (!this.writeHandle || this.flushing) return;
+    if ((!this.isCodex && !this.writeHandle) || this.flushing) return;
     this.pendingTypes.push({ type: 'system-forward' });
     this.pendingCount++;
     try {
@@ -513,7 +587,7 @@ export class SessionBridge extends EventEmitter {
   }
 
   private async writeRaw(content: string): Promise<void> {
-    if (!this.writeHandle) {
+    if (!this.isCodex && !this.writeHandle) {
       throw new Error('pipe not open');
     }
     const msg = { type: 'user', message: { role: 'user', content } };
@@ -526,12 +600,18 @@ export class SessionBridge extends EventEmitter {
       appendFileSync(this.inputLogPath, logPayload);
     } catch { /* best-effort logging */ }
 
-    await this.writeHandle.write(pipePayload);
+    if (this.isCodex) {
+      this.codexQueue.push(content);
+      this.processNextCodexTurn();
+      return;
+    }
+
+    await this.writeHandle!.write(pipePayload);
   }
 
   /** Notify the AI that a managed task has completed or failed */
   async notifyTaskDone(taskId: string, success: boolean, replyToMessageId?: string): Promise<void> {
-    if (!this.writeHandle || this.flushing) return;
+    if ((!this.isCodex && !this.writeHandle) || this.flushing) return;
     this.pendingCount++;
     if (replyToMessageId) {
       this.pendingTypes.push({ type: 'system-reply', replyToMessageId });
@@ -553,6 +633,10 @@ export class SessionBridge extends EventEmitter {
   }
 
   async stop(): Promise<void> {
+    if (this.isCodex) {
+      this.killActiveChild('SIGTERM');
+      return;
+    }
     await this.writeHandle?.close();
     this.writeHandle = null;
   }
@@ -563,7 +647,23 @@ export class SessionBridge extends EventEmitter {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
 
-    if (!this.process.isAlive()) {
+    if (this.isCodex) {
+      if (this.activeChild?.pid) {
+        this.killActiveChild('SIGTERM');
+        return new Promise<void>((resolve) => {
+          this.shutdownResolve = resolve;
+          setTimeout(() => {
+            if (this.shutdownResolve) {
+              this.shutdownResolve();
+              this.shutdownResolve = null;
+            }
+          }, 10_000);
+        });
+      }
+      return;
+    }
+
+    if (!this.process?.isAlive()) {
       // Already dead, just clean up
       await this.writeHandle?.close();
       this.writeHandle = null;
@@ -572,7 +672,7 @@ export class SessionBridge extends EventEmitter {
 
     return new Promise<void>((resolve) => {
       this.shutdownResolve = resolve;
-      this.process.kill('SIGTERM');
+      this.process?.kill('SIGTERM');
       // Safety timeout — if pipe close never fires
       setTimeout(() => {
         if (this.shutdownResolve) {
@@ -641,6 +741,10 @@ export class SessionBridge extends EventEmitter {
   }
 
   private async restart(): Promise<void> {
+    if (this.isCodex) {
+      return;
+    }
+
     // 3.2: Exponential backoff — abort if ≥3 restarts within 5 minutes
     const now = Date.now();
     const BACKOFF_WINDOW = 5 * 60_000; // 5 minutes
@@ -665,7 +769,7 @@ export class SessionBridge extends EventEmitter {
     // Wait for old process to die before cleaning pipes — SIGTERM is async,
     // if we clean pipes while the process is still alive, start() will see
     // isAlive()=true and try to reconnect to non-existent pipes → hang.
-    if (this.process.isAlive()) {
+    if (this.process?.isAlive()) {
       const maxWait = 5_000;
       const start = Date.now();
       while (this.process.isAlive() && Date.now() - start < maxWait) {
@@ -678,12 +782,15 @@ export class SessionBridge extends EventEmitter {
       }
     }
 
-    this.process.cleanPipes();
+    this.process?.cleanPipes();
 
     await this.start();
   }
 
   private spawnProcess(): void {
+    if (!this.process) {
+      throw new Error('Claude process is not initialized');
+    }
     const personaDir = this.config.persona_dir;
 
     const savedSession = this.readSession();
@@ -982,6 +1089,217 @@ export class SessionBridge extends EventEmitter {
   }
 
   private clearSession(): void {
+    this.sessionId = null;
+    this.sessionName = null;
     try { unlinkSync(this.sessionFile); } catch { /* ok */ }
+  }
+
+  private buildSessionName(): string {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+    const timeStr = now.toLocaleTimeString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' }).replace(':', '');
+    const prefix = this.isCodex ? 'codex-director' : 'director';
+    const nameParts = [prefix, this.label, `${dateStr}T${timeStr}`];
+    if (this.groupName) nameParts.push(this.groupName);
+    return nameParts.join('-');
+  }
+
+  private rememberSessionName(sessionId: string, sessionName: string): void {
+    const nameMap = getState<Record<string, string>>('session:names') ?? {};
+    nameMap[sessionId] = sessionName;
+    setState('session:names', nameMap);
+  }
+
+  private logOutputEvent(line: string): void {
+    try {
+      const logDir = this.logDir;
+      if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+      const parsed = JSON.parse(line);
+      if (parsed.type !== 'stream_event') {
+        parsed._ts = new Date().toISOString();
+        parsed._director = this.label;
+        appendFileSync(this.outputLogPath, JSON.stringify(parsed) + '\n');
+      }
+    } catch {
+      try { appendFileSync(this.outputLogPath, line + '\n'); } catch { /* best-effort */ }
+    }
+  }
+
+  private killActiveChild(signal: NodeJS.Signals): void {
+    const pid = this.activeChild?.pid;
+    if (!pid) return;
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      // already exited
+    }
+  }
+
+  private processNextCodexTurn(): void {
+    if (!this.isCodex || this.codexRunning) return;
+    const content = this.codexQueue.shift();
+    if (!content) return;
+
+    const startedAt = Date.now();
+    this.codexRunning = true;
+    const currentSessionName = this.sessionName ?? this.buildSessionName();
+    if (!this.sessionName) this.sessionName = currentSessionName;
+
+    const { child } = spawnPersona({
+      role: 'director',
+      personaDir: this.config.persona_dir,
+      agent: this.directorAgent,
+      mode: 'background',
+      prompt: content,
+      resumeSessionId: this.sessionId ?? undefined,
+      stderrPath: join(this.logDir, 'director-stderr.log'),
+      env: { DIRECTOR_LABEL: this.label },
+    });
+
+    this.activeChild = child;
+    child.on('error', () => {});
+
+    if (!child.stdout || !child.pid) {
+      this.activeChild = null;
+      this.codexRunning = false;
+      this.handleCodexTurnFailure('failed to spawn codex process');
+      this.processNextCodexTurn();
+      return;
+    }
+
+    let currentResponse = '';
+    let sawTurnCompleted = false;
+
+    const rl = createInterface({ input: child.stdout });
+    rl.on('line', (line) => {
+      if (!line.trim()) return;
+      this.logOutputEvent(line);
+
+      try {
+        const event = JSON.parse(line);
+        if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+          this.sessionId = event.thread_id;
+          this.saveSession(event.thread_id);
+          this.rememberSessionName(event.thread_id, currentSessionName);
+        } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
+          currentResponse += event.item.text;
+        } else if (event.type === 'turn.completed') {
+          sawTurnCompleted = true;
+          const usage = event.usage;
+          if (usage && typeof usage === 'object') {
+            const totalInput = (typeof usage.input_tokens === 'number' ? usage.input_tokens : 0)
+              + (typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : 0);
+            if (totalInput > 0) {
+              this.lastInputTokens = totalInput;
+              this.persistState();
+            }
+          }
+        }
+      } catch {
+        // ignore malformed line
+      }
+    });
+
+    child.on('close', (code) => {
+      this.activeChild = null;
+      this.codexRunning = false;
+      this.currentMessagePreview = null;
+      this.currentMessageStartedAt = null;
+
+      if (currentResponse.trim()) {
+        this.decrementPending();
+        const pending = this.pendingTypes.shift();
+        if (this.flushing && this.flushCheckpointResolve) {
+          this.flushCheckpointResolve();
+          this.flushCheckpointResolve = null;
+        } else if (this.flushing && this.flushBootstrapResolve) {
+          this.flushBootstrapResolve();
+          this.flushBootstrapResolve = null;
+        } else if (this.discardNextResponse) {
+          this.discardNextResponse = false;
+        } else if (this.bootstrapping) {
+          this.bootstrapping = false;
+          if (this.bootstrapResolve) {
+            this.bootstrapResolve();
+            this.bootstrapResolve = null;
+          }
+        } else if (!pending || pending.type === 'user') {
+          this.messagesProcessedToday++;
+          this.emit('response', currentResponse.trim(), Date.now() - startedAt);
+        } else if (pending.type === 'system-reply') {
+          this.systemReplyQueue.shift();
+          this.emit('system-response', currentResponse.trim(), pending.replyToMessageId);
+        } else if (pending.type === 'system-forward') {
+          this.emit('cron-response', currentResponse.trim());
+        } else {
+          this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+        }
+      } else if (this.shuttingDown || this.explicitRestart || this.interrupted) {
+        this.decrementPending();
+        const pending = this.pendingTypes.shift();
+        if (pending?.type === 'system-reply') this.systemReplyQueue.shift();
+        if (pending?.type === 'system-absorbed') this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+      } else if (code !== 0 || !sawTurnCompleted) {
+        this.handleCodexTurnFailure(`codex exited with code ${code ?? 'null'}`);
+      } else {
+        this.decrementPending();
+        const pending = this.pendingTypes.shift();
+        if (pending?.type === 'system-reply') this.systemReplyQueue.shift();
+        if (pending?.type === 'system-absorbed') this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+      }
+
+      if (this.pendingCount <= 0 && this.drainResolve) {
+        this.drainResolve();
+        this.drainResolve = null;
+      }
+
+      if (this.shuttingDown) {
+        this.shuttingDown = false;
+        if (this.shutdownResolve) {
+          this.shutdownResolve();
+          this.shutdownResolve = null;
+        }
+      } else if (this.explicitRestart) {
+        this.explicitRestart = false;
+        this.emit('restarted');
+      } else if (this.interrupted) {
+        this.interrupted = false;
+        this.emit('restarted');
+      }
+
+      if (!this.flushing) {
+        this.checkFlush();
+      }
+      this.processNextCodexTurn();
+    });
+  }
+
+  private handleCodexTurnFailure(message: string): void {
+    this.decrementPending();
+
+    if (this.flushing && this.flushCheckpointResolve) {
+      this.flushCheckpointResolve();
+      this.flushCheckpointResolve = null;
+    } else if (this.flushing && this.flushBootstrapResolve) {
+      this.flushBootstrapResolve();
+      this.flushBootstrapResolve = null;
+    } else if (this.bootstrapping) {
+      this.bootstrapping = false;
+      if (this.bootstrapResolve) {
+        this.bootstrapResolve();
+        this.bootstrapResolve = null;
+      }
+    } else {
+      const pending = this.pendingTypes.shift();
+      if (!pending || pending.type === 'user') {
+        this.messagesProcessedToday++;
+        this.emit('response', '处理失败，请稍后重试');
+      } else if (pending.type === 'system-reply') {
+        this.systemReplyQueue.shift();
+      } else if (pending.type === 'system-absorbed') {
+        this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+      }
+      this.emit('alert', `⚠️ Codex Director 调用失败: ${message}`);
+    }
   }
 }

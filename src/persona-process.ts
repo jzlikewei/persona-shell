@@ -37,6 +37,8 @@ export interface PersonaSpawnOptions {
   // --- background 专用 ---
   /** 一次性 prompt (通过 -p 传入) */
   prompt?: string;
+  /** 恢复已有 codex session/thread */
+  resumeSessionId?: string;
   // --- 公共 ---
   /** stderr 日志文件完整路径 */
   stderrPath?: string;
@@ -111,6 +113,22 @@ function argsToShellCmd(executable: string, args: string[]): string {
 export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   const args: string[] = [];
 
+  if (options.agent.type === 'codex') {
+    if (options.agent.model) {
+      args.push('--model', options.agent.model);
+    }
+    if (options.agent.sandbox) {
+      args.push('--sandbox', options.agent.sandbox);
+    }
+    if (options.agent.approval) {
+      args.push('--ask-for-approval', options.agent.approval);
+    }
+    if (options.agent.search) {
+      args.push('--search');
+    }
+    args.push('--cd', options.personaDir);
+  }
+
   // foreground (Director) 专用参数
   if (options.mode === 'foreground') {
     if (options.agent.type !== 'claude') {
@@ -153,21 +171,14 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
       if (options.prompt) args.push('-p', options.prompt);
     } else if (options.agent.type === 'codex') {
-      args.push('exec', '--json', '--skip-git-repo-check');
-      if (options.agent.model) {
-        args.push('--model', options.agent.model);
+      args.push('exec');
+      if (options.resumeSessionId) {
+        args.push('resume', options.resumeSessionId);
       }
-      if (options.agent.search) {
-        args.push('--search');
-      }
-      if (options.agent.sandbox) {
-        args.push('--sandbox', options.agent.sandbox);
-      }
-      if (options.agent.approval) {
-        args.push('--ask-for-approval', options.agent.approval);
-      }
-      args.push('--cd', options.personaDir);
-      const prompt = buildCodexPrompt(options.role, options.personaDir, options.prompt ?? '');
+      args.push('--json', '--skip-git-repo-check');
+      const prompt = options.resumeSessionId
+        ? (options.prompt ?? '')
+        : buildCodexPrompt(options.role, options.personaDir, options.prompt ?? '');
       if (prompt) args.push(prompt);
     }
   }

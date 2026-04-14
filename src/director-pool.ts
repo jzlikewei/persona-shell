@@ -17,6 +17,7 @@ interface PersistedPoolEntry {
   groupName: string;
   label: string;
   lastActiveAt: number;
+  directorAgentName?: string;
 }
 
 export interface PoolConfig {
@@ -32,6 +33,7 @@ export interface PoolEntry {
   feishuChatId: string;     // 实际的飞书 chatId（oc_xxx），用于 sendMessage
   groupName: string;
   lastActiveAt: number;
+  directorAgentName?: string;
 }
 
 /** Metadata for closed pool sessions (kept for UI display) */
@@ -42,6 +44,7 @@ interface ClosedPoolEntry {
   label: string;
   lastActiveAt: number;
   closedAt: number;
+  directorAgentName?: string;
 }
 
 /** 管理多个 Director 会话实例的生命周期。
@@ -114,12 +117,15 @@ export class DirectorPool extends EventEmitter {
   /** Get or create a Director for a group chat.
    *  @param routingKey — Map key (chatId for regular groups, threadId for topic groups)
    *  @param opts — group metadata for creation */
-  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string }): Promise<PoolEntry> {
+  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       existing.lastActiveAt = Date.now();
       if (opts.groupName && opts.groupName !== existing.groupName) {
         existing.groupName = opts.groupName;
+      }
+      if (opts.directorAgentName) {
+        existing.directorAgentName = opts.directorAgentName;
       }
       return existing;
     }
@@ -137,7 +143,7 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  private async _doCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string }): Promise<PoolEntry> {
+  private async _doCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
     // Evict LRU if at capacity
     if (this.entries.size >= this.poolConfig.max_directors) {
       await this.evictLRU();
@@ -150,6 +156,7 @@ export class DirectorPool extends EventEmitter {
     const bridge = new SessionBridge({
       agents: this.agentsConfig,
       config: this.directorConfig,
+      directorAgentName: opts.directorAgentName,
       label,
       isMain: false,
       groupName: name,
@@ -169,6 +176,7 @@ export class DirectorPool extends EventEmitter {
       feishuChatId: opts.feishuChatId,
       groupName: name,
       lastActiveAt: Date.now(),
+      directorAgentName: opts.directorAgentName,
     };
     this.entries.set(routingKey, entry);
     this.closedEntries.delete(routingKey); // re-activated
@@ -219,7 +227,11 @@ export class DirectorPool extends EventEmitter {
       // Remove stale entry
       this.entries.delete(routingKey);
       // Create new one
-      const newEntry = await this.getOrCreate(routingKey, { groupName, feishuChatId });
+      const newEntry = await this.getOrCreate(routingKey, {
+        groupName,
+        feishuChatId,
+        directorAgentName: entry.directorAgentName,
+      });
       entry = newEntry;
     }
 
@@ -230,6 +242,22 @@ export class DirectorPool extends EventEmitter {
   getChatIdByLabel(label: string): string | null {
     const entry = this.findByLabel(label);
     return entry?.feishuChatId ?? null;
+  }
+
+  getDirectorAgentName(routingKey: string): string | undefined {
+    return this.entries.get(routingKey)?.directorAgentName ?? this.closedEntries.get(routingKey)?.directorAgentName;
+  }
+
+  async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<PoolEntry> {
+    const existing = this.entries.get(routingKey);
+    if (existing && existing.directorAgentName === opts.directorAgentName) {
+      existing.lastActiveAt = Date.now();
+      return existing;
+    }
+    if (existing) {
+      await this.shutdown(routingKey);
+    }
+    return this.getOrCreate(routingKey, opts);
   }
 
   /** Shutdown a specific group Director */
@@ -275,6 +303,7 @@ export class DirectorPool extends EventEmitter {
       lastActiveAt: entry.lastActiveAt,
       directorStatus: entry.bridge.getStatus(),
       queueLength: entry.queue.length,
+      directorAgentName: entry.directorAgentName,
     }));
     const closed = [...this.closedEntries.values()].map((entry) => ({
       routingKey: entry.routingKey,
@@ -285,6 +314,7 @@ export class DirectorPool extends EventEmitter {
       queueLength: 0,
       closed: true as const,
       closedAt: entry.closedAt,
+      directorAgentName: entry.directorAgentName,
     }));
     return [...active, ...closed];
   }
@@ -298,6 +328,7 @@ export class DirectorPool extends EventEmitter {
       label: entry.bridge.label,
       lastActiveAt: entry.lastActiveAt,
       closedAt: Date.now(),
+      directorAgentName: entry.directorAgentName,
     });
     // Evict oldest if over limit
     while (this.closedEntries.size > 50) {
@@ -315,6 +346,7 @@ export class DirectorPool extends EventEmitter {
       groupName: e.groupName,
       label: e.bridge.label,
       lastActiveAt: e.lastActiveAt,
+      directorAgentName: e.directorAgentName,
     }));
     setState('pool:entries', data);
   }
@@ -331,50 +363,65 @@ export class DirectorPool extends EventEmitter {
     let restored = 0;
 
     for (const item of saved) {
-      const pipeDir = join(pipeBaseDir, item.label);
-      const pidFile = join(pipeDir, 'director.pid');
+      const bridge = new SessionBridge({
+        agents: this.agentsConfig,
+        config: this.directorConfig,
+        directorAgentName: item.directorAgentName,
+        label: item.label,
+        isMain: false,
+        groupName: item.groupName,
+      } satisfies SessionBridgeOptions);
 
-      // Check if process is alive
-      const proc = new ClaudeProcess({ pipeDir, pidFile, label: item.label });
-      if (!proc.isAlive()) {
-        console.log(`[pool] Orphan "${item.groupName}" (label=${item.label}) is dead, cleaning up`);
-        proc.cleanPipes();
-        continue;
+      const queue = new MessageQueue(`logs/queue-${item.label}.log`);
+
+      if (item.directorAgentName !== 'codex') {
+        const pipeDir = join(pipeBaseDir, item.label);
+        const pidFile = join(pipeDir, 'director.pid');
+
+        // Claude-backed Directors are long-lived processes, so we only reconnect if the orphan is still alive.
+        const proc = new ClaudeProcess({ pipeDir, pidFile, label: item.label });
+        if (!proc.isAlive()) {
+          console.log(`[pool] Orphan "${item.groupName}" (label=${item.label}) is dead, cleaning up`);
+          proc.cleanPipes();
+          continue;
+        }
+
+        console.log(`[pool] Reconnecting to orphan "${item.groupName}" (label=${item.label}, pid=${proc.getPid()})`);
+
+        try {
+          await bridge.start(); // start() detects alive process → reconnect path
+        } catch (err) {
+          console.error(`[pool] Failed to reconnect "${item.groupName}":`, err);
+          // Kill the orphan — we can't talk to it
+          proc.kill('SIGTERM');
+          proc.cleanPipes();
+          continue;
+        }
+      } else {
+        // Codex-backed Directors are turn-based; restoring the session metadata is enough.
+        console.log(`[pool] Restoring Codex Director for "${item.groupName}" (label=${item.label})`);
+        try {
+          await bridge.start();
+        } catch (err) {
+          console.error(`[pool] Failed to restore Codex Director "${item.groupName}":`, err);
+          continue;
+        }
       }
 
-      // Alive → reconnect
-      console.log(`[pool] Reconnecting to orphan "${item.groupName}" (label=${item.label}, pid=${proc.getPid()})`);
-      try {
-        const bridge = new SessionBridge({
-          agents: this.agentsConfig,
-          config: this.directorConfig,
-          label: item.label,
-          isMain: false,
-          groupName: item.groupName,
-        } satisfies SessionBridgeOptions);
+      this.wireEvents(bridge, queue, item.routingKey, item.feishuChatId, item.groupName);
 
-        const queue = new MessageQueue(`logs/queue-${item.label}.log`);
-        await bridge.start(); // start() detects alive process → reconnect path
-
-        this.wireEvents(bridge, queue, item.routingKey, item.feishuChatId, item.groupName);
-
-        const entry: PoolEntry = {
-          bridge,
-          queue,
-          routingKey: item.routingKey,
-          feishuChatId: item.feishuChatId,
-          groupName: item.groupName,
-          lastActiveAt: item.lastActiveAt,
-        };
-        this.entries.set(item.routingKey, entry);
-        this.closedEntries.delete(item.routingKey); // re-activated, remove stale closed entry
-        restored++;
-      } catch (err) {
-        console.error(`[pool] Failed to reconnect "${item.groupName}":`, err);
-        // Kill the orphan — we can't talk to it
-        proc.kill('SIGTERM');
-        proc.cleanPipes();
-      }
+      const entry: PoolEntry = {
+        bridge,
+        queue,
+        routingKey: item.routingKey,
+        feishuChatId: item.feishuChatId,
+        groupName: item.groupName,
+        lastActiveAt: item.lastActiveAt,
+        directorAgentName: item.directorAgentName,
+      };
+      this.entries.set(item.routingKey, entry);
+      this.closedEntries.delete(item.routingKey); // re-activated, remove stale closed entry
+      restored++;
     }
 
     // Update persisted state (remove dead entries)

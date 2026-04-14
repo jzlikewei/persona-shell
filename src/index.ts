@@ -508,6 +508,29 @@ async function main() {
       return;
     }
 
+    // /start-with-* — switch current small-group Director backend
+    if (text.trim() === '/start-with-codex' || text.trim() === '/start-with-claude') {
+      if (!routingKey || chatType !== 'group') {
+        await messaging.reply(messageId, '该命令仅支持群聊');
+        return;
+      }
+      if ((msg.memberCount ?? 0) > config.pool.small_group_threshold) {
+        await messaging.reply(messageId, `当前群人数超过小群阈值（${config.pool.small_group_threshold}），请先调整阈值或使用小群`);
+        return;
+      }
+      messaging.addReaction(messageId, 'Typing').catch(() => {});
+      const groupName = msg.groupName ?? chatId.slice(0, 8);
+      const targetAgent = text.trim() === '/start-with-codex' ? 'codex' : 'claude';
+      const currentAgent = pool.getDirectorAgentName(routingKey) ?? config.agents.defaults.director ?? 'claude';
+      if (currentAgent === targetAgent) {
+        await messaging.reply(messageId, `群「${groupName}」已经是 ${targetAgent === 'codex' ? 'Codex' : 'Claude'} 模式`);
+        return;
+      }
+      await pool.setDirectorAgent(routingKey, { groupName, feishuChatId: chatId, directorAgentName: targetAgent });
+      await messaging.reply(messageId, `群「${groupName}」已切换为 ${targetAgent === 'codex' ? 'Codex' : 'Claude'} 模式，后续消息将由 ${targetAgent === 'codex' ? 'Codex' : 'Claude'} Director 处理`);
+      return;
+    }
+
     // /session-restart — restart current session's Director (routes to correct Director, preserves session)
     if (text.trim() === '/session-restart') {
       if (!isMaster) return;
@@ -568,6 +591,8 @@ async function main() {
       const lines = [
         '📖 可用命令:',
         '/status — 查看 Director 状态摘要',
+        '/start-with-codex — 将当前小群切到 Codex Director 模式',
+        '/start-with-claude — 将当前小群切回 Claude Director 模式',
         '/flush — 保存上下文后刷新（checkpoint → 新 session）',
         '/clear — 清空上下文（不保存，直接重置）',
         '/esc — 取消队列中最早的消息',
@@ -636,7 +661,8 @@ async function main() {
       // 小群/话题群 → DirectorPool
       try {
         const groupName = msg.groupName ?? chatId.slice(0, 8);
-        const entry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId });
+        const directorAgentName = pool.getDirectorAgentName(routingKey);
+        const entry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
         await pool.send(routingKey, directorText, messageId);
         console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
       } catch (err) {
