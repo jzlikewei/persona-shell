@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { createInterface } from 'readline';
 import { resolveAgentProvider, type Config } from './config.js';
 import type { FileHandle } from 'fs/promises';
@@ -171,6 +171,7 @@ export class SessionBridge extends EventEmitter {
 
   async start(): Promise<boolean> {
     if (this.isCodex) {
+      this.ensureSessionDir();
       const restoredSession = this.readSession();
       this.sessionId = restoredSession;
       if (restoredSession) {
@@ -714,6 +715,10 @@ export class SessionBridge extends EventEmitter {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private shouldAutoFlushAfterTurn(turnType: 'user' | 'system' | 'bootstrap' | 'discarded'): boolean {
+    return turnType === 'user';
+  }
+
   private checkFlush(): void {
     if (this.flushing) return;
 
@@ -950,21 +955,25 @@ export class SessionBridge extends EventEmitter {
 
             this.decrementPending();
 
+            let resolvedTurnType: 'user' | 'system' | 'bootstrap' | 'discarded' | null = null;
             if (currentResponse) {
               if (this.flushing && this.flushCheckpointResolve) {
                 // Flush checkpoint response — don't emit to users
                 log.debug(`[bridge:${this.label}] FLUSH checkpoint response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushCheckpointResolve();
                 this.flushCheckpointResolve = null;
+                resolvedTurnType = 'system';
               } else if (this.flushing && this.flushBootstrapResolve) {
                 // Flush bootstrap response — don't emit to users
                 log.debug(`[bridge:${this.label}] FLUSH bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
                 this.flushBootstrapResolve();
                 this.flushBootstrapResolve = null;
+                resolvedTurnType = 'bootstrap';
               } else if (this.discardNextResponse) {
                 // Late response after flush timeout — discard silently
                 log.debug(`[bridge:${this.label}] Discarding late post-flush response: ${currentResponse.trim().slice(0, 100)}`);
                 this.discardNextResponse = false;
+                resolvedTurnType = 'discarded';
               } else if (this.bootstrapping) {
                 // Startup bootstrap response — absorb, don't emit to users
                 log.debug(`[bridge:${this.label}] Bootstrap response: ${currentResponse.trim().slice(0, 100)}`);
@@ -973,24 +982,29 @@ export class SessionBridge extends EventEmitter {
                   this.bootstrapResolve();
                   this.bootstrapResolve = null;
                 }
+                resolvedTurnType = 'bootstrap';
               } else {
                 // Ordered dispatch: shift from pendingTypes to determine response type
                 const pending = this.pendingTypes.shift();
                 if (!pending || pending.type === 'user') {
                   this.messagesProcessedToday++;
                   this.emit('response', currentResponse.trim(), event.duration_ms);
+                  resolvedTurnType = 'user';
                 } else if (pending.type === 'system-reply') {
                   this.systemReplyQueue.shift();
                   log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${currentResponse.trim().slice(0, 100)}`);
                   this.emit('system-response', currentResponse.trim(), pending.replyToMessageId);
+                  resolvedTurnType = 'system';
                 } else if (pending.type === 'system-forward') {
                   // cron-response — Director 响应转发给用户
                   log.debug(`[bridge:${this.label}] Cron response forwarded: ${currentResponse.trim().slice(0, 100)}`);
                   this.emit('cron-response', currentResponse.trim());
+                  resolvedTurnType = 'system';
                 } else {
                   // system-absorbed — task notification without messageId
                   this.systemMessagePending--;
                   log.debug(`[bridge:${this.label}] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
+                  resolvedTurnType = 'system';
                 }
               }
               currentResponse = '';
@@ -1002,8 +1016,8 @@ export class SessionBridge extends EventEmitter {
               this.drainResolve = null;
             }
 
-            // Check if auto-flush is needed (after emitting response)
-            if (!this.flushing) {
+            // Check if auto-flush is needed after a user-visible turn.
+            if (!this.flushing && resolvedTurnType && this.shouldAutoFlushAfterTurn(resolvedTurnType)) {
               this.checkFlush();
             }
             break;
@@ -1077,7 +1091,13 @@ export class SessionBridge extends EventEmitter {
   }
 
   private saveSession(sessionId: string): void {
+    this.ensureSessionDir();
     writeFileSync(this.sessionFile, sessionId);
+  }
+
+  private ensureSessionDir(): void {
+    const dir = dirname(this.sessionFile);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   }
 
   private readSession(): string | null {
@@ -1187,10 +1207,11 @@ export class SessionBridge extends EventEmitter {
           sawTurnCompleted = true;
           const usage = event.usage;
           if (usage && typeof usage === 'object') {
-            const totalInput = (typeof usage.input_tokens === 'number' ? usage.input_tokens : 0)
-              + (typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : 0);
-            if (totalInput > 0) {
-              this.lastInputTokens = totalInput;
+            // Codex's input_tokens already reflects prompt/context size.
+            // cached_input_tokens is a billing/cache detail, not extra context to add again.
+            const contextInput = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
+            if (contextInput > 0) {
+              this.lastInputTokens = contextInput;
               this.persistState();
             }
           }
@@ -1205,6 +1226,7 @@ export class SessionBridge extends EventEmitter {
       this.codexRunning = false;
       this.currentMessagePreview = null;
       this.currentMessageStartedAt = null;
+      let resolvedTurnType: 'user' | 'system' | 'bootstrap' | 'discarded' | null = null;
 
       if (currentResponse.trim()) {
         this.decrementPending();
@@ -1212,33 +1234,42 @@ export class SessionBridge extends EventEmitter {
         if (this.flushing && this.flushCheckpointResolve) {
           this.flushCheckpointResolve();
           this.flushCheckpointResolve = null;
+          resolvedTurnType = 'system';
         } else if (this.flushing && this.flushBootstrapResolve) {
           this.flushBootstrapResolve();
           this.flushBootstrapResolve = null;
+          resolvedTurnType = 'bootstrap';
         } else if (this.discardNextResponse) {
           this.discardNextResponse = false;
+          resolvedTurnType = 'discarded';
         } else if (this.bootstrapping) {
           this.bootstrapping = false;
           if (this.bootstrapResolve) {
             this.bootstrapResolve();
             this.bootstrapResolve = null;
           }
+          resolvedTurnType = 'bootstrap';
         } else if (!pending || pending.type === 'user') {
           this.messagesProcessedToday++;
           this.emit('response', currentResponse.trim(), Date.now() - startedAt);
+          resolvedTurnType = 'user';
         } else if (pending.type === 'system-reply') {
           this.systemReplyQueue.shift();
           this.emit('system-response', currentResponse.trim(), pending.replyToMessageId);
+          resolvedTurnType = 'system';
         } else if (pending.type === 'system-forward') {
           this.emit('cron-response', currentResponse.trim());
+          resolvedTurnType = 'system';
         } else {
           this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+          resolvedTurnType = 'system';
         }
       } else if (this.shuttingDown || this.explicitRestart || this.interrupted) {
         this.decrementPending();
         const pending = this.pendingTypes.shift();
         if (pending?.type === 'system-reply') this.systemReplyQueue.shift();
         if (pending?.type === 'system-absorbed') this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+        resolvedTurnType = 'system';
       } else if (code !== 0 || !sawTurnCompleted) {
         this.handleCodexTurnFailure(`codex exited with code ${code ?? 'null'}`);
       } else {
@@ -1246,6 +1277,7 @@ export class SessionBridge extends EventEmitter {
         const pending = this.pendingTypes.shift();
         if (pending?.type === 'system-reply') this.systemReplyQueue.shift();
         if (pending?.type === 'system-absorbed') this.systemMessagePending = Math.max(0, this.systemMessagePending - 1);
+        resolvedTurnType = pending?.type === 'user' || !pending ? 'user' : 'system';
       }
 
       if (this.pendingCount <= 0 && this.drainResolve) {
@@ -1267,7 +1299,7 @@ export class SessionBridge extends EventEmitter {
         this.emit('restarted');
       }
 
-      if (!this.flushing) {
+      if (!this.flushing && resolvedTurnType && this.shouldAutoFlushAfterTurn(resolvedTurnType)) {
         this.checkFlush();
       }
       this.processNextCodexTurn();

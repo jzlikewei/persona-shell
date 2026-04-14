@@ -18,6 +18,8 @@ launchctl stop  com.persona.shell                                # 停止
 | `/session-restart` | 当前会话 | 重启当前 Director（保留 session，加载新配置） |
 | `/shell-restart` | 全局 | 重启整个 Shell 进程（代码更新生效） |
 | `/status` | 当前会话 | 查看 Director 状态摘要（PID、token、队列等） |
+| `/start-with-codex` | 当前小群 | 将当前小群切换为 Codex Director 模式 |
+| `/start-with-claude` | 当前小群 | 将当前小群切回 Claude Director 模式 |
 | `/help` | 全局 | 列出所有可用命令 |
 
 ## 日志
@@ -37,7 +39,8 @@ launchctl stop  com.persona.shell                                # 停止
 | Director PID | `/tmp/persona/director.pid` |
 | Session ID | `/tmp/persona/director-session` |
 | FIFO 管道 | `/tmp/persona/director-in`, `director-out` |
-| Pool Director | `/tmp/persona/{label}/`（群聊 Director，含 session / PID / FIFO） |
+| Pool Director（Claude） | `/tmp/persona/{label}/`（群聊 Director，含 session / PID / FIFO） |
+| Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`，但无常驻 PID/FIFO |
 
 ## Web 控制台
 
