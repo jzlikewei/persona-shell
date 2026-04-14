@@ -4,6 +4,8 @@
 
 把现成的 agent 接入 IM、赋予持久记忆和人格、7×24 替你在线。Persona Shell 不造 agent，只做这层壳。
 
+不知道怎么用？clone 下来，让你的 agent 来读。
+
 > **⚠️ 早期项目**：本项目仅在 macOS (Apple Silicon) 上开发和日常使用，没有经过广泛测试。Linux 理论可用但未验证，Windows 不支持（依赖 named pipe / mkfifo）。欢迎反馈问题。
 
 > **⚠️ 安全提示**：Persona Shell 以 `--dangerously-skip-permissions` 模式运行 Claude Code，即 AI 可以无需确认地执行 shell 命令、读写文件。这是 AI 分身自主运行所必需的，但意味着你应该：
