@@ -17,12 +17,13 @@
 ## TL;DR
 
 外挂IM让CC干活、并行干，后台干、定时干、用不同身份干。
+![飞书会话](docs/feishu-chats.png)
 
 干完了写md。
+![日报](docs/daily-md.png)
 
 有个简单的管理页面。
 
-![飞书会话](docs/feishu-chats.png)
 
 ![Web 控制台](docs/webui-screenshot.png)
 
