@@ -3,43 +3,26 @@ agents:
     default: "claude"
     director: "claude"
     explorer: "claude"
+    executor: "claude"
     critic: "claude"
+    introspector: "claude"
   providers:
     claude:
       type: "claude"
       command: "claude"
-      foreground_args:
-        - "--print"
-        - "--output-format"
-        - "stream-json"
-        - "--verbose"
-        - "--dangerously-skip-permissions"
-        - "--input-format"
-        - "stream-json"
-        - "--bare"
-        - "--effort"
-        - "max"
-        - "--include-partial-messages"
-      background_args:
-        - "--print"
-        - "--output-format"
-        - "stream-json"
-        - "--verbose"
-        - "--dangerously-skip-permissions"
-        - "--bare"
+      bare: true
+      dangerously_skip_permissions: true
+      effort: "max"
     codex:
       type: "codex"
       command: "codex"
-      background_args:
-        - "exec"
-        - "--json"
-        - "--skip-git-repo-check"
-        - "--dangerously-bypass-approvals-and-sandbox"
+      sandbox: "danger-full-access"
+      approval: "never"
+      search: false
 
 # 配置模板 — 复制到 config.yaml 并填入实际值
 feishu:
   app_id: "cli_xxxx"
-  app_secret: "xxxx"
   master_id: ""               # 本体的飞书 open_id（配置后仅本体可执行 /restart 等命令）
 
 director:

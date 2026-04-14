@@ -60,7 +60,21 @@ export class TaskRunner extends EventEmitter {
     const timeoutMs = input.timeoutMs ?? this.config.defaultTimeoutMs;
     const startedAt = Date.now();
     const personaDir = this.config.personaDir;
-    const agent = resolveAgentProvider(this.config.agents, input.role, input.agent);
+
+    let agent: ReturnType<typeof resolveAgentProvider>;
+    try {
+      agent = resolveAgentProvider(this.config.agents, input.role, input.agent);
+    } catch (err) {
+      const result: TaskResult = {
+        taskId: input.taskId,
+        success: false,
+        error: String(err),
+        durationMs: 0,
+      };
+      console.error(`[task-runner] Task ${input.taskId} failed to resolve agent:`, err);
+      this.emit('task-failed', result);
+      return;
+    }
 
     // 构建产出文件名：用描述语义化，保留 ID 保证唯一
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });

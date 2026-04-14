@@ -20,3 +20,4 @@ state/
 
 # Empty dirs (keep with .gitkeep)
 config.yaml
+im_secret.yaml

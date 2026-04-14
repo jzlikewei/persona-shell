@@ -3,6 +3,18 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
+/** Return current time as ISO string in local timezone (e.g. "2026-04-14T15:00:00.000+08:00") */
+export function localNow(): string {
+  const now = new Date();
+  const offsetMin = now.getTimezoneOffset(); // minutes, negative for east of UTC
+  const sign = offsetMin <= 0 ? '+' : '-';
+  const absMin = Math.abs(offsetMin);
+  const hh = String(Math.floor(absMin / 60)).padStart(2, '0');
+  const mm = String(absMin % 60).padStart(2, '0');
+  const local = new Date(now.getTime() - offsetMin * 60_000);
+  return local.toISOString().replace('Z', `${sign}${hh}:${mm}`);
+}
+
 export interface CreateTaskInput {
   type: 'role' | 'cron';
   role: string;
@@ -194,7 +206,7 @@ function getDb(): Database {
 export function createTask(input: CreateTaskInput): Task {
   const d = getDb();
   const id = generateTaskId(d);
-  const now = new Date().toISOString();
+  const now = localNow();
   const extra = input.extra ? JSON.stringify(input.extra) : null;
   const sourceDirector = input.source_director ?? null;
   const agent = input.agent?.trim() || null;
@@ -340,7 +352,7 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
 export function createCronJob(input: CreateCronJobInput): CronJob {
   const d = getDb();
   const id = generateCronId(d);
-  const now = new Date().toISOString();
+  const now = localNow();
   const enabled = input.enabled !== false ? 1 : 0;
   const actionType = input.action_type ?? 'spawn_role';
   const message = input.message ?? null;
@@ -385,7 +397,7 @@ export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | '
   if (sets.length === 0) return getCronJob(id);
 
   sets.push('updated_at = ?');
-  params.push(new Date().toISOString());
+  params.push(localNow());
   params.push(id);
   getDb().run(`UPDATE cron_jobs SET ${sets.join(', ')} WHERE id = ?`, params);
   return getCronJob(id);
@@ -397,6 +409,6 @@ export function deleteCronJob(id: string): boolean {
 }
 
 export function toggleCronJob(id: string): CronJob | null {
-  getDb().run('UPDATE cron_jobs SET enabled = 1 - enabled, updated_at = ? WHERE id = ?', [new Date().toISOString(), id]);
+  getDb().run('UPDATE cron_jobs SET enabled = 1 - enabled, updated_at = ? WHERE id = ?', [localNow(), id]);
   return getCronJob(id);
 }

@@ -86,9 +86,11 @@ export class ClaudeProcess {
       name: 'claude',
       type: 'claude',
       command: provider.command,
-      ...(provider.args ? { args: provider.args } : {}),
-      ...(provider.foreground_args ? { foreground_args: provider.foreground_args } : {}),
-      ...(provider.background_args ? { background_args: provider.background_args } : {}),
+      ...(typeof provider.bare === 'boolean' ? { bare: provider.bare } : {}),
+      ...(typeof provider.dangerously_skip_permissions === 'boolean'
+        ? { dangerously_skip_permissions: provider.dangerously_skip_permissions }
+        : {}),
+      ...(provider.effort ? { effort: provider.effort } : {}),
     };
 
     const { child } = spawnPersona({

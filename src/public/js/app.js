@@ -69,9 +69,10 @@
   var ws = null;
 
   // View state
-  var viewMode = 'dashboard'; // 'dashboard' | 'session' | 'task' | 'pool-session'
+  var viewMode = 'dashboard'; // 'dashboard' | 'session' | 'task' | 'pool-session' | 'cron'
   var selectedSessionId = null;
   var selectedTaskId = null;
+  var selectedCronId = null;
   var selectedPoolLabel = null; // for pool-session view
   var sessionMessages = null; // cached messages for selected session
   var sessions = []; // cached session list for current expanded director
@@ -81,6 +82,10 @@
   var taskLogs = [];
   var taskLogTotalLines = 0;
   var taskLogPollTimer = null;
+
+  // Cron state
+  var cronJobs = [];
+  var cronDetail = null;
 
   // Streaming state
   var streamingChunks = {}; // director label → accumulated text
@@ -168,6 +173,7 @@
       $('overlay').classList.add('hidden');
       // Load sessions on connect
       loadSessions(expandedDirector);
+      loadCronJobs();
     };
     ws.onclose = function () {
       wsConnected = false;
@@ -493,7 +499,7 @@
     taskLogs = [];
     taskLogTotalLines = 0;
     hideChat();
-    $('session-tabs').classList.remove('visible');
+    $('session-dropdown').style.display = 'none';
     renderSessionList();
     renderTaskList();
     $('dh-title').innerHTML = '<span style="cursor:pointer;color:var(--blue);margin-right:8px" onclick="selectDashboard()">\u2190</span>Task';
@@ -506,11 +512,13 @@
     viewMode = 'dashboard';
     selectedSessionId = null;
     selectedTaskId = null;
+    selectedCronId = null;
     $('detail-content').classList.remove('task-split-mode');
     hideChat();
-    $('session-tabs').classList.remove('visible');
+    $('session-dropdown').style.display = 'none';
     renderSessionList();
     renderTaskList();
+    renderCronList();
     $('dh-title').textContent = 'Dashboard';
     $('dh-sub').textContent = '';
     renderDashboard();
@@ -613,6 +621,9 @@
 
     // Task list (from status push)
     renderTaskList();
+
+    // Cron list
+    renderCronList();
   }
 
   function renderSessionList() {
@@ -669,20 +680,19 @@
     el.innerHTML = html;
   }
 
-  /** Render session tabs above chat area */
+  /** Render session dropdown in the detail header */
   function renderSessionTabs() {
-    var tabsEl = $('session-tabs');
-    if (!tabsEl) return;
+    var dd = $('session-dropdown');
+    if (!dd) return;
 
-    // Only show in session/pool-session views
     if (viewMode !== 'session' && viewMode !== 'pool-session') {
-      tabsEl.classList.remove('visible');
+      dd.style.display = 'none';
       return;
     }
 
     var directorLabel = viewMode === 'pool-session' ? selectedPoolLabel : 'main';
     if (!sessions.length || expandedDirector !== directorLabel) {
-      tabsEl.classList.remove('visible');
+      dd.style.display = 'none';
       return;
     }
 
@@ -700,33 +710,71 @@
       return (b.lastMessageAt || '').localeCompare(a.lastMessageAt || '');
     });
 
-    var html = '';
+    var currentId = selectedSessionId || liveId || '';
+
+    // Build menu items
+    var menuHtml = '';
+    var currentName = '';
+    var currentIsLive = false;
     for (var i = 0; i < sorted.length; i++) {
       var s = sorted[i];
       var isLive = s.sessionId === liveId;
-      var isSelected = selectedSessionId === s.sessionId || (!selectedSessionId && isLive);
+      var isSelected = s.sessionId === currentId;
+      var sName = getSessionDisplayName(s);
       var dotColor = isLive ? 'var(--green)' : 'var(--overlay0)';
-      var sName = s.sessionName;
-      if (!sName && s.firstMessageAt) {
-        var d = new Date(s.firstMessageAt);
-        var ds = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
-        var ts = d.toLocaleTimeString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' }).replace(':', '');
-        sName = ds + 'T' + ts;
-      }
-      if (!sName) sName = s.sessionId.slice(0, 12);
-      sName = sName.replace(/^director-(main-|[0-9a-f]+-)?/, '');
-      if (sName.length > 20) sName = sName.slice(0, 20) + '\u2026';
 
-      html += '<button class="session-tab' + (isSelected ? ' active' : '') +
-        '" onclick="selectSubSession(\'' + esc(directorLabel) + '\',\'' + esc(s.sessionId) + '\',\'' + esc(sName) + '\')">' +
-        '<span class="tab-dot" style="background:' + dotColor + '"></span>' +
+      if (isSelected) { currentName = sName; currentIsLive = isLive; }
+
+      menuHtml += '<button class="sd-item' + (isSelected ? ' active' : '') +
+        '" data-director="' + esc(directorLabel) + '" data-sid="' + esc(s.sessionId) +
+        '" data-name="' + esc(sName) + '" onclick="pickSession(this)">' +
+        '<span class="sd-item-dot" style="background:' + dotColor + '"></span>' +
         esc(sName) +
-        '<span class="tab-count">' + s.messageCount + '</span></button>';
+        '<span class="sd-item-count">' + s.messageCount + '</span></button>';
     }
 
-    tabsEl.innerHTML = html;
-    tabsEl.classList.add('visible');
+    // Update trigger label
+    $('sd-label').textContent = currentName;
+    $('sd-dot').style.background = currentIsLive ? 'var(--green)' : 'var(--overlay0)';
+    $('sd-menu').innerHTML = menuHtml;
+    dd.style.display = '';
+    dd.dataset.director = directorLabel;
   }
+
+  function getSessionDisplayName(s) {
+    var sName = s.sessionName;
+    if (!sName && s.firstMessageAt) {
+      var d = new Date(s.firstMessageAt);
+      var ds = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
+      var ts = d.toLocaleTimeString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' }).replace(':', '');
+      sName = ds + 'T' + ts;
+    }
+    if (!sName) sName = s.sessionId.slice(0, 12);
+    sName = sName.replace(/^director-(main-|[0-9a-f]+-)?/, '');
+    if (sName.length > 20) sName = sName.slice(0, 20) + '\u2026';
+    return sName;
+  }
+
+  window.toggleSessionDropdown = function() {
+    var dd = $('session-dropdown');
+    dd.classList.toggle('open');
+  };
+
+  window.pickSession = function(el) {
+    var directorLabel = el.dataset.director;
+    var sessionId = el.dataset.sid;
+    var sName = el.dataset.name;
+    $('session-dropdown').classList.remove('open');
+    selectSubSession(directorLabel, sessionId, sName);
+  };
+
+  // Close dropdown on outside click
+  document.addEventListener('click', function(e) {
+    var dd = $('session-dropdown');
+    if (dd && !dd.contains(e.target)) {
+      dd.classList.remove('open');
+    }
+  });
 
   function renderPoolList() {
     // Merged into renderSessionList — no-op for backward compat
@@ -741,9 +789,9 @@
     var counts = $('task-counts');
 
     var parts = [];
-    if (tSum.running) parts.push(tSum.running + ' running');
+    if (tSum.running) parts.push(tSum.running + ' run');
     if (tSum.completed) parts.push(tSum.completed + ' done');
-    if (tSum.failed) parts.push(tSum.failed + ' failed');
+    if (tSum.failed) parts.push(tSum.failed + ' fail');
     counts.textContent = parts.length ? '(' + parts.join(', ') + ')' : '';
 
     if (tList.length === 0) {
@@ -1139,6 +1187,178 @@
     }
   }
 
+  // ── Cron Jobs ──
+  function loadCronJobs() {
+    fetch('/api/cron-jobs').then(function(r) { return r.json(); }).then(function(d) {
+      cronJobs = d || [];
+      renderCronList();
+      // Refresh detail view if currently viewing a cron job
+      if (viewMode === 'cron' && selectedCronId) {
+        var found = null;
+        for (var i = 0; i < cronJobs.length; i++) {
+          if (cronJobs[i].id === selectedCronId) { found = cronJobs[i]; break; }
+        }
+        if (found) { cronDetail = found; renderCronView(); }
+      }
+    }).catch(function() {});
+  }
+
+  function renderCronList() {
+    var el = $('cron-list');
+    var countEl = $('cron-count');
+    if (!el) return;
+
+    var enabled = 0;
+    for (var i = 0; i < cronJobs.length; i++) {
+      if (cronJobs[i].enabled) enabled++;
+    }
+    countEl.textContent = cronJobs.length > 0 ? '(' + enabled + '/' + cronJobs.length + ')' : '';
+
+    if (cronJobs.length === 0) {
+      el.innerHTML = '<div class="empty">No cron jobs</div>';
+      return;
+    }
+
+    var html = '';
+    for (var j = 0; j < cronJobs.length; j++) {
+      var c = cronJobs[j];
+      var isActive = viewMode === 'cron' && selectedCronId === c.id;
+      var dotColor = c.enabled ? 'var(--green)' : 'var(--overlay0)';
+      var lastRun = c.last_run_at ? fmtAgo(new Date(c.last_run_at).getTime()) : '--';
+      html += '<div class="list-item' + (isActive ? ' active' : '') +
+        '" onclick="selectCron(\'' + esc(c.id) + '\')">' +
+        '<span class="item-icon" style="color:' + dotColor + '">&#9679;</span>' +
+        '<span class="item-label">' + esc(c.name) + '</span>' +
+        '<span class="item-meta">' + esc(c.schedule) + '</span></div>';
+    }
+    el.innerHTML = html;
+  }
+
+  window.selectCron = function(cronId) {
+    stopLogPolling();
+    viewMode = 'cron';
+    selectedCronId = cronId;
+    selectedSessionId = null;
+    selectedTaskId = null;
+    cronDetail = null;
+    $('detail-content').classList.remove('task-split-mode');
+    hideChat();
+    $('session-dropdown').style.display = 'none';
+    renderSessionList();
+    renderTaskList();
+    renderCronList();
+    $('dh-title').innerHTML = '<span style="cursor:pointer;color:var(--blue);margin-right:8px" onclick="selectDashboard()">\u2190</span>Cron Job';
+    $('dh-sub').textContent = cronId;
+    // Find from cache or fetch
+    for (var i = 0; i < cronJobs.length; i++) {
+      if (cronJobs[i].id === cronId) { cronDetail = cronJobs[i]; break; }
+    }
+    if (cronDetail) {
+      renderCronView();
+    } else {
+      fetch('/api/cron-jobs/' + cronId).then(function(r) { return r.json(); }).then(function(d) {
+        cronDetail = d;
+        renderCronView();
+      }).catch(function() {
+        $('detail-content').innerHTML = '<div class="empty" style="padding:40px">Failed to load cron job</div>';
+      });
+    }
+  };
+
+  function renderCronView() {
+    var container = $('detail-content');
+    if (!cronDetail) {
+      container.innerHTML = '<div class="empty" style="padding:40px">Loading cron job...</div>';
+      return;
+    }
+
+    var c = cronDetail;
+    var html = '<div class="task-detail">';
+
+    // Meta fields
+    html += '<div class="td-meta">';
+    html += '<div class="td-field"><div class="td-field-label">Name</div><div class="td-field-value">' + esc(c.name) + '</div></div>';
+    html += '<div class="td-field"><div class="td-field-label">Schedule</div><div class="td-field-value">' + esc(c.schedule) + '</div></div>';
+    html += '<div class="td-field"><div class="td-field-label">Role</div><div class="td-field-value">' + esc(c.role || '--') + '</div></div>';
+    html += '<div class="td-field"><div class="td-field-label">Action Type</div><div class="td-field-value">' + esc(c.action_type || '--') + '</div></div>';
+    html += '<div class="td-field"><div class="td-field-label">Enabled</div><div class="td-field-value" style="color:' + (c.enabled ? 'var(--green)' : 'var(--red)') + '">' + (c.enabled ? 'Yes' : 'No') + '</div></div>';
+    html += '<div class="td-field"><div class="td-field-label">Last Run</div><div class="td-field-value">' + (c.last_run_at ? esc(fmtAgo(new Date(c.last_run_at).getTime())) : '--') + '</div></div>';
+    html += '<div class="td-field"><div class="td-field-label">Created</div><div class="td-field-value">' + esc(c.created_at || '--') + '</div></div>';
+    if (c.agent) {
+      html += '<div class="td-field"><div class="td-field-label">Agent</div><div class="td-field-value">' + esc(c.agent) + '</div></div>';
+    }
+    html += '</div>';
+
+    // Description
+    if (c.description) {
+      html += '<div style="font-size:13px;color:var(--subtext1);margin-bottom:12px">' + esc(c.description) + '</div>';
+    }
+
+    // Prompt section
+    if (c.prompt) {
+      html += '<div class="td-section">';
+      html += '<div class="td-section-title">Prompt</div>';
+      html += '<div class="td-prompt">' + esc(c.prompt) + '</div>';
+      html += '</div>';
+    }
+
+    // Message section (for director_msg action type)
+    if (c.message) {
+      html += '<div class="td-section">';
+      html += '<div class="td-section-title">Message</div>';
+      html += '<div class="td-prompt">' + esc(c.message) + '</div>';
+      html += '</div>';
+    }
+
+    // Action name (for shell_action action type)
+    if (c.action_name) {
+      html += '<div class="td-section">';
+      html += '<div class="td-section-title">Action Name</div>';
+      html += '<div class="td-prompt">' + esc(c.action_name) + '</div>';
+      html += '</div>';
+    }
+
+    // Action buttons
+    html += '<div style="display:flex;gap:8px;margin-top:16px">';
+    html += '<button class="btn ' + (c.enabled ? 'btn-esc' : 'btn-flush') + '" onclick="toggleCron(\'' + esc(c.id) + '\')">' + (c.enabled ? 'Disable' : 'Enable') + '</button>';
+    html += '<button class="btn btn-restart" onclick="deleteCron(\'' + esc(c.id) + '\')">Delete</button>';
+    html += '</div>';
+
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  window.toggleCron = function(cronId) {
+    fetch('/api/cron-jobs/' + cronId + '/toggle', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        showToast(d.enabled ? 'Cron job enabled' : 'Cron job disabled', true);
+        loadCronJobs();
+      })
+      .catch(function(err) {
+        showToast('Toggle failed: ' + err.message, false);
+      });
+  };
+
+  window.deleteCron = function(cronId) {
+    if (!confirm('Delete this cron job?')) return;
+    fetch('/api/cron-jobs/' + cronId, { method: 'DELETE' })
+      .then(function(r) {
+        if (r.ok) {
+          showToast('Cron job deleted', true);
+          selectedCronId = null;
+          cronDetail = null;
+          loadCronJobs();
+          selectDashboard();
+        } else {
+          return r.json().then(function(d) { throw new Error(d.error || 'Delete failed'); });
+        }
+      })
+      .catch(function(err) {
+        showToast('Delete failed: ' + err.message, false);
+      });
+  };
+
   // ── Elapsed timer ──
   setInterval(function () {
     if (!data || !data.activity) return;
@@ -1153,6 +1373,7 @@
   // [BUG1 FIX] Refresh sessions for the currently expanded director, not always main
   setInterval(function () {
     if (wsConnected && expandedDirector) loadSessions(expandedDirector);
+    if (wsConnected) loadCronJobs();
   }, 30000);
 
   // ── Resize handles (drag to resize panels) ──

@@ -10,7 +10,7 @@ import { TaskRunner, type TaskResult } from './task-runner.js';
 import { spawnPersona } from './persona-process.js';
 import { createInterface } from 'readline';
 import { Scheduler } from './scheduler.js';
-import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore } from './task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task-store.js';
 import { writeFileSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log } from './logger.js';
@@ -148,7 +148,7 @@ async function main() {
   taskRunner.on('task-started', (taskId: string, spawnArgs: string[]) => {
     updateTask(taskId, {
       status: 'running',
-      started_at: new Date().toISOString(),
+      started_at: localNow(),
       extra: { spawnArgs },
     });
   });
@@ -156,7 +156,7 @@ async function main() {
   taskRunner.on('task-completed', async (result: TaskResult) => {
     updateTask(result.taskId, {
       status: 'completed',
-      completed_at: new Date().toISOString(),
+      completed_at: localNow(),
       duration_ms: result.durationMs,
       cost_usd: result.costUsd ?? null,
       result_file: result.resultFile ?? null,
@@ -177,7 +177,7 @@ async function main() {
   taskRunner.on('task-failed', async (result: TaskResult) => {
     updateTask(result.taskId, {
       status: 'failed',
-      completed_at: new Date().toISOString(),
+      completed_at: localNow(),
       error: result.error ?? 'unknown',
       duration_ms: result.durationMs,
       cost_usd: result.costUsd ?? null,
@@ -256,7 +256,7 @@ async function main() {
         return active.some((t) => t.type === 'cron' && (t.status === 'running' || t.status === 'dispatched'));
       },
       markJobRun: (jobId) => {
-        updateCronJob(jobId, { last_run_at: new Date().toISOString() });
+        updateCronJob(jobId, { last_run_at: localNow() });
       },
       executeDirectorMsg: async (job) => {
         // 模板变量替换：{today} {yesterday}
@@ -285,7 +285,13 @@ async function main() {
         if (lastChatId) {
           const actionType = job.action_type ?? 'spawn_role';
           const emoji = actionType === 'spawn_role' ? '🚀' : '⏰';
-          messaging.sendMessage(lastChatId, `${emoji} 定时任务「${job.name}」已触发`).catch((err) => {
+          const parts = [`${emoji} 定时任务「${job.name}」已触发`];
+          parts.push(`📋 ${job.description}`);
+          parts.push(`🔄 ${job.schedule} | ${actionType}`);
+          if (actionType === 'director_msg' && job.message) {
+            parts.push(`💬 ${job.message.slice(0, 100)}`);
+          }
+          messaging.sendMessage(lastChatId, parts.join('\n')).catch((err) => {
             console.warn('[shell] Failed to send cron notification:', err);
           });
         }

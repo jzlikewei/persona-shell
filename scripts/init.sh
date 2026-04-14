@@ -25,6 +25,7 @@ fi
 
 # 3. 配置飞书凭据
 CONFIG="$PERSONA_DIR/config.yaml"
+IM_SECRET_CONFIG="$PERSONA_DIR/im_secret.yaml"
 if [ ! -f "$CONFIG" ]; then
   cp "$SCRIPT_DIR/config.example.yaml" "$CONFIG"
   echo ""
@@ -36,8 +37,9 @@ if [ ! -f "$CONFIG" ]; then
 
   if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
     sed -i '' "s/cli_xxxx/$APP_ID/" "$CONFIG" 2>/dev/null || sed -i "s/cli_xxxx/$APP_ID/" "$CONFIG"
-    sed -i '' "s/app_secret: \"xxxx\"/app_secret: \"$APP_SECRET\"/" "$CONFIG" 2>/dev/null || sed -i "s/app_secret: \"xxxx\"/app_secret: \"$APP_SECRET\"/" "$CONFIG"
-    echo "   ✓ 凭据已写入 $CONFIG"
+    printf 'feishu:\n  app_secret: "%s"\n' "$APP_SECRET" > "$IM_SECRET_CONFIG"
+    echo "   ✓ App ID 已写入 $CONFIG"
+    echo "   ✓ App Secret 已写入 $IM_SECRET_CONFIG"
   else
     echo "   ⏭️  跳过，请稍后手动编辑 $CONFIG"
   fi

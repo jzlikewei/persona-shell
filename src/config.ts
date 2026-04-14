@@ -1,16 +1,23 @@
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { load } from 'js-yaml';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { homedir } from 'os';
 
 export type AgentProviderType = 'claude' | 'codex';
+export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
+export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
+export type CodexApproval = 'untrusted' | 'on-request' | 'never';
 
 export interface AgentProviderConfig {
   type: AgentProviderType;
   command: string;
-  args?: string[];
-  foreground_args?: string[];
-  background_args?: string[];
+  bare?: boolean;
+  dangerously_skip_permissions?: boolean;
+  effort?: ClaudeEffort;
+  sandbox?: CodexSandbox;
+  approval?: CodexApproval;
+  search?: boolean;
+  model?: string;
 }
 
 export interface AgentsConfig {
@@ -79,9 +86,18 @@ export function loadConfig(path?: string): Config {
   const configPath = path ?? resolve(homedir(), '.persona', 'config.yaml');
   const raw = readFileSync(configPath, 'utf-8');
   const yaml = load(raw) as Record<string, any>;
+  const secretPath = resolve(dirname(configPath), 'im_secret.yaml');
+  const secretYaml = existsSync(secretPath)
+    ? (load(readFileSync(secretPath, 'utf-8')) as Record<string, any>)
+    : {};
 
-  if (!yaml.feishu?.app_id || !yaml.feishu?.app_secret) {
-    throw new Error('feishu.app_id and feishu.app_secret are required in config.yaml');
+  const feishu = {
+    ...(yaml.feishu ?? {}),
+    ...(secretYaml.feishu ?? {}),
+  };
+
+  if (!feishu.app_id || !feishu.app_secret) {
+    throw new Error('feishu.app_id is required in config.yaml, feishu.app_secret is required in im_secret.yaml (or config.yaml for compatibility)');
   }
 
   const dir = yaml.director ?? {};
@@ -89,32 +105,39 @@ export function loadConfig(path?: string): Config {
   const rawProviders = yaml.agents?.providers as Record<string, {
     type?: unknown;
     command?: unknown;
-    args?: unknown;
-    foreground_args?: unknown;
-    background_args?: unknown;
+    bare?: unknown;
+    dangerously_skip_permissions?: unknown;
+    effort?: unknown;
+    sandbox?: unknown;
+    approval?: unknown;
+    search?: unknown;
+    model?: unknown;
   }> | undefined;
   const providerEntries = Object.entries(rawProviders ?? {});
   const providers: Record<string, AgentProviderConfig> = {};
-
-  const normalizeArgs = (value: unknown): string[] | undefined => {
-    if (!Array.isArray(value)) return undefined;
-    const args = value.filter((arg): arg is string => typeof arg === 'string' && arg.length > 0);
-    return args.length > 0 ? args : undefined;
-  };
 
   for (const [name, provider] of providerEntries) {
     const type = provider?.type;
     const command = provider?.command;
     if ((type === 'claude' || type === 'codex') && typeof command === 'string' && command.trim()) {
-      const args = normalizeArgs(provider?.args);
-      const foregroundArgs = normalizeArgs(provider?.foreground_args);
-      const backgroundArgs = normalizeArgs(provider?.background_args);
       providers[name] = {
         type,
         command: command.trim(),
-        ...(args ? { args } : {}),
-        ...(foregroundArgs ? { foreground_args: foregroundArgs } : {}),
-        ...(backgroundArgs ? { background_args: backgroundArgs } : {}),
+        ...(typeof provider?.bare === 'boolean' ? { bare: provider.bare } : {}),
+        ...(typeof provider?.dangerously_skip_permissions === 'boolean'
+          ? { dangerously_skip_permissions: provider.dangerously_skip_permissions }
+          : {}),
+        ...(provider?.effort === 'low' || provider?.effort === 'medium' || provider?.effort === 'high' || provider?.effort === 'max'
+          ? { effort: provider.effort }
+          : {}),
+        ...(provider?.sandbox === 'read-only' || provider?.sandbox === 'workspace-write' || provider?.sandbox === 'danger-full-access'
+          ? { sandbox: provider.sandbox }
+          : {}),
+        ...(provider?.approval === 'untrusted' || provider?.approval === 'on-request' || provider?.approval === 'never'
+          ? { approval: provider.approval }
+          : {}),
+        ...(typeof provider?.search === 'boolean' ? { search: provider.search } : {}),
+        ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
       };
     }
   }
@@ -123,23 +146,9 @@ export function loadConfig(path?: string): Config {
     providers.claude = {
       type: 'claude',
       command: 'claude',
-      foreground_args: [
-        '--print',
-        '--output-format', 'stream-json',
-        '--verbose',
-        '--dangerously-skip-permissions',
-        '--input-format', 'stream-json',
-        '--bare',
-        '--effort', 'max',
-        '--include-partial-messages',
-      ],
-      background_args: [
-        '--print',
-        '--output-format', 'stream-json',
-        '--verbose',
-        '--dangerously-skip-permissions',
-        '--bare',
-      ],
+      bare: true,
+      dangerously_skip_permissions: true,
+      effort: 'max',
     };
   }
 
@@ -147,12 +156,9 @@ export function loadConfig(path?: string): Config {
     providers.codex = {
       type: 'codex',
       command: 'codex',
-      background_args: [
-        'exec',
-        '--json',
-        '--skip-git-repo-check',
-        '--dangerously-bypass-approvals-and-sandbox',
-      ],
+      sandbox: 'danger-full-access',
+      approval: 'never',
+      search: false,
     };
   }
 
@@ -176,7 +182,7 @@ export function loadConfig(path?: string): Config {
       defaults,
       providers,
     },
-    feishu: yaml.feishu,
+    feishu,
     director: {
       persona_dir: expandHome(dir.persona_dir ?? '~/.persona'),
       pipe_dir: dir.pipe_dir ?? '/tmp/persona',

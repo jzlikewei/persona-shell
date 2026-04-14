@@ -20,7 +20,8 @@ bun run check
 
 # 开发模式运行
 cp config.example.yaml ~/.persona/config.yaml
-# 编辑 config.yaml 填入飞书凭据
+cp im_secret.example.yaml ~/.persona/im_secret.yaml
+# 编辑 config.yaml / im_secret.yaml 填入飞书凭据
 bun run dev
 ```
 

@@ -28,12 +28,12 @@
 
 Persona Shell 运行时会处理以下敏感信息：
 
-- **飞书 App 凭据**：存放在 `~/.persona/config.yaml`，已在 `.gitignore` 中排除
+- **飞书 App 凭据**：`app_id` 存放在 `~/.persona/config.yaml`，`app_secret` 存放在 `~/.persona/im_secret.yaml`，均应加入 `.gitignore`
 - **Web 控制台**：默认仅监听 `127.0.0.1:3000`，支持 token 认证（`console.token` 配置项）
 - **Named Pipe**：IPC 管道创建在 `/tmp/persona/`，依赖操作系统文件权限
 
 部署时请确保：
 
-- `config.yaml` 不被提交到版本控制
+- `config.yaml` 和 `im_secret.yaml` 不被提交到版本控制
 - 不要将 Web 控制台端口暴露到公网
 - 如需远程访问，请通过 SSH 隧道或 VPN

@@ -109,14 +109,29 @@ function argsToShellCmd(executable: string, args: string[]): string {
  * - background 模式：stdout pipe 用于读取 JSON/stream-json 输出 (子角色)
  */
 export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
-  const args = [...(options.agent.args ?? [])];
+  const args: string[] = [];
 
   // foreground (Director) 专用参数
   if (options.mode === 'foreground') {
     if (options.agent.type !== 'claude') {
       throw new Error(`Foreground mode is not supported for agent provider "${options.agent.name}"`);
     }
-    args.push(...(options.agent.foreground_args ?? []));
+    args.push(
+      '--print',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--input-format', 'stream-json',
+      '--include-partial-messages',
+    );
+    if (options.agent.dangerously_skip_permissions !== false) {
+      args.push('--dangerously-skip-permissions');
+    }
+    if (options.agent.bare !== false) {
+      args.push('--bare');
+    }
+    if (options.agent.effort) {
+      args.push('--effort', options.agent.effort);
+    }
     args.push(...buildClaudeInjectionArgs(options.personaDir));
     args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
     if (options.mcpConfigPath) args.push('--mcp-config', options.mcpConfigPath);
@@ -127,12 +142,30 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   // background (子角色) 专用参数
   if (options.mode === 'background') {
     if (options.agent.type === 'claude') {
-      args.push(...(options.agent.background_args ?? []));
+      args.push('--print', '--output-format', 'stream-json', '--verbose');
+      if (options.agent.dangerously_skip_permissions !== false) {
+        args.push('--dangerously-skip-permissions');
+      }
+      if (options.agent.bare !== false) {
+        args.push('--bare');
+      }
       args.push(...buildClaudeInjectionArgs(options.personaDir));
       args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
       if (options.prompt) args.push('-p', options.prompt);
     } else if (options.agent.type === 'codex') {
-      args.push(...(options.agent.background_args ?? []));
+      args.push('exec', '--json', '--skip-git-repo-check');
+      if (options.agent.model) {
+        args.push('--model', options.agent.model);
+      }
+      if (options.agent.search) {
+        args.push('--search');
+      }
+      if (options.agent.sandbox) {
+        args.push('--sandbox', options.agent.sandbox);
+      }
+      if (options.agent.approval) {
+        args.push('--ask-for-approval', options.agent.approval);
+      }
       args.push('--cd', options.personaDir);
       const prompt = buildCodexPrompt(options.role, options.personaDir, options.prompt ?? '');
       if (prompt) args.push(prompt);

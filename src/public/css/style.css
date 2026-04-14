@@ -477,49 +477,83 @@ html, body {
 .err-text { color: var(--red); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .err-time { font-family: var(--font-mono); font-size: 10px; color: var(--overlay0); flex-shrink: 0; }
 
-/* ── Session Tabs (above chat) ── */
-#session-tabs {
-  display: none;
-  flex-shrink: 0;
-  padding: 4px 12px;
-  background: var(--mantle);
-  border-bottom: 1px solid var(--surface0);
-  overflow-x: auto;
-  white-space: nowrap;
-  gap: 4px;
-  align-items: center;
-}
-#session-tabs.visible { display: flex; }
-#session-tabs::-webkit-scrollbar { height: 3px; }
-#session-tabs::-webkit-scrollbar-track { background: transparent; }
-#session-tabs::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
-
-.session-tab {
+/* ── Session Dropdown (custom, in header) ── */
+.sd { position: relative; }
+.sd-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
-  border-radius: 12px;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  background: var(--surface1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--subtext1);
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--overlay1);
   cursor: pointer;
-  transition: background .15s, color .15s;
-  flex-shrink: 0;
-  border: none;
-  background: none;
+  transition: background .15s, border-color .15s;
+  line-height: 1.4;
 }
-.session-tab:hover { background: var(--surface0); color: var(--subtext1); }
-.session-tab.active { background: var(--surface1); color: var(--text); }
-.session-tab .tab-dot {
+.sd-trigger:hover { background: var(--surface2); }
+.sd.open .sd-trigger { border-color: var(--blue); }
+.sd-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
 }
-.session-tab .tab-count {
+.sd-arrow {
+  font-size: 8px;
+  color: var(--overlay0);
+  transition: transform .15s;
+}
+.sd.open .sd-arrow { transform: rotate(180deg); }
+.sd-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 180px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--surface0);
+  border: 1px solid var(--surface2);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  z-index: 100;
+  padding: 4px;
+}
+.sd.open .sd-menu { display: block; }
+.sd-menu::-webkit-scrollbar { width: 4px; }
+.sd-menu::-webkit-scrollbar-track { background: transparent; }
+.sd-menu::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 2px; }
+.sd-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--subtext1);
+  cursor: pointer;
+  transition: background .1s;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+.sd-item:hover { background: var(--surface1); }
+.sd-item.active { background: var(--surface1); color: var(--text); }
+.sd-item .sd-item-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sd-item .sd-item-count {
+  margin-left: auto;
   font-size: 10px;
   color: var(--overlay0);
-  margin-left: 2px;
+  flex-shrink: 0;
 }
 
 /* ── Chat View (session messages) ── */

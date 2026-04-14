@@ -87,6 +87,14 @@
         </div>
       </div>
 
+      <!-- Cron Jobs -->
+      <div class="sb-section" style="display:flex;flex-direction:column;min-height:0;overflow:hidden">
+        <div class="sb-title">Cron Jobs <span id="cron-count" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
+        <div class="sb-scroll" id="cron-list">
+          <div class="empty">No cron jobs</div>
+        </div>
+      </div>
+
       <!-- Actions -->
       <div class="sb-section">
         <div class="sb-title">Actions</div>
@@ -110,12 +118,19 @@
     <div id="main">
       <div id="detail-header">
         <span class="dh-title" id="dh-title">Dashboard</span>
+        <div class="sd" id="session-dropdown" style="display:none">
+          <button class="sd-trigger" id="sd-trigger" onclick="toggleSessionDropdown()">
+            <span class="sd-dot" id="sd-dot"></span>
+            <span class="sd-label" id="sd-label"></span>
+            <span class="sd-arrow">&#9662;</span>
+          </button>
+          <div class="sd-menu" id="sd-menu"></div>
+        </div>
         <span class="dh-sub" id="dh-sub"></span>
       </div>
       <div id="detail-content">
         <!-- filled by JS -->
       </div>
-      <div id="session-tabs"></div>
       <div id="chat-container">
         <div id="chat-scroll"><div id="chat-messages"></div></div>
         <div id="chat-input-bar">

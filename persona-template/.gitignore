@@ -2,4 +2,5 @@
 logs/
 *.log
 config.yaml
+im_secret.yaml
 state/
