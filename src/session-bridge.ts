@@ -171,6 +171,8 @@ export class SessionBridge extends EventEmitter {
 
   async start(): Promise<boolean> {
     if (this.isCodex) {
+      // Codex currently uses a turn-based transport: the SessionBridge is long-lived,
+      // but each turn runs a fresh `codex exec` child and resumes via sessionId/thread_id.
       this.ensureSessionDir();
       const restoredSession = this.readSession();
       this.sessionId = restoredSession;
@@ -1155,6 +1157,8 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
+  // Codex transport is currently turn-based rather than a daemon process.
+  // This queue serializes user/system turns and spawns one short-lived `codex exec` child per turn.
   private processNextCodexTurn(): void {
     if (!this.isCodex || this.codexRunning) return;
     const content = this.codexQueue.shift();

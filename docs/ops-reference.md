@@ -42,6 +42,8 @@ launchctl stop  com.persona.shell                                # 停止
 | Pool Director（Claude） | `/tmp/persona/{label}/`（群聊 Director，含 session / PID / FIFO） |
 | Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`，但无常驻 PID/FIFO |
 
+当前 Codex pool Director 是 turn-based transport：群会话常驻，但底层 `codex` 进程不会常驻；每次处理消息时会短暂拉起一次。
+
 ## Web 控制台
 
 `http://localhost:3000` — 状态面板 / 会话查看 / 流式响应 / 任务管理

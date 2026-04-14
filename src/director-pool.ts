@@ -398,7 +398,8 @@ export class DirectorPool extends EventEmitter {
           continue;
         }
       } else {
-        // Codex-backed Directors are turn-based; restoring the session metadata is enough.
+        // Codex-backed Directors are turn-based transports, not long-lived OS daemons.
+        // Restoring the persisted session metadata is enough; the next turn will spawn `codex exec` again.
         console.log(`[pool] Restoring Codex Director for "${item.groupName}" (label=${item.label})`);
         try {
           await bridge.start();
