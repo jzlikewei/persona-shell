@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { randomBytes } from 'crypto';
-import { getState, setState } from './task-store.js';
+import { getState, setState, deleteState } from './task-store.js';
 
 export interface QueueItem {
   text: string;
@@ -21,9 +21,18 @@ export function generateCorrelationId(): string {
 export class MessageQueue {
   private items: Map<string, QueueItem> = new Map();
   private logPath: string;
+  private stateKey: string;
 
-  constructor(logPath: string) {
+  constructor(logPath: string, stateKey?: string) {
     this.logPath = logPath;
+    // Derive a unique state key from logPath to prevent cross-queue contamination
+    // e.g., "logs/queue.log" → "queue:main", "logs/queue-465eda2a.log" → "queue:465eda2a"
+    if (stateKey) {
+      this.stateKey = stateKey;
+    } else {
+      const base = logPath.replace(/^.*\/queue-?/, '').replace(/\.log$/, '');
+      this.stateKey = base ? `queue:${base}` : 'queue:main';
+    }
     const dir = dirname(logPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -34,7 +43,14 @@ export class MessageQueue {
    *  Skips items older than 5 minutes — after Shell restart, Director has moved on
    *  and those messages are orphans. */
   restoreFromState(): number {
-    const saved = getState<QueueItem[]>('queue');
+    const saved = getState<QueueItem[]>(this.stateKey);
+    // Migration: also check legacy shared key 'queue' for main queue
+    if (!saved && this.stateKey === 'queue:main') {
+      const legacy = getState<QueueItem[]>('queue');
+      if (legacy && Array.isArray(legacy) && legacy.length > 0) {
+        deleteState('queue'); // Clean up legacy key
+      }
+    }
     if (!saved || !Array.isArray(saved) || saved.length === 0) return 0;
     const MAX_AGE_MS = 5 * 60_000; // 5 minutes
     const now = Date.now();
@@ -61,7 +77,7 @@ export class MessageQueue {
   }
 
   private persist(): void {
-    setState<QueueItem[]>('queue', Array.from(this.items.values()));
+    setState<QueueItem[]>(this.stateKey, Array.from(this.items.values()));
   }
 
   /** 返回队列当前所有项的快照，供控制台使用 */

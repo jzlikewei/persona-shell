@@ -11,6 +11,8 @@ import { open } from 'fs/promises';
 import { join } from 'path';
 import type { FileHandle } from 'fs/promises';
 import { spawnPersona } from './persona-process.js';
+import type { AgentRuntimeConfig } from './persona-process.js';
+import type { Config } from './config.js';
 
 export interface ClaudeProcessPaths {
   /** FIFO pipe 存放目录 */
@@ -24,7 +26,7 @@ export interface ClaudeProcessPaths {
 export interface ClaudeSpawnOptions {
   role: string;
   personaDir: string;
-  claudePath: string;
+  agents: Config['agents'];
   mcpConfigPath?: string;
   sessionId?: string;
   sessionName?: string;
@@ -75,10 +77,24 @@ export class ClaudeProcess {
   /** Spawn a Claude CLI foreground process with FIFO pipe redirection.
    *  Returns the PID, or null if spawn failed. */
   spawn(opts: ClaudeSpawnOptions): number | null {
+    const provider = opts.agents.providers.claude;
+    if (!provider || provider.type !== 'claude') {
+      throw new Error('Claude provider is required for foreground Director process');
+    }
+
+    const claudeAgent: AgentRuntimeConfig = {
+      name: 'claude',
+      type: 'claude',
+      command: provider.command,
+      ...(provider.args ? { args: provider.args } : {}),
+      ...(provider.foreground_args ? { foreground_args: provider.foreground_args } : {}),
+      ...(provider.background_args ? { background_args: provider.background_args } : {}),
+    };
+
     const { child } = spawnPersona({
       role: opts.role,
       personaDir: opts.personaDir,
-      claudePath: opts.claudePath,
+      agent: claudeAgent,
       mode: 'foreground',
       mcpConfigPath: opts.mcpConfigPath,
       sessionId: opts.sessionId,

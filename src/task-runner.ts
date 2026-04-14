@@ -4,9 +4,10 @@ import { mkdirSync, existsSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { spawnPersona } from './persona-process.js';
+import { resolveAgentProvider, type Config } from './config.js';
 
 export interface TaskRunnerConfig {
-  claudePath: string;
+  agents: Config['agents'];
   personaDir: string;
   defaultTimeoutMs: number;
 }
@@ -14,6 +15,7 @@ export interface TaskRunnerConfig {
 export interface RunTaskInput {
   taskId: string;
   role: string;
+  agent?: string;
   prompt: string;
   description?: string;
   timeoutMs?: number;
@@ -58,6 +60,7 @@ export class TaskRunner extends EventEmitter {
     const timeoutMs = input.timeoutMs ?? this.config.defaultTimeoutMs;
     const startedAt = Date.now();
     const personaDir = this.config.personaDir;
+    const agent = resolveAgentProvider(this.config.agents, input.role, input.agent);
 
     // 构建产出文件名：用描述语义化，保留 ID 保证唯一
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
@@ -73,7 +76,7 @@ export class TaskRunner extends EventEmitter {
     const { child, args } = spawnPersona({
       role: input.role,
       personaDir,
-      claudePath: this.config.claudePath,
+      agent,
       mode: 'background',
       prompt: fullPrompt,
       stderrPath: join(LOG_DIR, `task-${input.taskId}.stderr.log`),
@@ -93,7 +96,7 @@ export class TaskRunner extends EventEmitter {
       return;
     }
 
-    console.log(`[task-runner] Task ${input.taskId} started (role=${input.role}, pid=${child.pid}, timeout=${timeoutMs}ms)`);
+    console.log(`[task-runner] Task ${input.taskId} started (role=${input.role}, agent=${agent.name}, pid=${child.pid}, timeout=${timeoutMs}ms)`);
     this.emit('task-started', input.taskId, args);
 
     // Timeout protection
@@ -113,8 +116,9 @@ export class TaskRunner extends EventEmitter {
       try { appendFileSync(stdoutLogPath, line + '\n'); } catch { /* best-effort */ }
       try {
         const event = JSON.parse(line);
-        if (event.type === 'result' && event.cost_usd != null) {
-          costUsd = event.cost_usd;
+        if (event.type === 'result') {
+          if (event.cost_usd != null) costUsd = event.cost_usd;
+          if (event.total_cost_usd != null) costUsd = event.total_cost_usd;
         }
       } catch {
         // non-JSON line, ignore

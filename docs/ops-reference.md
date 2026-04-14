@@ -12,19 +12,23 @@ launchctl stop  com.persona.shell                                # 停止
 
 | 命令 | 作用域 | 说明 |
 |------|--------|------|
-| `/esc` | 当前会话 | 取消正在处理的消息（SIGINT + resume） |
-| `/flush` | 当前会话 | 上下文刷新（checkpoint → 新 session → bootstrap） |
-| `/restart` | 全局 | 重启 Shell 进程（launchd 拉起，代码更新生效） |
-| `/restart-shell` | 全局 | 同上（显式命名，区别于会话级操作） |
+| `/esc` | 当前会话 | 取消队列中最早的消息 |
+| `/flush` | 当前会话 | 保存上下文后刷新（checkpoint → 新 session → bootstrap） |
+| `/clear` | 当前会话 | 清空上下文（不保存，直接重置） |
+| `/session-restart` | 当前会话 | 重启当前 Director（保留 session，加载新配置） |
+| `/shell-restart` | 全局 | 重启整个 Shell 进程（代码更新生效） |
+| `/status` | 当前会话 | 查看 Director 状态摘要（PID、token、队列等） |
+| `/help` | 全局 | 列出所有可用命令 |
 
 ## 日志
 
 | 日志 | 路径 |
 |------|------|
-| Shell stdout/stderr | `logs/bridge.stdout.log` / `logs/bridge.stderr.log` |
+| Shell stdout/stderr | `logs/shell.stdout.log` / `logs/shell.stderr.log` |
 | 消息队列 | `logs/queue.log` |
 | Director stderr | `/tmp/persona/director-stderr.log` |
-| 会话记录 | `logs/{label}/output-{date}.log` |
+| 会话输入记录 | `logs/{label}/input-{YYYYMMDD}.log` |
+| 会话输出记录 | `logs/{label}/output-{YYYYMMDD}.log` |
 
 ## 运行时文件
 
@@ -33,7 +37,7 @@ launchctl stop  com.persona.shell                                # 停止
 | Director PID | `/tmp/persona/director.pid` |
 | Session ID | `/tmp/persona/director-session` |
 | FIFO 管道 | `/tmp/persona/director-in`, `director-out` |
-| Pool Director | `/tmp/persona/{label}/`（群聊 Director） |
+| Pool Director | `/tmp/persona/{label}/`（群聊 Director，含 session / PID / FIFO） |
 
 ## Web 控制台
 

@@ -6,6 +6,7 @@ import { join } from 'path';
 export interface CreateTaskInput {
   type: 'role' | 'cron';
   role: string;
+  agent?: string;
   description: string;
   prompt: string;
   max_retry?: number;
@@ -18,6 +19,7 @@ export interface Task {
   id: string;
   type: string;
   role: string;
+  agent: string | null;
   description: string;
   prompt: string;
   status: 'dispatched' | 'running' | 'completed' | 'failed';
@@ -43,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id           TEXT PRIMARY KEY,
   type         TEXT NOT NULL,
   role         TEXT NOT NULL,
+  agent        TEXT,
   description  TEXT NOT NULL,
   prompt       TEXT NOT NULL,
   status       TEXT NOT NULL,
@@ -69,6 +72,7 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   role        TEXT NOT NULL,
+  agent       TEXT,
   description TEXT NOT NULL,
   prompt      TEXT NOT NULL,
   schedule    TEXT NOT NULL,
@@ -140,6 +144,9 @@ function migrateCronJobsTable(db: Database): void {
   if (!existing.has('action_type')) {
     db.run("ALTER TABLE cron_jobs ADD COLUMN action_type TEXT NOT NULL DEFAULT 'spawn_role'");
   }
+  if (!existing.has('agent')) {
+    db.run('ALTER TABLE cron_jobs ADD COLUMN agent TEXT');
+  }
   if (!existing.has('message')) {
     db.run("ALTER TABLE cron_jobs ADD COLUMN message TEXT");
   }
@@ -155,6 +162,9 @@ function migrateTasksTable(db: Database): void {
 
   if (!existing.has('source_director')) {
     db.run("ALTER TABLE tasks ADD COLUMN source_director TEXT");
+  }
+  if (!existing.has('agent')) {
+    db.run('ALTER TABLE tasks ADD COLUMN agent TEXT');
   }
 }
 
@@ -187,11 +197,12 @@ export function createTask(input: CreateTaskInput): Task {
   const now = new Date().toISOString();
   const extra = input.extra ? JSON.stringify(input.extra) : null;
   const sourceDirector = input.source_director ?? null;
+  const agent = input.agent?.trim() || null;
 
   d.run(
-    `INSERT INTO tasks (id, type, role, description, prompt, status, created_at, retry_count, max_retry, extra, source_director)
-     VALUES (?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?)`,
-    [id, input.type, input.role, input.description, input.prompt, now, input.max_retry ?? 3, extra, sourceDirector],
+    `INSERT INTO tasks (id, type, role, agent, description, prompt, status, created_at, retry_count, max_retry, extra, source_director)
+     VALUES (?, ?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?)`,
+    [id, input.type, input.role, agent, input.description, input.prompt, now, input.max_retry ?? 3, extra, sourceDirector],
   );
 
   return getTask(id)!;
@@ -224,7 +235,7 @@ export function listTasks(filter?: { status?: string; role?: string; limit?: num
 
 export function updateTask(id: string, update: Partial<Omit<Task, 'id'>>): void {
   const allowed = [
-    'type', 'role', 'description', 'prompt', 'status',
+    'type', 'role', 'agent', 'description', 'prompt', 'status',
     'started_at', 'completed_at', 'result_file', 'error',
     'retry_count', 'max_retry', 'cost_usd', 'duration_ms', 'extra',
     'source_director',
@@ -290,6 +301,7 @@ export interface CronJob {
   id: string;
   name: string;
   role: string;
+  agent: string | null;
   description: string;
   prompt: string;
   schedule: string;
@@ -305,6 +317,7 @@ export interface CronJob {
 export interface CreateCronJobInput {
   name: string;
   role: string;
+  agent?: string;
   description: string;
   prompt: string;
   schedule: string;
@@ -334,9 +347,9 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const actionName = input.action_name ?? null;
 
   d.run(
-    `INSERT INTO cron_jobs (id, name, role, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.name, input.role, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName],
+    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName],
   );
 
   return getCronJob(id)!;
@@ -357,7 +370,7 @@ export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
 }
 
 export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
-  const allowed = ['name', 'role', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name'] as const;
+  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 

@@ -53,7 +53,8 @@ export function startConsole(
 ): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
-  const htmlPath = join(import.meta.dir, 'public', 'index.html');
+  const publicDir = join(import.meta.dir, 'public');
+  const htmlPath = join(publicDir, 'index.html');
 
   // Web chat 消息处理
   const chatHandlers: Array<(msg: import('./messaging.js').IncomingMessage) => Promise<void> | void> = [];
@@ -230,6 +231,13 @@ export function startConsole(
             message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）',
           };
         }
+        case 'clear': {
+          const success = await director.clearContext();
+          return {
+            ok: success,
+            message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）',
+          };
+        }
         case 'esc': {
           const cancelled = queue.cancelOldest();
           if (cancelled) {
@@ -238,7 +246,7 @@ export function startConsole(
           }
           return { ok: false, message: '队列为空，没有可取消的消息' };
         }
-        case 'restart': {
+        case 'session-restart': {
           await director.restartProcess();
           return { ok: true, message: 'Director 已重启' };
         }
@@ -314,6 +322,23 @@ export function startConsole(
           }
         }
         default: {
+          // Serve static files from /css/ and /js/ subdirectories
+          if (url.pathname.startsWith('/css/') || url.pathname.startsWith('/js/')) {
+            const safePath = url.pathname.replace(/\.\./g, '');
+            const filePath = join(publicDir, safePath);
+            if (existsSync(filePath) && statSync(filePath).isFile()) {
+              const ext = extname(filePath).toLowerCase();
+              const mimeTypes: Record<string, string> = {
+                '.css': 'text/css; charset=utf-8',
+                '.js': 'application/javascript; charset=utf-8',
+              };
+              const content = readFileSync(filePath, 'utf-8');
+              return new Response(content, {
+                headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
+              });
+            }
+          }
+
           // POST /api/send — send arbitrary text to Director (bypass messaging)
           if (url.pathname === '/api/send' && req.method === 'POST') {
             const body = await req.json() as { text: string };
@@ -381,12 +406,16 @@ export function startConsole(
             const result = await handleCommand('flush');
             return Response.json(result);
           }
+          if (url.pathname === '/api/clear' && req.method === 'POST') {
+            const result = await handleCommand('clear');
+            return Response.json(result);
+          }
           if (url.pathname === '/api/esc' && req.method === 'POST') {
             const result = await handleCommand('esc');
             return Response.json(result);
           }
-          if (url.pathname === '/api/restart' && req.method === 'POST') {
-            const result = await handleCommand('restart');
+          if (url.pathname === '/api/session-restart' && req.method === 'POST') {
+            const result = await handleCommand('session-restart');
             return Response.json(result);
           }
           // Message history and session APIs
@@ -440,6 +469,7 @@ export function startConsole(
               taskRunner.runTask({
                 taskId: task.id,
                 role: task.role,
+                agent: task.agent ?? undefined,
                 prompt: task.prompt,
                 description: task.description,
               });

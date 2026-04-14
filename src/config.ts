@@ -3,7 +3,23 @@ import { load } from 'js-yaml';
 import { resolve } from 'path';
 import { homedir } from 'os';
 
+export type AgentProviderType = 'claude' | 'codex';
+
+export interface AgentProviderConfig {
+  type: AgentProviderType;
+  command: string;
+  args?: string[];
+  foreground_args?: string[];
+  background_args?: string[];
+}
+
+export interface AgentsConfig {
+  defaults: Record<string, string>;
+  providers: Record<string, AgentProviderConfig>;
+}
+
 export interface Config {
+  agents: AgentsConfig;
   feishu: {
     app_id: string;
     app_secret: string;
@@ -13,7 +29,6 @@ export interface Config {
     persona_dir: string;
     pipe_dir: string;
     pid_file: string;
-    claude_path: string;
     time_sync_interval_ms: number;
     flush_context_limit: number;
     flush_interval_ms: number;
@@ -47,6 +62,19 @@ function expandHome(p: string): string {
   return p.startsWith('~/') || p === '~' ? homedir() + p.slice(1) : p;
 }
 
+export function getDefaultAgentName(agents: AgentsConfig, role: string): string {
+  return agents.defaults[role] ?? agents.defaults.default ?? 'claude';
+}
+
+export function resolveAgentProvider(agents: AgentsConfig, role: string, agentName?: string): { name: string } & AgentProviderConfig {
+  const name = agentName ?? getDefaultAgentName(agents, role);
+  const provider = agents.providers[name];
+  if (!provider) {
+    throw new Error(`Unknown agent provider "${name}" for role "${role}"`);
+  }
+  return { name, ...provider };
+}
+
 export function loadConfig(path?: string): Config {
   const configPath = path ?? resolve(homedir(), '.persona', 'config.yaml');
   const raw = readFileSync(configPath, 'utf-8');
@@ -58,14 +86,101 @@ export function loadConfig(path?: string): Config {
 
   const dir = yaml.director ?? {};
   const con = yaml.console ?? {};
+  const rawProviders = yaml.agents?.providers as Record<string, {
+    type?: unknown;
+    command?: unknown;
+    args?: unknown;
+    foreground_args?: unknown;
+    background_args?: unknown;
+  }> | undefined;
+  const providerEntries = Object.entries(rawProviders ?? {});
+  const providers: Record<string, AgentProviderConfig> = {};
+
+  const normalizeArgs = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    const args = value.filter((arg): arg is string => typeof arg === 'string' && arg.length > 0);
+    return args.length > 0 ? args : undefined;
+  };
+
+  for (const [name, provider] of providerEntries) {
+    const type = provider?.type;
+    const command = provider?.command;
+    if ((type === 'claude' || type === 'codex') && typeof command === 'string' && command.trim()) {
+      const args = normalizeArgs(provider?.args);
+      const foregroundArgs = normalizeArgs(provider?.foreground_args);
+      const backgroundArgs = normalizeArgs(provider?.background_args);
+      providers[name] = {
+        type,
+        command: command.trim(),
+        ...(args ? { args } : {}),
+        ...(foregroundArgs ? { foreground_args: foregroundArgs } : {}),
+        ...(backgroundArgs ? { background_args: backgroundArgs } : {}),
+      };
+    }
+  }
+
+  if (!providers.claude) {
+    providers.claude = {
+      type: 'claude',
+      command: 'claude',
+      foreground_args: [
+        '--print',
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--dangerously-skip-permissions',
+        '--input-format', 'stream-json',
+        '--bare',
+        '--effort', 'max',
+        '--include-partial-messages',
+      ],
+      background_args: [
+        '--print',
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--dangerously-skip-permissions',
+        '--bare',
+      ],
+    };
+  }
+
+  if (!providers.codex) {
+    providers.codex = {
+      type: 'codex',
+      command: 'codex',
+      background_args: [
+        'exec',
+        '--json',
+        '--skip-git-repo-check',
+        '--dangerously-bypass-approvals-and-sandbox',
+      ],
+    };
+  }
+
+  const defaults: Record<string, string> = yaml.agents?.defaults && typeof yaml.agents.defaults === 'object'
+    ? Object.fromEntries(
+      Object.entries(yaml.agents.defaults as Record<string, unknown>)
+        .filter(([, value]) => typeof value === 'string' && value.trim())
+        .map(([role, value]) => [role, (value as string).trim()]),
+    )
+    : {};
+
+  if (!defaults.director) {
+    defaults.director = 'claude';
+  }
+  if (!defaults.default) {
+    defaults.default = 'claude';
+  }
 
   return {
+    agents: {
+      defaults,
+      providers,
+    },
     feishu: yaml.feishu,
     director: {
       persona_dir: expandHome(dir.persona_dir ?? '~/.persona'),
       pipe_dir: dir.pipe_dir ?? '/tmp/persona',
       pid_file: dir.pid_file ?? '/tmp/persona/director.pid',
-      claude_path: dir.claude_path ?? 'claude',
       time_sync_interval_ms: dir.time_sync_interval_hours
         ? Number(dir.time_sync_interval_hours) * 3600_000
         : 2 * 3600_000,

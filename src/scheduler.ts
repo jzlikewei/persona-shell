@@ -15,14 +15,20 @@ export interface SchedulerCallbacks {
   executeDirectorMsg: (job: CronJob) => Promise<void>;
   // shell_action: 执行 Shell 内部动作
   executeShellAction: (job: CronJob) => Promise<void>;
+  // 通知：cron job 被触发时通知用户（可选）
+  notifyCronFired?: (job: CronJob) => void;
 }
 
 const TICK_INTERVAL_MS = 60_000; // 60 seconds
+// If the gap between ticks exceeds this threshold, we assume the machine was asleep
+const SLEEP_THRESHOLD_MS = TICK_INTERVAL_MS * 3; // 3 minutes
 
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
   private config: SchedulerConfig;
   private callbacks: SchedulerCallbacks;
+  private lastTickTime: number = 0;
+  private ticking: boolean = false;
 
   constructor(config: SchedulerConfig, callbacks: SchedulerCallbacks) {
     this.config = config;
@@ -54,51 +60,84 @@ export class Scheduler {
   }
 
   private async tick(): Promise<void> {
-    const jobs = this.callbacks.listEnabledJobs();
+    // Mutex: prevent concurrent ticks (e.g. setInterval fires while previous tick is still running)
+    if (this.ticking) return;
+    this.ticking = true;
 
-    for (const job of jobs) {
-      if (!shouldRun(job.schedule, job.last_run_at)) continue;
+    try {
+      const now = Date.now();
 
-      const actionType = job.action_type ?? 'spawn_role';
-
-      try {
-        switch (actionType) {
-          case 'spawn_role': {
-            // spawn_role 需要 overlap 检测（子进程可能长时间运行）
-            if (this.callbacks.isOverlapping(job.role)) {
-              console.log(`[scheduler] Skipping ${job.name}: previous run still active`);
-              continue;
-            }
-            const taskId = await this.callbacks.executeSpawnRole(job);
-            if (taskId) {
+      // Detect sleep/wake: if gap since last tick is too large, skip this tick
+      if (this.lastTickTime > 0) {
+        const gap = now - this.lastTickTime;
+        if (gap > SLEEP_THRESHOLD_MS) {
+          console.log(`[scheduler] Sleep detected (gap=${Math.round(gap / 1000)}s), skipping tick to avoid pile-up`);
+          // Update last_run_at for all due jobs so they don't fire on next tick either
+          const jobs = this.callbacks.listEnabledJobs();
+          for (const job of jobs) {
+            if (shouldRun(job.schedule, job.last_run_at)) {
               this.callbacks.markJobRun(job.id);
-              console.log(`[scheduler] Created task ${taskId} for ${job.name}`);
+              console.log(`[scheduler] Marked ${job.name} as run (sleep skip)`);
             }
-            break;
           }
-
-          case 'director_msg': {
-            // director_msg 直接发消息给 Director，无需 overlap 检测
-            await this.callbacks.executeDirectorMsg(job);
-            this.callbacks.markJobRun(job.id);
-            console.log(`[scheduler] Sent director message for ${job.name}`);
-            break;
-          }
-
-          case 'shell_action': {
-            // shell_action 执行内部动作，无需 overlap 检测
-            await this.callbacks.executeShellAction(job);
-            this.callbacks.markJobRun(job.id);
-            console.log(`[scheduler] Executed shell action for ${job.name}`);
-            break;
-          }
-
-          default:
-            console.warn(`[scheduler] Unknown action_type '${actionType}' for ${job.name}`);
+          this.lastTickTime = now;
+          return;
         }
-      } catch (err) {
-        console.error(`[scheduler] Failed to execute ${job.name} (${actionType}):`, err);
       }
+      this.lastTickTime = now;
+
+      const jobs = this.callbacks.listEnabledJobs();
+
+      for (const job of jobs) {
+        if (!shouldRun(job.schedule, job.last_run_at)) continue;
+
+        const actionType = job.action_type ?? 'spawn_role';
+
+        // Universal overlap check: skip if previous run of this job is still active
+        if (this.callbacks.isOverlapping(job.role)) {
+          console.log(`[scheduler] Skipping ${job.name}: previous run still active`);
+          // Still mark as run to prevent pile-up on next tick
+          this.callbacks.markJobRun(job.id);
+          continue;
+        }
+
+        try {
+          switch (actionType) {
+            case 'spawn_role': {
+              this.callbacks.notifyCronFired?.(job);
+              const taskId = await this.callbacks.executeSpawnRole(job);
+              if (taskId) {
+                this.callbacks.markJobRun(job.id);
+                console.log(`[scheduler] Created task ${taskId} for ${job.name}`);
+              }
+              break;
+            }
+
+            case 'director_msg': {
+              this.callbacks.notifyCronFired?.(job);
+              await this.callbacks.executeDirectorMsg(job);
+              this.callbacks.markJobRun(job.id);
+              console.log(`[scheduler] Sent director message for ${job.name}`);
+              break;
+            }
+
+            case 'shell_action': {
+              this.callbacks.notifyCronFired?.(job);
+              await this.callbacks.executeShellAction(job);
+              this.callbacks.markJobRun(job.id);
+              console.log(`[scheduler] Executed shell action for ${job.name}`);
+              break;
+            }
+
+            default:
+              console.warn(`[scheduler] Unknown action_type '${actionType}' for ${job.name}`);
+          }
+        } catch (err) {
+          console.error(`[scheduler] Failed to execute ${job.name} (${actionType}):`, err);
+        }
+      }
+    } finally {
+      this.ticking = false;
     }
   }
 }

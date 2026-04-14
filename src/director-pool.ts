@@ -54,6 +54,7 @@ export class DirectorPool extends EventEmitter {
   private creating: Map<string, Promise<PoolEntry>> = new Map();
   private mainBridge: SessionBridge;
   private poolConfig: PoolConfig;
+  private agentsConfig: Config['agents'];
   private directorConfig: Config['director'];
   private messaging: MessagingClient;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
@@ -61,12 +62,14 @@ export class DirectorPool extends EventEmitter {
   constructor(
     mainBridge: SessionBridge,
     poolConfig: PoolConfig,
+    agentsConfig: Config['agents'],
     directorConfig: Config['director'],
     messaging: MessagingClient,
   ) {
     super();
     this.mainBridge = mainBridge;
     this.poolConfig = poolConfig;
+    this.agentsConfig = agentsConfig;
     this.directorConfig = directorConfig;
     this.messaging = messaging;
 
@@ -145,6 +148,7 @@ export class DirectorPool extends EventEmitter {
     console.log(`[pool] Creating session bridge for group "${name}" (label=${label})`);
 
     const bridge = new SessionBridge({
+      agents: this.agentsConfig,
       config: this.directorConfig,
       label,
       isMain: false,
@@ -342,6 +346,7 @@ export class DirectorPool extends EventEmitter {
       console.log(`[pool] Reconnecting to orphan "${item.groupName}" (label=${item.label}, pid=${proc.getPid()})`);
       try {
         const bridge = new SessionBridge({
+          agents: this.agentsConfig,
           config: this.directorConfig,
           label: item.label,
           isMain: false,
@@ -362,6 +367,7 @@ export class DirectorPool extends EventEmitter {
           lastActiveAt: item.lastActiveAt,
         };
         this.entries.set(item.routingKey, entry);
+        this.closedEntries.delete(item.routingKey); // re-activated, remove stale closed entry
         restored++;
       } catch (err) {
         console.error(`[pool] Failed to reconnect "${item.groupName}":`, err);
@@ -538,4 +544,3 @@ export class DirectorPool extends EventEmitter {
 function routingKeyToLabel(routingKey: string): string {
   return createHash('sha256').update(routingKey).digest('hex').slice(0, 8);
 }
-

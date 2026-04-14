@@ -6,16 +6,21 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import { existsSync, readdirSync, mkdirSync, openSync, closeSync } from 'fs';
+import { existsSync, readdirSync, mkdirSync, openSync, closeSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import type { AgentProviderConfig } from './config.js';
+
+export interface AgentRuntimeConfig extends AgentProviderConfig {
+  name: string;
+}
 
 export interface PersonaSpawnOptions {
   /** 角色名: "director" | "explorer" | "critic" | ... */
   role: string;
   /** persona 根目录 (~/.persona) */
   personaDir: string;
-  /** claude CLI 路径 */
-  claudePath: string;
+  /** agent provider 配置 */
+  agent: AgentRuntimeConfig;
   /** foreground: FIFO 双向管道 (Director); background: 一次性 prompt (子角色) */
   mode: 'foreground' | 'background';
   // --- foreground 专用 ---
@@ -47,23 +52,11 @@ export interface SpawnResult {
   args: string[];
 }
 
-/**
- * 构建公共 CLI 参数：--add-dir, --plugin-dir (personas + skills/*),
- * --append-system-prompt-file (soul.md, meta.md),
- * --print, --output-format stream-json, --verbose, --dangerously-skip-permissions
- */
-export function buildCommonArgs(personaDir: string): string[] {
+function buildClaudeInjectionArgs(personaDir: string): string[] {
   const personasDir = join(personaDir, 'personas');
   const skillsDir = join(personaDir, 'skills');
 
-  const args = [
-    '--print',
-    '--output-format', 'stream-json',
-    '--verbose',
-    '--dangerously-skip-permissions',
-    '--add-dir', personaDir,
-    '--plugin-dir', personasDir,
-  ];
+  const args = ['--add-dir', personaDir, '--plugin-dir', personasDir];
 
   // soul.md + meta.md 系统提示文件
   const soulFile = join(personaDir, 'soul.md');
@@ -87,7 +80,7 @@ export function buildCommonArgs(personaDir: string): string[] {
  * 构建角色专属参数：--append-system-prompt-file personas/{role}.md
  * 统一用 CLI flag 注入角色人格，不再手工读文件 strip frontmatter
  */
-export function buildRoleArgs(role: string, personaDir: string): string[] {
+function buildClaudeRoleArgs(role: string, personaDir: string): string[] {
   const personaFile = join(personaDir, 'personas', `${role}.md`);
   if (existsSync(personaFile)) {
     return ['--append-system-prompt-file', personaFile];
@@ -111,20 +104,21 @@ function argsToShellCmd(executable: string, args: string[]): string {
 }
 
 /**
- * 统一 spawn Claude CLI 进程。
- * - foreground 模式：通过 sh -c 做 FIFO 管道重定向 (Director)
- * - background 模式：stdout pipe 用于读取 stream-json 输出 (子角色)
+ * 统一 spawn agent 进程。
+ * - foreground 模式：当前仅支持 Claude，通过 sh -c 做 FIFO 管道重定向 (Director)
+ * - background 模式：stdout pipe 用于读取 JSON/stream-json 输出 (子角色)
  */
 export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
-  const args = [
-    ...buildCommonArgs(options.personaDir),
-    ...buildRoleArgs(options.role, options.personaDir),
-  ];
+  const args = [...(options.agent.args ?? [])];
 
   // foreground (Director) 专用参数
   if (options.mode === 'foreground') {
-    args.push('--input-format', 'stream-json', '--bare', '--effort', 'max');
-    args.push('--include-partial-messages');  // 启用 token 级流式输出
+    if (options.agent.type !== 'claude') {
+      throw new Error(`Foreground mode is not supported for agent provider "${options.agent.name}"`);
+    }
+    args.push(...(options.agent.foreground_args ?? []));
+    args.push(...buildClaudeInjectionArgs(options.personaDir));
+    args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
     if (options.mcpConfigPath) args.push('--mcp-config', options.mcpConfigPath);
     if (options.sessionId) args.push('--resume', options.sessionId);
     if (options.sessionName) args.push('--name', options.sessionName);
@@ -132,8 +126,17 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
 
   // background (子角色) 专用参数
   if (options.mode === 'background') {
-    args.push('--bare');
-    if (options.prompt) args.push('-p', options.prompt);
+    if (options.agent.type === 'claude') {
+      args.push(...(options.agent.background_args ?? []));
+      args.push(...buildClaudeInjectionArgs(options.personaDir));
+      args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
+      if (options.prompt) args.push('-p', options.prompt);
+    } else if (options.agent.type === 'codex') {
+      args.push(...(options.agent.background_args ?? []));
+      args.push('--cd', options.personaDir);
+      const prompt = buildCodexPrompt(options.role, options.personaDir, options.prompt ?? '');
+      if (prompt) args.push(prompt);
+    }
   }
 
   // 额外参数
@@ -155,7 +158,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
 
   if (options.mode === 'foreground' && options.pipeIn && options.pipeOut) {
     // FIFO 管道：通过 sh -c 重定向 stdin/stdout
-    const cmd = argsToShellCmd(options.claudePath, args);
+    const cmd = argsToShellCmd(options.agent.command, args);
     child = spawn('sh', ['-c', `${cmd} < "${options.pipeIn}" > "${options.pipeOut}"`], {
       detached: true,
       stdio: ['ignore', 'ignore', stderrFd],
@@ -163,8 +166,8 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       env: childEnv,
     });
   } else {
-    // background：stdout pipe 用于读取 stream-json 输出
-    child = spawn(options.claudePath, args, {
+    // background：stdout pipe 用于读取 JSON/stream-json 输出
+    child = spawn(options.agent.command, args, {
       detached: true,
       stdio: ['ignore', 'pipe', stderrFd],
       cwd: options.personaDir,
@@ -177,4 +180,31 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   child.unref();
 
   return { child, args };
+}
+
+function buildCodexPrompt(role: string, personaDir: string, taskPrompt: string): string {
+  const sections: string[] = [];
+  const promptFiles = [
+    { label: 'soul', path: join(personaDir, 'soul.md') },
+    { label: 'meta', path: join(personaDir, 'meta.md') },
+    { label: `persona:${role}`, path: join(personaDir, 'personas', `${role}.md`) },
+  ];
+
+  for (const file of promptFiles) {
+    if (!existsSync(file.path)) continue;
+    try {
+      const content = readFileSync(file.path, 'utf-8').trim();
+      if (content) {
+        sections.push(`## Injected ${file.label}\n\n${content}`);
+      }
+    } catch {
+      // best-effort
+    }
+  }
+
+  if (taskPrompt.trim()) {
+    sections.push(`## Task\n\n${taskPrompt.trim()}`);
+  }
+
+  return sections.join('\n\n');
 }

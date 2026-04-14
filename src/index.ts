@@ -1,4 +1,4 @@
-import { loadConfig } from './config.js';
+import { loadConfig, resolveAgentProvider } from './config.js';
 import { SessionBridge } from './session-bridge.js';
 import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './feishu.js';
@@ -28,7 +28,7 @@ async function main() {
   setLogLevel(config.logging.level);
   initTaskStore(config.director.persona_dir);
   const queue = new MessageQueue(config.logging.queue_log);
-  const director = new SessionBridge(config.director);
+  const director = new SessionBridge({ agents: config.agents, config: config.director, label: 'main', isMain: true });
   const feishu = createFeishuClient(config.feishu, {
     skipMentionChatIds: config.pool.parallel_chat_ids,
     attachmentDir: join(config.director.persona_dir, 'attachments'),
@@ -105,7 +105,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.director, messaging);
+  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging);
 
   // Restore pool entries from previous Shell session + clean up orphans
   await pool.restoreEntries();
@@ -113,7 +113,7 @@ async function main() {
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
-    claudePath: config.director.claude_path,
+    agents: config.agents,
     personaDir: config.director.persona_dir,
     defaultTimeoutMs: config.task.default_timeout_ms,
   });
@@ -188,7 +188,7 @@ async function main() {
     if (task && task.retry_count < task.max_retry && result.error !== 'cancelled') {
       updateTask(result.taskId, { retry_count: task.retry_count + 1, status: 'dispatched' });
       console.log(`[shell] Retrying task ${result.taskId} (attempt ${task.retry_count + 1}/${task.max_retry})`);
-      taskRunner.runTask({ taskId: result.taskId, role: task.role, prompt: task.prompt, description: task.description });
+      taskRunner.runTask({ taskId: result.taskId, role: task.role, agent: task.agent ?? undefined, prompt: task.prompt, description: task.description });
       return;
     }
 
@@ -243,11 +243,12 @@ async function main() {
         const task = createTask({
           type: 'cron',
           role: job.role,
+          agent: job.agent ?? undefined,
           description: job.description,
           prompt: job.prompt,
           extra: { cronJobId: job.id },
         });
-        taskRunner.runTask({ taskId: task.id, role: task.role, prompt: task.prompt, description: task.description });
+        taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, prompt: task.prompt, description: task.description });
         return task.id;
       },
       isOverlapping: (role) => {
@@ -265,7 +266,7 @@ async function main() {
         d.setDate(d.getDate() - 1);
         const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
         msg = msg.replace(/\{today\}/g, today).replace(/\{yesterday\}/g, yesterday);
-        await director.sendSystemMessage(msg);
+        await director.sendCronMessage(msg);
       },
       executeShellAction: async (job) => {
         switch (job.action_name) {
@@ -279,9 +280,29 @@ async function main() {
             console.warn(`[scheduler] Unknown shell_action: ${job.action_name}`);
         }
       },
+      notifyCronFired: (job) => {
+        const lastChatId = messaging.getLastChatId();
+        if (lastChatId) {
+          const actionType = job.action_type ?? 'spawn_role';
+          const emoji = actionType === 'spawn_role' ? '🚀' : '⏰';
+          messaging.sendMessage(lastChatId, `${emoji} 定时任务「${job.name}」已触发`).catch((err) => {
+            console.warn('[shell] Failed to send cron notification:', err);
+          });
+        }
+      },
     },
   );
   scheduler.start();
+
+  // Cron response forwarding — Director 处理 cron 消息后，转发响应到主聊天
+  director.on('cron-response', (reply: string) => {
+    const lastChatId = messaging.getLastChatId();
+    if (lastChatId) {
+      messaging.sendMessage(lastChatId, reply).catch((err) => {
+        console.warn('[shell] Failed to forward cron response:', err);
+      });
+    }
+  });
 
   // 内置 cron job：日报生成（迁移自 director.checkDailyReport）
   const existingDailyReport = listCronJobs().find((j) => j.name === 'daily-report');
@@ -341,7 +362,7 @@ async function main() {
     const { child } = spawnPersona({
       role: 'director',
       personaDir: config.director.persona_dir,
-      claudePath: config.director.claude_path,
+      agent: resolveAgentProvider(config.agents, 'director'),
       mode: 'background',
       prompt,
     });
@@ -367,6 +388,7 @@ async function main() {
         if (event.type === 'result') {
           if (event.result) responseText = event.result;
           if (event.cost_usd != null) costUsd = event.cost_usd;
+          if (event.total_cost_usd != null) costUsd = event.total_cost_usd;
         }
       } catch { /* non-JSON line */ }
     });
@@ -464,25 +486,41 @@ async function main() {
       return;
     }
 
-    // /restart — restart current session's Director (routes to correct Director, preserves session)
-    if (text.trim() === '/restart') {
+    // /clear — discard context without saving (routes to correct Director)
+    if (text.trim() === '/clear') {
+      if (!isMaster) return;
+      messaging.addReaction(messageId, 'Typing').catch(() => {});
+      const poolEntry = getTargetEntry();
+      const targetDirector = poolEntry?.bridge ?? director;
+      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
+      const success = await targetDirector.clearContext();
+      if (success) {
+        await messaging.reply(messageId, `CLEAR 完成，${label} 上下文已清空（未保存）`);
+      } else {
+        await messaging.reply(messageId, `CLEAR 未能完成（${label}，正在进行中），请稍后重试`);
+      }
+      return;
+    }
+
+    // /session-restart — restart current session's Director (routes to correct Director, preserves session)
+    if (text.trim() === '/session-restart') {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       await messaging.reply(messageId, `正在重启 ${label} Director...`);
-      console.log(`[shell] /restart: restarting ${label} Director`);
+      console.log(`[shell] /session-restart: restarting ${label} Director`);
       await targetDirector.restartProcess();
       await messaging.reply(messageId, `${label} Director 已重启`);
       return;
     }
 
-    // /restart-shell — shutdown all Directors + exit Shell (launchd will respawn)
-    if (text.trim() === '/restart-shell') {
+    // /shell-restart — shutdown all Directors + exit Shell (launchd will respawn)
+    if (text.trim() === '/shell-restart') {
       if (!isMaster) return;
       await messaging.reply(messageId, 'Shell 正在重启...');
-      console.log('[shell] /restart-shell: shutting down all Directors and exiting for launchd respawn');
+      console.log('[shell] /shell-restart: shutting down all Directors and exiting for launchd respawn');
       await pool.shutdownAll();
       await director.shutdown();
       process.exit(0);
@@ -524,10 +562,11 @@ async function main() {
       const lines = [
         '📖 可用命令:',
         '/status — 查看 Director 状态摘要',
-        '/flush — 手动刷新上下文（checkpoint → 新 session）',
+        '/flush — 保存上下文后刷新（checkpoint → 新 session）',
+        '/clear — 清空上下文（不保存，直接重置）',
         '/esc — 取消队列中最早的消息',
-        '/restart — 重启当前 Director（保留 session，加载新配置）',
-        '/restart-shell — 重启整个 Shell 进程（代码更新生效）',
+        '/session-restart — 重启当前 Director（保留 session，加载新配置）',
+        '/shell-restart — 重启整个 Shell 进程（代码更新生效）',
         '/help — 显示此帮助信息',
       ];
       await messaging.reply(messageId, lines.join('\n'));

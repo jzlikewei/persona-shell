@@ -1,3 +1,41 @@
+agents:
+  defaults:
+    default: "claude"
+    director: "claude"
+    explorer: "claude"
+    critic: "claude"
+  providers:
+    claude:
+      type: "claude"
+      command: "claude"
+      foreground_args:
+        - "--print"
+        - "--output-format"
+        - "stream-json"
+        - "--verbose"
+        - "--dangerously-skip-permissions"
+        - "--input-format"
+        - "stream-json"
+        - "--bare"
+        - "--effort"
+        - "max"
+        - "--include-partial-messages"
+      background_args:
+        - "--print"
+        - "--output-format"
+        - "stream-json"
+        - "--verbose"
+        - "--dangerously-skip-permissions"
+        - "--bare"
+    codex:
+      type: "codex"
+      command: "codex"
+      background_args:
+        - "exec"
+        - "--json"
+        - "--skip-git-repo-check"
+        - "--dangerously-bypass-approvals-and-sandbox"
+
 # 配置模板 — 复制到 config.yaml 并填入实际值
 feishu:
   app_id: "cli_xxxx"
@@ -8,7 +46,6 @@ director:
   persona_dir: "~/.persona"
   pipe_dir: "/tmp/persona"
   pid_file: "/tmp/persona/director.pid"
-  claude_path: "claude"
   time_sync_interval_hours: 2       # 距上次时间同步超过 N 小时则注入时间前缀
   flush_context_limit: 700000       # 上下文 token 阈值，超过则自动 flush
   flush_interval_days: 7            # 距上次 flush 的最大天数

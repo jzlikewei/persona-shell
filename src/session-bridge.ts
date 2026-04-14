@@ -18,6 +18,7 @@ interface BridgePersistedState {
 }
 
 export interface SessionBridgeOptions {
+  agents: Config['agents'];
   config: Config['director'];
   /** 唯一标识，如 'main' 或 chatId 的短 hash */
   label: string;
@@ -29,6 +30,7 @@ export interface SessionBridgeOptions {
 
 export class SessionBridge extends EventEmitter {
   private config: Config['director'];
+  private agents: Config['agents'];
   readonly label: string;
   readonly isMain: boolean;
   private groupName?: string;
@@ -57,6 +59,7 @@ export class SessionBridge extends EventEmitter {
     | { type: 'user' }
     | { type: 'system-absorbed' }
     | { type: 'system-reply'; replyToMessageId: string }
+    | { type: 'system-forward' }
   > = [];
   /** 系统消息（cron director_msg 等）的待处理计数，响应会被吸收不转发用户 */
   private systemMessagePending = 0;
@@ -82,25 +85,13 @@ export class SessionBridge extends EventEmitter {
   /** Flag to discard the next late response after flush timeout */
   private discardNextResponse = false;
 
-  /**
-   * @param configOrOptions — 兼容两种调用方式：
-   *   - `new SessionBridge(config.director)` — 向后兼容，默认 label='main', isMain=true
-   *   - `new SessionBridge({ config, label, isMain, groupName })` — 新版多实例
-   */
-  constructor(configOrOptions: Config['director'] | SessionBridgeOptions) {
+  constructor(configOrOptions: SessionBridgeOptions) {
     super();
-    if ('config' in configOrOptions) {
-      // New-style: SessionBridgeOptions
-      this.config = configOrOptions.config;
-      this.label = configOrOptions.label;
-      this.isMain = configOrOptions.isMain ?? true;
-      this.groupName = configOrOptions.groupName;
-    } else {
-      // Legacy: Config['director'] — backward compatible
-      this.config = configOrOptions;
-      this.label = 'main';
-      this.isMain = true;
-    }
+    this.config = configOrOptions.config;
+    this.agents = configOrOptions.agents;
+    this.label = configOrOptions.label;
+    this.isMain = configOrOptions.isMain ?? true;
+    this.groupName = configOrOptions.groupName;
 
     // 路径参数化：主 Director 保持旧路径（向后兼容），非主用子目录
     const pipeDir = this.isMain ? this.config.pipe_dir : join(this.config.pipe_dir, this.label);
@@ -325,6 +316,22 @@ export class SessionBridge extends EventEmitter {
     return true;
   }
 
+  /** Clear context without saving — kill + discard session + restart.
+   *  Unlike flush(), skips checkpoint and bootstrap entirely. */
+  async clearContext(): Promise<boolean> {
+    if (this.flushing) {
+      console.log(`[bridge:${this.label}] CLEAR skipped: flush in progress`);
+      return false;
+    }
+    this.flushing = true;
+    this.process.kill('SIGTERM');
+    this.clearSession();
+    await this.restart();
+    this.finishFlush();
+    console.log(`[bridge:${this.label}] CLEAR: context discarded, fresh session started`);
+    return true;
+  }
+
   private finishFlush(): void {
     this.lastFlushAt = Date.now();
     this.lastInputTokens = 0;
@@ -492,6 +499,19 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
+  /** 发送 cron 消息给 Director，响应会通过 'cron-response' 事件转发给用户 */
+  async sendCronMessage(msg: string): Promise<void> {
+    if (!this.writeHandle || this.flushing) return;
+    this.pendingTypes.push({ type: 'system-forward' });
+    this.pendingCount++;
+    try {
+      await this.writeRaw(msg);
+    } catch {
+      this.pendingTypes.pop();
+      this.decrementPending();
+    }
+  }
+
   private async writeRaw(content: string): Promise<void> {
     if (!this.writeHandle) {
       throw new Error('pipe not open');
@@ -538,7 +558,7 @@ export class SessionBridge extends EventEmitter {
   }
 
   /** Gracefully shut down: kill the process and wait for pipe close.
-   *  Unlike restart(), this does NOT spawn a new process — used for /restart-shell. */
+   *  Unlike restart(), this does NOT spawn a new process — used for /shell-restart. */
   async shutdown(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
@@ -685,7 +705,7 @@ export class SessionBridge extends EventEmitter {
     const pid = this.process.spawn({
       role: 'director',
       personaDir,
-      claudePath: this.config.claude_path,
+      agents: this.agents,
       mcpConfigPath: join(personaDir, '.mcp.json'),
       sessionId: savedSession ?? undefined,
       sessionName,
@@ -856,8 +876,12 @@ export class SessionBridge extends EventEmitter {
                   this.systemReplyQueue.shift();
                   log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${currentResponse.trim().slice(0, 100)}`);
                   this.emit('system-response', currentResponse.trim(), pending.replyToMessageId);
+                } else if (pending.type === 'system-forward') {
+                  // cron-response — Director 响应转发给用户
+                  log.debug(`[bridge:${this.label}] Cron response forwarded: ${currentResponse.trim().slice(0, 100)}`);
+                  this.emit('cron-response', currentResponse.trim());
                 } else {
-                  // system-absorbed — cron director_msg, task notification without messageId
+                  // system-absorbed — task notification without messageId
                   this.systemMessagePending--;
                   log.debug(`[bridge:${this.label}] System message response absorbed: ${currentResponse.trim().slice(0, 100)}`);
                 }
