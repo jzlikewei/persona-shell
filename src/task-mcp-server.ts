@@ -179,7 +179,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'toggle_cron_job':
       return callShell('POST', `/api/cron-jobs/${args.id}/toggle`);
     case 'send_attachment':
-      return callShell('POST', '/api/send-attachment', { path: args.path });
+      return callShell('POST', '/api/send-attachment', { path: args.path, source_director: DIRECTOR_LABEL });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

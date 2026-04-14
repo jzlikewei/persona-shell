@@ -69,10 +69,9 @@
   var ws = null;
 
   // View state
-  var viewMode = 'dashboard'; // 'dashboard' | 'session' | 'task' | 'pool-session' | 'cron'
+  var viewMode = 'dashboard'; // 'dashboard' | 'session' | 'task' | 'pool-session'
   var selectedSessionId = null;
   var selectedTaskId = null;
-  var selectedCronId = null;
   var selectedPoolLabel = null; // for pool-session view
   var sessionMessages = null; // cached messages for selected session
   var sessions = []; // cached session list for current expanded director
@@ -85,7 +84,8 @@
 
   // Cron state
   var cronJobs = [];
-  var cronDetail = null;
+  var cronPanelOpen = false;
+  var expandedCronId = null;
 
   // Streaming state
   var streamingChunks = {}; // director label → accumulated text
@@ -512,13 +512,11 @@
     viewMode = 'dashboard';
     selectedSessionId = null;
     selectedTaskId = null;
-    selectedCronId = null;
     $('detail-content').classList.remove('task-split-mode');
     hideChat();
     $('session-dropdown').style.display = 'none';
     renderSessionList();
     renderTaskList();
-    renderCronList();
     $('dh-title').textContent = 'Dashboard';
     $('dh-sub').textContent = '';
     renderDashboard();
@@ -622,8 +620,8 @@
     // Task list (from status push)
     renderTaskList();
 
-    // Cron list
-    renderCronList();
+    // Cron badge (update header badge count)
+    renderCronBadge();
   }
 
   function renderSessionList() {
@@ -773,6 +771,25 @@
     var dd = $('session-dropdown');
     if (dd && !dd.contains(e.target)) {
       dd.classList.remove('open');
+    }
+    // Close cron panel on outside click
+    var cronWrap = $('cron-wrap');
+    if (cronPanelOpen && cronWrap && !cronWrap.contains(e.target)) {
+      cronPanelOpen = false;
+      cronWrap.classList.remove('open');
+      expandedCronId = null;
+      loadCronJobs();
+    }
+  });
+
+  // Close cron panel on ESC key
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && cronPanelOpen) {
+      cronPanelOpen = false;
+      var cronWrap = $('cron-wrap');
+      if (cronWrap) cronWrap.classList.remove('open');
+      expandedCronId = null;
+      loadCronJobs();
     }
   });
 
@@ -1191,142 +1208,105 @@
   function loadCronJobs() {
     fetch('/api/cron-jobs').then(function(r) { return r.json(); }).then(function(d) {
       cronJobs = d || [];
-      renderCronList();
-      // Refresh detail view if currently viewing a cron job
-      if (viewMode === 'cron' && selectedCronId) {
-        var found = null;
-        for (var i = 0; i < cronJobs.length; i++) {
-          if (cronJobs[i].id === selectedCronId) { found = cronJobs[i]; break; }
-        }
-        if (found) { cronDetail = found; renderCronView(); }
-      }
+      renderCronBadge();
+      renderCronPanel();
     }).catch(function() {});
   }
 
-  function renderCronList() {
-    var el = $('cron-list');
-    var countEl = $('cron-count');
-    if (!el) return;
+  function renderCronBadge() {
+    var badgeEl = $('cron-badge');
+    if (!badgeEl) return;
+    var enabled = 0;
+    for (var i = 0; i < cronJobs.length; i++) {
+      if (cronJobs[i].enabled) enabled++;
+    }
+    if (enabled > 0) {
+      badgeEl.textContent = enabled;
+      badgeEl.style.display = '';
+    } else {
+      badgeEl.style.display = 'none';
+    }
+  }
+
+  function renderCronPanel() {
+    var bodyEl = $('cron-panel-body');
+    var countEl = $('cron-panel-count');
+    if (!bodyEl) return;
 
     var enabled = 0;
     for (var i = 0; i < cronJobs.length; i++) {
       if (cronJobs[i].enabled) enabled++;
     }
-    countEl.textContent = cronJobs.length > 0 ? '(' + enabled + '/' + cronJobs.length + ')' : '';
+    countEl.textContent = cronJobs.length > 0 ? enabled + '/' + cronJobs.length + ' active' : '';
 
     if (cronJobs.length === 0) {
-      el.innerHTML = '<div class="empty">No cron jobs</div>';
+      bodyEl.innerHTML = '<div class="empty">No cron jobs</div>';
       return;
     }
 
     var html = '';
     for (var j = 0; j < cronJobs.length; j++) {
       var c = cronJobs[j];
-      var isActive = viewMode === 'cron' && selectedCronId === c.id;
       var dotColor = c.enabled ? 'var(--green)' : 'var(--overlay0)';
-      var lastRun = c.last_run_at ? fmtAgo(new Date(c.last_run_at).getTime()) : '--';
-      html += '<div class="list-item' + (isActive ? ' active' : '') +
-        '" onclick="selectCron(\'' + esc(c.id) + '\')">' +
-        '<span class="item-icon" style="color:' + dotColor + '">&#9679;</span>' +
-        '<span class="item-label">' + esc(c.name) + '</span>' +
-        '<span class="item-meta">' + esc(c.schedule) + '</span></div>';
+      var isExpanded = expandedCronId === c.id;
+
+      html += '<div class="cron-item" onclick="expandCronItem(\'' + esc(c.id) + '\')">';
+      html += '<span class="cron-item-dot" style="background:' + dotColor + '"></span>';
+      html += '<span class="cron-item-name">' + esc(c.name) + '</span>';
+      html += '<span class="cron-item-schedule">' + esc(c.schedule) + '</span>';
+      html += '<label class="cron-toggle" onclick="event.stopPropagation()">';
+      html += '<input type="checkbox"' + (c.enabled ? ' checked' : '') + ' onchange="toggleCron(\'' + esc(c.id) + '\')">';
+      html += '<span class="cron-toggle-track"></span>';
+      html += '<span class="cron-toggle-thumb"></span>';
+      html += '</label>';
+      html += '</div>';
+
+      if (isExpanded) {
+        var lastRun = c.last_run_at ? fmtAgo(new Date(c.last_run_at).getTime()) : '--';
+        var created = c.created_at || '--';
+        html += '<div class="cron-item-detail">';
+        html += '<div class="cron-detail-grid">';
+        html += '<div><span class="cron-detail-label">Action</span><div class="cron-detail-value">' + esc(c.action_type || '--') + '</div></div>';
+        html += '<div><span class="cron-detail-label">Role</span><div class="cron-detail-value">' + esc(c.role || '--') + '</div></div>';
+        html += '<div><span class="cron-detail-label">Last Run</span><div class="cron-detail-value">' + esc(lastRun) + '</div></div>';
+        html += '<div><span class="cron-detail-label">Created</span><div class="cron-detail-value">' + esc(created) + '</div></div>';
+        html += '</div>';
+        if (c.prompt) {
+          html += '<div class="cron-detail-content">' + esc(c.prompt) + '</div>';
+        }
+        if (c.message) {
+          html += '<div class="cron-detail-content">' + esc(c.message) + '</div>';
+        }
+        if (c.action_name) {
+          html += '<div class="cron-detail-content">' + esc(c.action_name) + '</div>';
+        }
+        html += '<button class="cron-delete-btn" onclick="event.stopPropagation();deleteCron(\'' + esc(c.id) + '\')">Delete</button>';
+        html += '</div>';
+      }
     }
-    el.innerHTML = html;
+    bodyEl.innerHTML = html;
   }
 
-  window.selectCron = function(cronId) {
-    stopLogPolling();
-    viewMode = 'cron';
-    selectedCronId = cronId;
-    selectedSessionId = null;
-    selectedTaskId = null;
-    cronDetail = null;
-    $('detail-content').classList.remove('task-split-mode');
-    hideChat();
-    $('session-dropdown').style.display = 'none';
-    renderSessionList();
-    renderTaskList();
-    renderCronList();
-    $('dh-title').innerHTML = '<span style="cursor:pointer;color:var(--blue);margin-right:8px" onclick="selectDashboard()">\u2190</span>Cron Job';
-    $('dh-sub').textContent = cronId;
-    // Find from cache or fetch
-    for (var i = 0; i < cronJobs.length; i++) {
-      if (cronJobs[i].id === cronId) { cronDetail = cronJobs[i]; break; }
-    }
-    if (cronDetail) {
-      renderCronView();
+  window.toggleCronPanel = function() {
+    var wrap = $('cron-wrap');
+    cronPanelOpen = !cronPanelOpen;
+    if (cronPanelOpen) {
+      wrap.classList.add('open');
+      // Close session dropdown if open
+      var dd = $('session-dropdown');
+      if (dd) dd.classList.remove('open');
     } else {
-      fetch('/api/cron-jobs/' + cronId).then(function(r) { return r.json(); }).then(function(d) {
-        cronDetail = d;
-        renderCronView();
-      }).catch(function() {
-        $('detail-content').innerHTML = '<div class="empty" style="padding:40px">Failed to load cron job</div>';
-      });
+      wrap.classList.remove('open');
+      expandedCronId = null;
+      // Refresh data on close
+      loadCronJobs();
     }
   };
 
-  function renderCronView() {
-    var container = $('detail-content');
-    if (!cronDetail) {
-      container.innerHTML = '<div class="empty" style="padding:40px">Loading cron job...</div>';
-      return;
-    }
-
-    var c = cronDetail;
-    var html = '<div class="task-detail">';
-
-    // Meta fields
-    html += '<div class="td-meta">';
-    html += '<div class="td-field"><div class="td-field-label">Name</div><div class="td-field-value">' + esc(c.name) + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Schedule</div><div class="td-field-value">' + esc(c.schedule) + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Role</div><div class="td-field-value">' + esc(c.role || '--') + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Action Type</div><div class="td-field-value">' + esc(c.action_type || '--') + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Enabled</div><div class="td-field-value" style="color:' + (c.enabled ? 'var(--green)' : 'var(--red)') + '">' + (c.enabled ? 'Yes' : 'No') + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Last Run</div><div class="td-field-value">' + (c.last_run_at ? esc(fmtAgo(new Date(c.last_run_at).getTime())) : '--') + '</div></div>';
-    html += '<div class="td-field"><div class="td-field-label">Created</div><div class="td-field-value">' + esc(c.created_at || '--') + '</div></div>';
-    if (c.agent) {
-      html += '<div class="td-field"><div class="td-field-label">Agent</div><div class="td-field-value">' + esc(c.agent) + '</div></div>';
-    }
-    html += '</div>';
-
-    // Description
-    if (c.description) {
-      html += '<div style="font-size:13px;color:var(--subtext1);margin-bottom:12px">' + esc(c.description) + '</div>';
-    }
-
-    // Prompt section
-    if (c.prompt) {
-      html += '<div class="td-section">';
-      html += '<div class="td-section-title">Prompt</div>';
-      html += '<div class="td-prompt">' + esc(c.prompt) + '</div>';
-      html += '</div>';
-    }
-
-    // Message section (for director_msg action type)
-    if (c.message) {
-      html += '<div class="td-section">';
-      html += '<div class="td-section-title">Message</div>';
-      html += '<div class="td-prompt">' + esc(c.message) + '</div>';
-      html += '</div>';
-    }
-
-    // Action name (for shell_action action type)
-    if (c.action_name) {
-      html += '<div class="td-section">';
-      html += '<div class="td-section-title">Action Name</div>';
-      html += '<div class="td-prompt">' + esc(c.action_name) + '</div>';
-      html += '</div>';
-    }
-
-    // Action buttons
-    html += '<div style="display:flex;gap:8px;margin-top:16px">';
-    html += '<button class="btn ' + (c.enabled ? 'btn-esc' : 'btn-flush') + '" onclick="toggleCron(\'' + esc(c.id) + '\')">' + (c.enabled ? 'Disable' : 'Enable') + '</button>';
-    html += '<button class="btn btn-restart" onclick="deleteCron(\'' + esc(c.id) + '\')">Delete</button>';
-    html += '</div>';
-
-    html += '</div>';
-    container.innerHTML = html;
-  }
+  window.expandCronItem = function(cronId) {
+    expandedCronId = expandedCronId === cronId ? null : cronId;
+    renderCronPanel();
+  };
 
   window.toggleCron = function(cronId) {
     fetch('/api/cron-jobs/' + cronId + '/toggle', { method: 'POST' })
@@ -1346,10 +1326,8 @@
       .then(function(r) {
         if (r.ok) {
           showToast('Cron job deleted', true);
-          selectedCronId = null;
-          cronDetail = null;
+          expandedCronId = null;
           loadCronJobs();
-          selectDashboard();
         } else {
           return r.json().then(function(d) { throw new Error(d.error || 'Delete failed'); });
         }
@@ -1373,7 +1351,8 @@
   // [BUG1 FIX] Refresh sessions for the currently expanded director, not always main
   setInterval(function () {
     if (wsConnected && expandedDirector) loadSessions(expandedDirector);
-    if (wsConnected) loadCronJobs();
+    // Skip cron refresh while panel is open to avoid content flicker
+    if (wsConnected && !cronPanelOpen) loadCronJobs();
   }, 30000);
 
   // ── Resize handles (drag to resize panels) ──

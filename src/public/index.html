@@ -38,6 +38,21 @@
       <span class="queue-badge" id="hb-queue"></span>
     </div>
     <div class="hspacer"></div>
+    <div class="hi cron-trigger-wrap" id="cron-wrap">
+      <button class="cron-trigger" id="cron-trigger" onclick="toggleCronPanel()">
+        <span class="cron-icon">⏱</span>
+        <span class="cron-badge" id="cron-badge" style="display:none"></span>
+      </button>
+      <div class="cron-panel" id="cron-panel">
+        <div class="cron-panel-header">
+          <span class="cron-panel-title">Cron Jobs</span>
+          <span class="cron-panel-count" id="cron-panel-count"></span>
+        </div>
+        <div class="cron-panel-body" id="cron-panel-body">
+          <div class="empty">No cron jobs</div>
+        </div>
+      </div>
+    </div>
     <div class="hi">
       <span class="hi-label">Uptime</span>
       <span class="hi-value" id="hb-uptime">--</span>
@@ -84,14 +99,6 @@
         <div class="sb-title">Tasks <span id="task-counts" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
         <div class="sb-scroll" id="task-list">
           <div class="empty">No tasks</div>
-        </div>
-      </div>
-
-      <!-- Cron Jobs -->
-      <div class="sb-section" style="display:flex;flex-direction:column;min-height:0;overflow:hidden">
-        <div class="sb-title">Cron Jobs <span id="cron-count" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
-        <div class="sb-scroll" id="cron-list">
-          <div class="empty">No cron jobs</div>
         </div>
       </div>
 

@@ -356,7 +356,7 @@ export function startConsole(
 
           // POST /api/send-attachment — send image/file to user via messaging
           if (url.pathname === '/api/send-attachment' && req.method === 'POST') {
-            const body = await req.json() as { path: string };
+            const body = await req.json() as { path: string; source_director?: string };
             if (!body.path) return Response.json({ error: 'path is required' }, { status: 400 });
 
             // Path security: only allow /tmp/ and ~/.persona/outbox/
@@ -391,12 +391,20 @@ export function startConsole(
             const isImage = imageExts.has(ext);
 
             try {
-              const lastChatId = messaging.getLastChatId();
-              if (!lastChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
+              // Resolve target chatId: pool Director → its group chat, main → lastChatId
+              let targetChatId: string | null = null;
+              const source = body.source_director;
+              if (source && source !== 'main' && pool) {
+                targetChatId = pool.getChatIdByLabel(source);
+              }
+              if (!targetChatId) {
+                targetChatId = messaging.getLastChatId();
+              }
+              if (!targetChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
               if (isImage) {
-                await messaging.uploadAndSendImage(lastChatId, resolved);
+                await messaging.uploadAndSendImage(targetChatId, resolved);
               } else {
-                await messaging.uploadAndSendFile(lastChatId, resolved);
+                await messaging.uploadAndSendFile(targetChatId, resolved);
               }
               return Response.json({ success: true });
             } catch (err) {
