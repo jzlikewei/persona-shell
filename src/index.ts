@@ -481,6 +481,10 @@ async function main() {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
+      if (routingKey && !poolEntry) {
+        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 flush');
+        return;
+      }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.flush();
@@ -497,6 +501,10 @@ async function main() {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
+      if (routingKey && !poolEntry) {
+        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 clear');
+        return;
+      }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.clearContext();

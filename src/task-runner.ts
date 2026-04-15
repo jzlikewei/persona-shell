@@ -85,7 +85,7 @@ export class TaskRunner extends EventEmitter {
       : '';
     const fileName = safeName ? `${input.taskId}_${safeName}.md` : `${input.taskId}.md`;
     const resultFile = join(outboxDir, fileName);
-    const fullPrompt = `${input.prompt}\n\n[系统指令] 将输出结果保存到 ${resultFile}`;
+    const fullPrompt = `${input.prompt}\n\n[系统指令] 将输出结果保存到 ${resultFile}。完成后只回复"done"，不要输出总结。`;
 
     const { child, args } = spawnPersona({
       role: input.role,

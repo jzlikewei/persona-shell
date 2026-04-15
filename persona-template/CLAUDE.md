@@ -1,5 +1,9 @@
 # Persona 编排规则
 
+## Git 提交
+
+- 提交信息末尾追加一行：`Automated-By: Persona Shell With <当前agent名称>`，例如 `Automated-By: Persona Shell With Claude Code`
+
 ## 状态维护
 
 - 使用 git 初始化身份仓库；改项目或配置前先提交代码和配置，防止改坏后无法回退
