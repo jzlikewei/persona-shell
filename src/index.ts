@@ -218,19 +218,29 @@ async function main() {
     }
   });
 
-  // Attachment compositor — buffer attachments until pipe response arrives
-  const pendingAttachments: string[] = [];
+  // Attachment compositor — buffer attachments per Director until response arrives
+  const attachmentsBySource = new Map<string, string[]>();
   const attachmentBuffer: AttachmentBuffer = {
-    push(filePath: string) {
-      pendingAttachments.push(filePath);
-      log.debug(`[shell] Compositor: buffered attachment ${filePath} (${pendingAttachments.length} pending)`);
+    push(source: string, filePath: string) {
+      const list = attachmentsBySource.get(source) ?? [];
+      list.push(filePath);
+      attachmentsBySource.set(source, list);
+      log.debug(`[shell] Compositor: buffered attachment ${filePath} for ${source} (${list.length} pending)`);
     },
-    hasPending() {
-      return queue.length > 0;
+    drain(source: string): string[] {
+      const list = attachmentsBySource.get(source) ?? [];
+      attachmentsBySource.delete(source);
+      return list;
+    },
+    isProcessing(source: string): boolean {
+      if (source === 'main') return queue.length > 0;
+      const entry = pool.findByLabel(source);
+      return entry ? entry.queue.length > 0 : false;
     },
   };
 
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
+  pool.setAttachmentBuffer(attachmentBuffer);
   const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, attachmentBuffer, pool);
   messaging.addClient(webClient);
 
@@ -342,10 +352,10 @@ async function main() {
     if (orphaned.length > 0) {
       console.log(`[shell] Cleared ${orphaned.length} orphaned queue items after flush drain`);
     }
-    // Compositor: discard any buffered attachments — they'll never have a target message
-    if (pendingAttachments.length > 0) {
-      console.log(`[shell] Compositor: discarding ${pendingAttachments.length} buffered attachment(s) after flush`);
-      pendingAttachments.length = 0;
+    // Compositor: discard main Director's buffered attachments — they'll never have a target message
+    const discarded = attachmentBuffer.drain('main');
+    if (discarded.length > 0) {
+      console.log(`[shell] Compositor: discarding ${discarded.length} buffered attachment(s) after flush`);
     }
   });
 
@@ -731,8 +741,8 @@ async function main() {
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
       console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
 
-      // Compositor: drain buffered attachments, reply to the same message
-      const attachments = pendingAttachments.splice(0);
+      // Compositor: drain buffered attachments for main Director, reply to the same message
+      const attachments = attachmentBuffer.drain('main');
       for (const filePath of attachments) {
         try {
           const ext = extname(filePath).toLowerCase();

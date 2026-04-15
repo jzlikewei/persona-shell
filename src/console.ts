@@ -21,10 +21,12 @@ const startedAt = Date.now();
 
 /** Attachment compositor buffer — implemented in index.ts */
 export interface AttachmentBuffer {
-  /** Add a file path to the pending buffer */
-  push(filePath: string): void;
-  /** Whether Director is currently processing a user message (queue has items) */
-  hasPending(): boolean;
+  /** Buffer an attachment for a specific Director (by label) */
+  push(source: string, filePath: string): void;
+  /** Drain all buffered attachments for a specific Director */
+  drain(source: string): string[];
+  /** Whether the specified Director is currently processing a user message */
+  isProcessing(source: string): boolean;
 }
 
 /** Metrics collector interface — implemented in index.ts */
@@ -379,9 +381,10 @@ export function startConsole(
               return Response.json({ error: 'Messaging client not available' }, { status: 503 });
             }
 
-            // Compositor: if Director is processing a user message, buffer for later delivery
-            if (attachmentBuffer?.hasPending()) {
-              attachmentBuffer.push(resolved);
+            // Compositor: if this Director is processing a user message, buffer for later delivery
+            const source = body.source_director ?? 'main';
+            if (attachmentBuffer?.isProcessing(source)) {
+              attachmentBuffer.push(source, resolved);
               return Response.json({ queued: true });
             }
 
