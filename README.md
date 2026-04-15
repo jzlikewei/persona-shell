@@ -1,6 +1,6 @@
 # Persona Shell
 
-> 不重复造轮子——用你最趁手的 AI Agent 作为你的数字分身。
+> 把你最顺手的 agent 当虾养。
 
 把现成的 agent 接入 IM、赋予持久记忆和人格、7×24 替你在线。Persona Shell 不造 agent，只做这层壳。
 
