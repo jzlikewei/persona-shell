@@ -40,13 +40,13 @@ bun run dev
 4. **事件订阅**：事件与回调 → 事件配置 → 添加 `im.message.receive_v1`（接收消息）
 5. **连接方式选择 WebSocket**：事件与回调 → 使用长连接接收事件（非 Webhook）
 6. **发布应用**：版本管理与发布 → 创建版本 → 申请发布
-7. 复制 **App ID** 到 `~/.persona/config.yaml`，复制 **App Secret** 到 `~/.persona/im_secret.yaml`
+7. 复制 **App ID** 和 **App Secret** 到 `~/.persona/im_secret.yaml`
 
 > 已经配置过？直接从[开放平台控制台](https://open.feishu.cn/app)复制凭据即可，确保权限和事件订阅配齐。
 
 ## 配置文件
 
-配置文件位于 `~/.persona/config.yaml`，敏感凭据位于 `~/.persona/im_secret.yaml`（均不在项目目录内，避免密钥泄露）。
+配置文件位于 `~/.persona/config.yaml`，飞书凭据位于 `~/.persona/im_secret.yaml`（均不在项目目录内，避免密钥泄露）。
 
 > **时区**：日志时间戳、日报触发、Cron 调度等全部使用 `Asia/Shanghai`。当前不可配置。
 
@@ -74,8 +74,7 @@ agents:
       search: false
 
 feishu:
-  app_id: "cli_xxxx"
-  master_id: "ou_xxxx"                       # 本体的飞书 open_id
+  master_id: "ou_xxxx"                       # 本体的飞书 open_id（可选）
 
 director:
   persona_dir: "~/.persona"               # 身份/记忆仓库路径
@@ -97,10 +96,11 @@ pool:
   parallel_chat_ids: []         # 免 @mention 白名单（chat_id 列表）
 ```
 
-`~/.persona/im_secret.yaml`：
+`~/.persona/im_secret.yaml`（飞书凭据放在一起维护）：
 
 ```yaml
 feishu:
+  app_id: "cli_xxxx"
   app_secret: "xxxx"
 ```
 
