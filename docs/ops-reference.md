@@ -15,8 +15,8 @@ launchctl stop  com.persona.shell                                # 停止
 | `/esc` | 当前会话 | 取消队列中最早的消息 |
 | `/flush` | 当前会话 | 保存上下文后刷新（checkpoint → 新 session → bootstrap） |
 | `/clear` | 当前会话 | 清空上下文（不保存，直接重置） |
-| `/session-restart` | 当前会话 | 重启当前 Director（保留 session，加载新配置） |
-| `/shell-restart` | 全局 | 重启整个 Shell 进程（代码更新生效） |
+| `/session-restart` `/restart` | 当前会话 | 重启当前 Director（保留 session，加载新配置） |
+| `/shell-restart` `/restart-shell` | 全局 | 重启整个 Shell 进程（代码更新生效） |
 | `/status` | 当前会话 | 查看 Director 状态摘要（PID、token、队列等） |
 | `/start-with-codex` | 当前小群 | 将当前小群切换为 Codex Director 模式 |
 | `/start-with-claude` | 当前小群 | 将当前小群切回 Claude Director 模式 |

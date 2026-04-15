@@ -14,74 +14,52 @@
 
 面对混乱但有效的外部工具/信息，系统不进行深度逻辑解析，而是采用 Adapter Pattern + 效用评估接口直接封装。每个外部工具暴露统一的 `(input, context) → (output, confidence)` 接口，提取其效用的同时，隔离其内部的逻辑矛盾，以维持主干系统的优雅。
 
-## 三、记忆层架构：五层渐进式披露
+## 三、记忆层架构
 
-记忆以 Markdown 文件存储，按稳定性递减、更新频率递增分为五层。尽可能复用 Claude Code 原生的记忆系统，不够的部分自建。
+记忆以 Markdown 文件存储在 `~/.persona/` 目录（独立 git 仓库），按稳定性和更新频率分层。
 
-```
-稳定性 ▲
-       │  Soul    (灵魂层)   ── 几乎不变，仅本体可改
-       │  Core    (内核层)   ── 月级演进，复盘时微调
-       │  Work    (工作层)   ── 周级更新
-       │  Project (项目层)   ── 天级更新，按项目隔离
-       │  Daily   (日常层)   ── 小时级更新，daemon 自更新
-       └──────────────────────────────────────────► 更新频率
-```
+> **注**：原设计的五层渐进式披露已简化。当前实际运行的记忆结构如下。
 
-### 与 Claude Code 原生系统的映射
-
-| 记忆层 | 实际存储 | Claude Code 原生支持 | 说明 |
-|--------|---------|---------------------|------|
-| Soul | 项目根 `CLAUDE.md` | ✅ 每次启动自动加载 | 零成本"始终加载" |
-| Core | `.claude/memory/` 下的记忆文件 | ✅ auto memory 系统 | 带 frontmatter，自动读取 |
-| Work | `.claude/memory/` 下 type:project | ✅ auto memory 系统 | 与 Core 同机制，按 type 区分 |
-| Project | 各项目目录的 `CLAUDE.md` + `.claude/memory/` | ✅ 项目级记忆 | Claude Code 原生支持项目隔离 |
-| Daily | `daily/` 目录 | ❌ 需自建 | 日报 + state.md |
-
-### 文件结构
+### 实际文件结构
 
 ```
-persona/                              # 项目根目录
-├── CLAUDE.md                         # Soul 层（Claude Code 自动加载）
-├── .claude/
-│   └── memory/                       # Core + Work 层（Claude Code auto memory）
-│       ├── decision-patterns.md      # type: user
-│       ├── aesthetics.md             # type: user
-│       ├── heuristics.md             # type: feedback
-│       ├── current-direction.md      # type: project
-│       └── skill-tree.md             # type: project
-├── daily/                            # Daily 层（自建）
-│   ├── YYYY-MM-DD.md                 # 日报
-│   └── state.md                      # FLUSH 工作记忆
-├── inbox/                            # 人格间通信（自建）
-├── outbox/                           # 人格间通信（自建）
-└── audit_log/                        # 决策日志（自建）
-```
-
-### Claude Code 原生能力的复用
-
-| 我们的概念 | 对应的 Claude Code 能力 | 说明 |
-|-----------|------------------------|------|
-| Soul（身份/价值观） | CLAUDE.md | 每次启动自动注入，无需手动读取 |
-| Core（决策模式/偏好） | auto memory 系统 | Claude Code 自动管理读写 |
-| Persona 类型定义 | plugin agent 定义 | 用 Claude Code agent 体系定义人格 |
-| Director 行为规范 | skill 系统 | 用 skill 定义 Director 的工作流 |
-| 验收逻辑 | hook 系统 | PreToolUse/PostToolUse 做合规检查 |
-
-### 自建部分（Claude Code 没有对应物）
-
-```
-自建：
-├── daily/              # 日报系统
-├── state.md            # FLUSH 工作记忆
-├── inbox/ + outbox/    # 人格间通信文件
-├── audit_log/          # 决策日志
-└── TS Shell           # 飞书接入 + 进程管理
+~/.persona/                          # 身份仓库（git 管理）
+├── CLAUDE.md                        # 项目级指令（Claude Code 自动加载）
+├── soul.md                          # 灵魂：性格、价值观、行为边界
+├── meta.md                          # 运维指令：路径、服务管理等
+├── personas/                        # 角色人格定义
+│   ├── director.md
+│   ├── explorer.md
+│   ├── executor.md
+│   ├── critic.md
+│   └── introspector.md
+├── skills/                          # 技能插件（Claude Code plugin）
+├── memory/                          # 跨会话记忆（简单 md 文件）
+│   └── MEMORY.md                    # 记忆索引
+├── daily/                           # 日常层
+│   ├── state.md                     # FLUSH 工作记忆
+│   └── YYYY-MM-DD.md               # 日报
+├── outbox/                          # 子角色产出
+│   └── YYYY-MM-DD/
+├── TODO.md                          # 跨天待办
+└── config.yaml                      # 运行配置
 ```
 
 ### 读取策略
 
-Soul（CLAUDE.md）和 Core（.claude/memory/）由 Claude Code 在 Director 启动时自动加载，无需手动注入。Work / Project / Daily 按需读取。这控制了上下文窗口的消耗，同时零成本获得记忆的读写能力。
+- `CLAUDE.md` + `soul.md`：Claude Code 启动时通过 CLI 参数自动注入（`--append-system-prompt-file`）
+- `personas/*.md`：通过 CLI 参数注入角色定义
+- `skills/`：通过 `--plugin-dir` 加载
+- `memory/`、`daily/state.md`、`TODO.md`：Director bootstrap 时主动读取
+- `daily/YYYY-MM-DD.md`：按需读取
+
+### 多 Director 记忆共享
+
+多 Director 实例共享同一个 `~/.persona/` 目录：
+
+- Soul / Memory / Skills — 所有 Director 共享（git 管理）
+- `state.md` — 主 Director 读写，群 Director 只读
+- 上下文窗口 — 完全隔离，各自独立
 
 ## 四、多重人格体系
 
@@ -186,7 +164,10 @@ interface MessagingClient {
   reply(messageId: string, text: string): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<string | null>;
   addReaction(messageId: string, emoji: string): Promise<void>;
-  // ... 文件上传等
+  uploadAndReplyImage(messageId: string, filePath: string): Promise<void>;
+  uploadAndReplyFile(messageId: string, filePath: string): Promise<void>;
+  uploadAndSendImage(chatId: string, filePath: string): Promise<string | null>;
+  uploadAndSendFile(chatId: string, filePath: string): Promise<string | null>;
   getLastChatId(): string | null;
   getConnectionStatus(): 'connected' | 'disconnected';
 }
@@ -202,8 +183,10 @@ interface IncomingMessage {
   chatType: 'p2p' | 'group';
   memberCount?: number;
   groupName?: string;
-  threadId?: string;      // 子对话（飞书话题、Slack thread、Telegram topic）
-  quotedText?: string;    // 引用回复的原文
+  threadId?: string;         // 子对话（飞书话题、Slack thread）
+  quotedText?: string;       // 引用回复的原文
+  senderOpenId?: string;     // 发送者 ID（用于本体识别）
+  attachments?: Attachment[]; // 附件（图片、文件、语音）
 }
 ```
 
@@ -242,133 +225,116 @@ interface IncomingMessage {
 
 ### 硬隔离
 
-每个人格实例是一个独立的 Claude Code session（独立的 `claude` 进程），拥有：
+每个人格实例是一个独立的 agent 进程，拥有：
 
 - 独立的上下文窗口
 - 独立的工具配置
-- 只接收 Director 投喂的 Briefing，无其他上下文污染
+- 只接收 Director 通过 MCP 投喂的 prompt，无其他上下文污染
 
-### 进程模型
+### Director 三层架构
 
-所有 claude 进程（Director 和 Persona）均以 detached 模式运行，不依赖 TS Shell 的生命周期。
+Director 的进程管理经过重构，分为三层：
 
-#### Director 进程
+```
+SessionBridge (session-bridge.ts)
+  ├─ 会话编排：FLUSH / 消息队列 / bootstrap / 事件发射
+  ├─ 不关心底层是 Claude 还是 Codex
+  │
+  └─ DirectorSessionAdapter (director-session-adapter/)
+      ├─ claude.ts — Claude stream-json 双向协议（解析 init/assistant/result 事件）
+      ├─ codex.ts — Codex turn-based 协议（每轮 spawn → 等结果 → 返回）
+      │
+      └─ DirectorRuntime (director-runtime/)
+          ├─ claude.ts — Claude daemon 进程（FIFO named pipe，长驻）
+          └─ codex.ts — Codex 按 turn spawn（短驻，session resume）
+```
 
-通过 named pipe（FIFO）与 TS Shell 通信，支持 stream-json 双向通信：
+**SessionBridge** 是对外的统一接口（EventEmitter），负责：
+- 消息排队、去重、丢弃过期消息
+- FLUSH 生命周期（drain → checkpoint → kill → bootstrap）
+- 自动 flush 策略（token 阈值 / 时间间隔）
+- 统一事件：`chunk` / `response` / `stream-abort` / `alert` / `close` 等
+
+**DirectorSessionAdapter** 封装协议差异：
+- Claude adapter：管理 FIFO 读写句柄，解析 stream-json 行协议，提取响应文本和 metrics
+- Codex adapter：每轮消息 spawn 一次 `codex exec --resume`，解析 stdout，返回结果
+
+**DirectorRuntime** 封装进程生命周期：
+- Claude runtime：spawn detached daemon、PID 追踪、FIFO 创建/清理、进程信号
+- Codex runtime：按需 spawn、session 文件管理
+
+#### Claude Director 通信协议
+
+通过 named pipe（FIFO）与 Shell 双向通信：
 
 ```bash
 # 创建通信管道
-mkfifo /tmp/director-in /tmp/director-out
+mkfifo /tmp/persona/director-in /tmp/persona/director-out
 
 # 启动 Director（detached，独立于 Shell）
 claude --print \
   --input-format stream-json \
   --output-format stream-json \
   --verbose \
-  < /tmp/director-in \
-  > /tmp/director-out &
+  < /tmp/persona/director-in \
+  > /tmp/persona/director-out &
 ```
 
-输入协议（写 /tmp/director-in）：
+输入协议（写 director-in）：
 ```json
 {"type":"user","message":{"role":"user","content":"消息内容"}}
 ```
 
-输出协议（读 /tmp/director-out）：
+输出协议（读 director-out）：
 ```json
 {"type":"system","subtype":"init","session_id":"xxx"}
 {"type":"assistant","message":{"role":"assistant","content":"..."}}
 {"type":"result","subtype":"success","cost":"...","duration":"..."}
 ```
 
-#### Persona 进程
+#### Codex Director 通信
 
-默认 `-p` 单进单出，detached 运行，输出写文件：
-
-```bash
-claude -p "$(cat briefing.md)" \
-  --system-prompt personas/explorer.yaml \
-  --output-format json \
-  > outbox/task-001-report.json &
-```
-
-- 大多数场景（Solo、Relay）使用 `-p` 模式
-- `-p` 内部仍然支持多轮工具调用，对外表现为单进单出
-- Debate 模式通过 Director 串联多轮 `-p` 调用实现，不需要流式
-- Persona 进程 detached 运行，即使 Shell/Director 崩溃也不影响正在执行的任务
-- Director 重启后扫描 outbox/ 目录收集已完成的 report
+Codex 不保持常驻进程，每轮消息通过 `codex exec --resume` 续接 session：
 
 ```bash
-# Debate: Director 编排多轮
-claude -p "$(cat briefing-round1.md)" ... > round1-explorer.json
-# Director 提炼 round1，写入 round2 briefing
-claude -p "$(cat briefing-round2.md)" ... > round2-critic.json
-# Director 整合裁决
+codex exec --resume SESSION_ID "用户消息" \
+  --full-auto --sandbox danger-full-access
 ```
+
+输出从 stdout 逐行读取，遇到 `turn_completed` 事件表示本轮结束。
+
+#### Persona 进程（子角色任务）
+
+子角色通过 `task-runner.ts` 管理，不再使用手动 Briefing/Report 文件协议：
+
+1. Director 通过 MCP `create_task` 指定角色、prompt、描述
+2. `task-runner` 按配置的 agent 后端 spawn 进程（Claude `-p` 模式或 Codex `exec`）
+3. 任务产出写入 `~/.persona/outbox/YYYY-MM-DD/`
+4. 完成后 Shell 将结果回调给发起方 Director
+5. 任务有超时保护（默认 30 分钟）、重试、取消，通过 SQLite 持久化
 
 ### 进程容灾
 
 ```
 Shell 崩溃时：
-  Director (detached)      → 还活着，通过 named pipe 等待重连
-  Persona A (detached, -p) → 还活着，结果写 outbox/task-001.json
-  Persona B (detached, -p) → 还活着，结果写 outbox/task-002.json
+  Claude Director (detached)  → 还活着，通过 named pipe 等待重连
+  Codex Director              → 无常驻进程，无影响
+  子角色任务 (detached, -p)    → 还活着，结果写 outbox/
 
 Shell 重启：
-  → 重新 open named pipe 连接 Director
+  → DirectorPool.restoreEntries()：从 SQLite 恢复 pool entries
+  → Claude Director：重新 open named pipe 连接存活进程
   → 如果 Director 也崩了：spawn 新 Director，读 state.md 恢复
-  → 扫 outbox/ 收集已完成的 persona 结果
+  → killUnknownOrphans()：清理不在记录中的孤儿进程
 ```
 
-### 通信协议
+### 任务编排
 
-#### Briefing（Director → Persona）
+当前实现的编排模式是 **Solo（独奏）**：Director 通过 MCP `create_task` 派发任务给单个子角色，收到回调后自行整合。
 
-```yaml
-briefing:
-  task_id: "2026-04-05-001"
-  mode: "relay"                    # solo / relay / debate
-  role: "explorer"
-  objective: "调研 X 领域的最新进展"
-  context: |
-    （Director 从记忆层筛选后投喂的相关上下文）
-  constraints:
-    - "重点关注实用性"
-    - "时间预算：10分钟"
-  previous_outputs: []             # relay/debate 时包含前序人格产出摘要
-  output_schema: "discovery_report"
-```
+子角色的 prompt 由 Director 根据任务需求即时组装，不使用固定的 Briefing 格式。产出写入 `outbox/YYYY-MM-DD/` 目录，由 Director 审阅。
 
-#### Report（Persona → Director）
-
-```yaml
-report:
-  task_id: "2026-04-05-001"
-  role: "explorer"
-  findings:
-    - item: "发现 A"
-      confidence: 0.8
-      source: "https://..."
-      surprise_level: "high"
-    - item: "发现 B"
-      confidence: 0.6
-      source: "..."
-      surprise_level: "low"
-  hunches:
-    - "A 和 B 之间可能有关联，因为..."
-  meta:
-    tools_used: ["web_search", "fetch_url"]
-    tokens_consumed: 12400
-    self_assessment: "覆盖了主要方向，但 Y 子领域未深入"
-```
-
-### 三种交互模式
-
-| 模式 | 触发场景 | 流程 |
-|------|---------|------|
-| Solo（独奏） | 低风险、单一职能任务 | Director → 1 个人格 → 直接产出 |
-| Relay（接力） | 从模糊到清晰的渐进式任务 | Explorer → Executor → （Critic）→ Integrator |
-| Debate（辩论） | 高影响、不可逆的关键决策 | 多人格多轮交锋，Director 做最终裁决 |
+> **未来方向**：Relay（接力：Explorer → Executor → Critic 链式）和 Debate（辩论：多角色多轮交锋）模式在设计中但尚未实现。
 
 ## 七、多会话与群聊路由
 
@@ -423,7 +389,7 @@ DirectorPool
 
 ```yaml
 pool:
-  max_directors: 8          # 最大并发 Director 数
+  max_directors: 5          # 最大并发 Director 数（默认 5）
   idle_timeout_minutes: 30  # 空闲超时回收（≤3 个 Director 时不回收）
   small_group_threshold: 5  # 大群/小群人数分界（user_count）
   parallel_chat_ids: []     # 免 @mention 白名单（chat_id 列表）
@@ -454,34 +420,26 @@ pool:
 
 ### 记忆共享模型
 
-多 Director 实例共享同一个 persona 目录：
-
-```
-稳定性 ▲
-       │  Soul / Core / Memory   ── 所有 Director 共享（git 管理）
-       │  state.md               ── 主 Director 读写，群 Director 只读
-       │  上下文窗口              ── 完全隔离，各自独立
-       └──────────────────────────────────────────► 隔离程度
-```
-
-群 Director 的 bootstrap 消息明确其角色边界：
+详见"三、记忆层架构"。群 Director 的 bootstrap 消息明确其角色边界：
 - 主 Director：`读取 daily/state.md 恢复工作上下文，了解当前待处理事项。`
 - 群 Director：`你正在为群「{群名}」服务。请读取 daily/state.md 了解全局状态（只读）。`
 
 ### Director 事件体系
 
-Director（EventEmitter）在 stream-json 解析过程中发出以下事件：
+SessionBridge（EventEmitter）发出以下事件：
 
 | 事件 | 载荷 | 触发时机 |
 |------|------|----------|
-| `chunk` | `(text: string)` | 每个 `assistant` 事件中的 text block 到达时（仅用户可见的响应，排除 flush/bootstrap/system/discard） |
-| `response` | `(text: string, durationMs?: number)` | `result` 事件到达时，完整回复文本 |
-| `stream-abort` | `()` | Director 进程异常关闭或 backoff 耗尽时，通知上层清理流式状态 |
+| `chunk` | `(text: string)` | 每个 assistant 事件中的 text block 到达时（仅用户可见的响应，排除 flush/bootstrap/system） |
+| `response` | `(text: string, durationMs?: number)` | 一轮完整回复结束时 |
 | `system-response` | `(text: string, replyTo: string)` | 任务通知等系统消息的响应，需回复到指定 messageId |
-| `auto-flush-complete` | `()` | 自动 flush 完成 |
-| `flush-drain-complete` | `()` | flush drain 阶段完成，队列中的孤儿消息应清理 |
+| `cron-response` | `(text: string)` | Cron 触发的消息的响应 |
+| `stream-abort` | `()` | Director 进程异常关闭或重启时，通知上层清理流式状态 |
 | `alert` | `(message: string)` | 异常告警，转发给用户 |
 | `close` | `()` | 管道关闭（非主 Director 用于 pool 清理） |
+| `restarted` | `()` | Director 进程成功重启 |
+| `auto-flush-complete` | `()` | 自动 flush 完成 |
+| `flush-drain-complete` | `()` | flush drain 阶段完成，队列中的孤儿消息应清理 |
 
 DirectorPool 继承 EventEmitter，将池内 Director 的 `chunk` 和 `stream-abort` 事件 re-emit 到 pool 级别（附带 director label），供 Web Console 统一订阅。
 
@@ -651,19 +609,20 @@ last_flush: 2026-04-05T14:30:00
 
 | 组件 | 实现 |
 |------|------|
-| TS Shell | TypeScript 进程，进程管理 + named pipe I/O |
+| TS Shell | TypeScript (Bun) 进程，消息路由 + 进程管理 |
 | MessagingRouter | 多渠道路由器，按 messageId 路由回复到正确渠道 |
 | 飞书适配器 | MessagingClient 实现，WebSocket 长连接 + 飞书 SDK |
 | Web 控制台适配器 | MessagingClient 实现，复用控制台 WebSocket |
-| 主 Director | Claude Code CLI（detached），stream-json 双向通信 |
-| DirectorPool | 多 Director 实例管理，按群/话题路由，idle 超时回收。继承 EventEmitter，re-emit chunk/stream-abort |
+| SessionBridge | 会话编排层（FLUSH / 队列 / bootstrap），多后端统一接口 |
+| DirectorSessionAdapter | 协议适配层（Claude stream-json / Codex turn-based） |
+| DirectorRuntime | 进程生命周期层（Claude daemon FIFO / Codex per-turn spawn） |
+| DirectorPool | 多 Director 实例管理，按群路由，idle 超时回收。继承 EventEmitter |
 | One-shot 响应 | Claude Code CLI（`-p` 模式），大群无状态事件响应 |
-| Persona 实例 | Claude Code CLI（detached，`-p` 模式），输出写文件 |
-| Director ↔ Shell 通信 | named pipe (FIFO) + stream-json 协议 |
-| Web Console 流式 | Director chunk 事件 → Pool re-emit → Console WS 广播 → 前端 streaming bubble |
-| 记忆存储 | 本地 Markdown 文件 |
-| 通信协议 | Briefing / Report（YAML 结构） |
-| 定时触发 | cron |
+| 子角色任务 | task-runner + task-store (SQLite)，通过 MCP 派发，支持 Claude / Codex |
+| Cron 调度 | scheduler.ts + task-store (SQLite)，支持 spawn_role / director_msg / shell_action |
+| Web Console 流式 | SessionBridge chunk 事件 → Pool re-emit → Console WS 广播 → 前端 streaming bubble |
+| 记忆存储 | 本地 Markdown 文件（git 管理） |
+| 状态持久化 | SQLite（pool entries、任务、cron jobs） |
 | 日报输出 | 本地 Markdown 文件 |
 
 ## 十二、全局日志与可追踪性
@@ -687,17 +646,23 @@ last_flush: 2026-04-05T14:30:00
 |------|--------|------|
 | `/esc` | 当前会话 | 取消当前正在处理的消息（SIGINT → resume 旧 session） |
 | `/flush` | 当前会话 | 有状态的上下文刷新（checkpoint → 杀进程 → 新 session → bootstrap） |
-| `/restart` | 全局 | 重启整个 Shell 进程（launchd 自动拉起，Shell 代码更新生效） |
+| `/clear` | 当前会话 | 清空上下文（不保存，直接重置） |
+| `/session-restart` `/restart` | 当前会话 | 重启 Director，保留 session |
+| `/shell-restart` `/restart-shell` | 全局 | 重启整个 Shell 进程（launchd 自动拉起，Shell 代码更新生效） |
+| `/start-with-codex` | 当前小群 | 切换到 Codex Director |
+| `/start-with-claude` | 当前小群 | 切回 Claude Director |
+| `/status` | 当前会话 | 查看 Director 状态摘要 |
+| `/help` | 全局 | 列出所有可用命令 |
 
 ### 语义对比
 
-| | `/esc` | `/flush` | `/restart` |
-|---|---|---|---|
-| 信号 | SIGINT | SIGTERM | SIGTERM（全部 Director） |
-| 对话历史 | 保留（`--resume`） | 清空（新 session） | N/A（Shell 重建） |
-| 状态保存 | 无 | checkpoint → state.md → bootstrap | 无 |
-| 新 skill/配置 | 生效 | 生效 | 生效 |
-| 场景 | 取消卡住的请求 | 上下文 token 过长，保持工作连续性 | Shell 代码更新后重新加载 |
+| | `/esc` | `/flush` | `/clear` | `/restart` | `/shell-restart` |
+|---|---|---|---|---|---|
+| 信号 | SIGINT | SIGTERM | SIGTERM | SIGTERM | SIGTERM（全部） |
+| 对话历史 | 保留（`--resume`） | 清空（新 session） | 清空 | 保留 | N/A |
+| 状态保存 | 无 | checkpoint → state.md | 无 | 无 | 无 |
+| 新 skill/配置 | 生效 | 生效 | 生效 | 生效 | 生效 |
+| 场景 | 取消卡住的请求 | token 过长 | 彻底重置 | 加载新配置 | 代码更新 |
 
 ### `--resume` 与新 skill 的关系
 
@@ -705,20 +670,18 @@ last_flush: 2026-04-05T14:30:00
 
 ### 实现要点
 
-- **`/esc`**（`director.ts: interrupt()`）：设 `this.interrupted = true` → SIGINT → pipe close 回调检查标志 → `restart()`（保留 session）→ emit `restarted`
-- **`/flush`**（`director.ts: flush()`）：drain 等待 → checkpoint（让 Director 写 state.md）→ SIGTERM → `clearSession()` + `restart()`（新 session）→ bootstrap（让新 Director 读 state.md）
-- **`/restart`**（`index.ts`）：SIGTERM Director → `setTimeout(500ms)` → `process.exit(0)` → launchd 拉起新 Shell
+- **`/esc`**（`session-bridge.ts: interrupt()`）：设 `this.interrupted = true` → SIGINT → pipe close 回调检查标志 → `restart()`（保留 session）→ emit `restarted`
+- **`/flush`**（`session-bridge.ts: flush()`）：drain 等待 → checkpoint（让 Director 写 state.md）→ SIGTERM → `clearSession()` + `restart()`（新 session）→ bootstrap（让新 Director 读 state.md）
+- **`/clear`**（`session-bridge.ts: clear()`）：直接 SIGTERM → `clearSession()` + `restart()`（新 session），不执行 checkpoint
+- **`/restart`**（`session-bridge.ts: sessionRestart()`）：SIGTERM → `restart()`（保留 session）
+- **`/shell-restart`**（`index.ts`）：SIGTERM 全部 Director → `process.exit(0)` → launchd 拉起新 Shell
 
 ## 附录 B：已知问题与后续优化
 
 ### /esc 中断期间的消息缓冲
 
-`/esc` 通过 SIGINT + restart 实现真正的请求取消。`interrupt()` 期间（约 2-3 秒），`director.send()` 会因 writeHandle 为 null 抛异常。当前依赖飞书 SDK 在 WebSocket 层缓冲后续消息，实际触发概率低。后续可在 Director 层加 send 队列，在 restart 期间缓冲消息，restart 完成后自动 flush。
+`/esc` 通过 SIGINT + restart 实现真正的请求取消。`interrupt()` 期间（约 2-3 秒），`director.send()` 会因 writeHandle 为 null 抛异常。当前依赖消息队列缓冲后续消息，实际触发概率低。
 
-### /restart 三个待修问题
+### Shell 反复重启
 
-1. **虚假告警**：`/restart` 杀 Director 后 pipe close 触发 `rl.on('close')` 兜底分支，误发"🔴 Director 进程意外退出"告警，并在 Shell 退出前拉起孤儿 Director。应加 `shuttingDown` 标志位，close 回调中跳过 restart。
-
-2. **未按会话路由**：`/restart` 是全局操作，与 `/esc`、`/flush` 的按上下文路由不一致。多 Director 架构下应拆分为会话级操作和全局 `/restart-shell`。
-
-3. **竞态：未等待 Director 退出**：用 `setTimeout(500ms)` 代替事件驱动。正确做法是 Director 暴露 `shutdown()` 方法（设标志 → SIGTERM → 返回 Promise，close 回调 resolve），`/restart` 处 `await director.shutdown()` 后再 `process.exit(0)`。
+4/13 曾出现 30 分钟内重启 3 次（SIGTERM），原因未查明。
