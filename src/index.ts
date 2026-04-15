@@ -82,7 +82,7 @@ async function main() {
     mcpServers: {
       'persona-tasks': {
         command: 'bun',
-        args: ['run', join(import.meta.dirname, 'task-mcp-server.ts')],
+        args: ['run', join(import.meta.dirname, 'task', 'task-mcp-server.ts')],
         env: {
           SHELL_PORT: String(config.console.port),
           ...(config.console.token ? { SHELL_TOKEN: config.console.token } : {}),

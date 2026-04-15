@@ -39,7 +39,7 @@ interface RunningTask {
   timedOut: boolean;
 }
 
-const LOG_DIR = join(import.meta.dirname, '..', 'logs');
+const LOG_DIR = join(import.meta.dirname, '..', '..', 'logs');
 const GRACEFUL_KILL_DELAY = 5_000;
 
 export class TaskRunner extends EventEmitter {
