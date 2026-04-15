@@ -76,20 +76,33 @@ Director 通过三层架构支持多后端：**SessionBridge**（会话编排）
 ## 目录结构
 
 ```
-persona-shell/                 # 本仓库
+persona-shell/
 ├── src/
-│   ├── index.ts                 # 入口，消息路由 + 命令分发
-│   ├── session-bridge.ts        # 会话桥（FLUSH / 队列 / bootstrap）
+│   ├── index.ts                   # 入口，消息路由 + 命令分发
+│   ├── session-bridge.ts          # 会话桥（FLUSH / 队列 / bootstrap）
 │   ├── director-session-adapter/  # Claude / Codex 协议适配
-│   ├── director-runtime/        # Claude / Codex 进程管理
-│   ├── director-pool.ts         # 多 Director 实例管理
-│   ├── console.ts               # Web 控制台 + API
-│   ├── messaging/               # 通讯层（飞书、路由、接口）
-│   ├── task/                    # 任务系统（存储、执行、MCP、调度）
-│   ├── __tests__/               # 单元测试
-│   └── ...
+│   ├── director-runtime/          # Claude / Codex 进程管理
+│   ├── director-pool.ts           # 多 Director 实例管理
+│   ├── console.ts                 # Web 控制台 + API
+│   ├── queue.ts                   # 消息队列（持久化 + cancel）
+│   ├── config.ts                  # 配置加载（YAML → typed config）
+│   ├── persona-process.ts         # 统一进程 spawn（Claude / Codex）
+│   ├── claude-process.ts          # Claude FIFO 管道进程管理
+│   ├── log-parser.ts              # 日志解析（Web 控制台用）
+│   ├── logger.ts                  # 日志分级
+│   ├── messaging/                 # 通讯层
+│   │   ├── messaging.ts             # 接口定义
+│   │   ├── messaging-router.ts      # 消息路由
+│   │   └── feishu.ts                # 飞书 WebSocket 实现
+│   ├── task/                      # 任务系统
+│   │   ├── task-store.ts            # SQLite 存储（Task + CronJob + State KV）
+│   │   ├── task-runner.ts           # 后台任务执行
+│   │   ├── task-mcp-server.ts       # MCP 工具服务器
+│   │   └── scheduler.ts            # Cron 调度
+│   └── __tests__/                 # 单元测试（263 tests, 75% 行覆盖率）
 ├── docs/
-└── logs/
+├── logs/
+└── scripts/
 ```
 
 ## 文档
