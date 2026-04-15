@@ -231,6 +231,14 @@ async function isFeishuReachable(client: Lark.Client): Promise<boolean> {
 }
 
 export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[]; attachmentDir?: string }) {
+  // 飞书是国内服务，不走代理（Lark SDK multipart 上传经代理会 ECONNRESET）
+  const feishuDomains = 'open.feishu.cn,*.feishu.cn,*.larkoffice.com';
+  const existing = process.env.no_proxy ?? '';
+  if (!existing.includes('feishu.cn')) {
+    process.env.no_proxy = existing ? `${existing},${feishuDomains}` : feishuDomains;
+    process.env.NO_PROXY = process.env.no_proxy;
+  }
+
   const skipMentionSet = new Set(options?.skipMentionChatIds ?? []);
   const attachmentDir = options?.attachmentDir;
   if (attachmentDir) mkdirSync(attachmentDir, { recursive: true });
