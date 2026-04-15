@@ -1,0 +1,42 @@
+name: Test
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install
+
+      - run: bun test --coverage 2>&1 | tee coverage-output.txt
+
+      - name: Extract coverage
+        run: |
+          LINE_COV=$(grep 'All files' coverage-output.txt | awk -F'|' '{gsub(/ /,"",$3); print $3}')
+          FUNC_COV=$(grep 'All files' coverage-output.txt | awk -F'|' '{gsub(/ /,"",$2); print $2}')
+          echo "line_coverage=$LINE_COV" >> "$GITHUB_OUTPUT"
+          echo "func_coverage=$FUNC_COV" >> "$GITHUB_OUTPUT"
+        id: cov
+
+      - name: Create coverage badge
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        if: github.ref == 'refs/heads/main'
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ vars.COVERAGE_GIST_ID }}
+          filename: persona-shell-coverage.json
+          label: coverage
+          message: ${{ steps.cov.outputs.line_coverage }}%
+          valColorRange: ${{ steps.cov.outputs.line_coverage }}
+          minColorRange: 40
+          maxColorRange: 90
