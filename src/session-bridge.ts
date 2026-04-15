@@ -14,7 +14,7 @@ import type {
   DirectorTurnResult,
   RestoredSessionState,
 } from './director-session-adapter/index.js';
-import { getState, setState, listTasks } from './task-store.js';
+import { getState, setState, listTasks } from './task/task-store.js';
 import { log } from './logger.js';
 
 const LOG_BASE = join(import.meta.dirname, '..', 'logs');

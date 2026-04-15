@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, rmSync } from 'fs';
-import { initTaskStore, getState } from './task-store.js';
-import { MessageQueue } from './queue.js';
+import { initTaskStore, getState } from '../task/task-store.js';
+import { MessageQueue } from '../queue.js';
 
 const PERSONA_DIR = '/tmp/persona-queue-test';
 const LOG_DIR = '/tmp/persona-queue-test/logs';

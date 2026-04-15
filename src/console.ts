@@ -1,15 +1,15 @@
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, resolve, extname } from 'path';
 import { homedir } from 'os';
-import type { MessagingClient } from './messaging.js';
+import type { MessagingClient } from './messaging/messaging.js';
 import type { DirectorPool } from './director-pool.js';
 import { parseConversationLog, parseSessions, parseTaskLog } from './log-parser.js';
 
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
-import type { TaskRunner } from './task-runner.js';
-import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, getState, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task-store.js';
+import type { TaskRunner } from './task/task-runner.js';
+import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, getState, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task/task-store.js';
 
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
 interface WsConnection {

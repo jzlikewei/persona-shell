@@ -6,8 +6,8 @@ import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import { ClaudeProcess } from './claude-process.js';
 import type { Config } from './config.js';
-import type { MessagingClient } from './messaging.js';
-import { getState, setState } from './task-store.js';
+import type { MessagingClient } from './messaging/messaging.js';
+import { getState, setState } from './task/task-store.js';
 import type { AttachmentBuffer } from './console.js';
 import { log } from './logger.js';
 

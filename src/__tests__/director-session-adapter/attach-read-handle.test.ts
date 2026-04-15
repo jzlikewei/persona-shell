@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Readable } from 'stream';
-import { attachReadHandle } from './index.js';
+import { attachReadHandle } from '../../director-session-adapter/index.js';
 import type { FileHandle } from 'fs/promises';
 
 /**

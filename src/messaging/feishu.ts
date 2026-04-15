@@ -1,10 +1,10 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { readFileSync, statSync, mkdirSync } from 'fs';
 import { extname, basename, join } from 'path';
-import type { Config } from './config.js';
+import type { Config } from '../config.js';
 import type { MessagingClient, MessageHandler, IncomingMessage, Attachment } from './messaging.js';
-import { getState, setState } from './task-store.js';
-import { log } from './logger.js';
+import { getState, setState } from '../task/task-store.js';
+import { log } from '../logger.js';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB

@@ -3,8 +3,8 @@ import { type ChildProcess } from 'child_process';
 import { mkdirSync, existsSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
-import { spawnPersona } from './persona-process.js';
-import { resolveAgentProvider, type Config } from './config.js';
+import { spawnPersona } from '../persona-process.js';
+import { resolveAgentProvider, type Config } from '../config.js';
 
 export interface TaskRunnerConfig {
   agents: Config['agents'];

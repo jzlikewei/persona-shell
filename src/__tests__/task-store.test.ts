@@ -19,7 +19,7 @@ import {
   deleteCronJob,
   toggleCronJob,
   getOutboxDir,
-} from './task-store.js';
+} from '../task/task-store.js';
 
 const TEST_DIR = '/tmp/persona-task-store-test';
 

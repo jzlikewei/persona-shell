@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { loadConfig, getDefaultAgentName, resolveAgentProvider, type AgentsConfig } from './config.js';
+import { loadConfig, getDefaultAgentName, resolveAgentProvider, type AgentsConfig } from '../config.js';
 
 const TEST_DIR = '/tmp/persona-config-test';
 

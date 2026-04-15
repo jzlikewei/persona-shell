@@ -1,13 +1,13 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
-import { parseConversationLog, parseSessions, parseTaskLog } from './log-parser.js';
+import { parseConversationLog, parseSessions, parseTaskLog } from '../log-parser.js';
 
 // ── Temp directories for input/output log tests ──
 const TMP_DIR = '/tmp/persona-log-parser-test';
 
 // ── Project logs directory for parseTaskLog tests ──
-const PROJECT_LOGS_DIR = join(import.meta.dirname, '..', 'logs');
+const PROJECT_LOGS_DIR = join(import.meta.dirname, '..', '..', 'logs');
 
 // Unique prefix to avoid collision with real logs
 const TEST_TASK_PREFIX = '_test_lp_';

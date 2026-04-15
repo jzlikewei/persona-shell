@@ -1,5 +1,33 @@
 # 使用指南
 
+## 功能矩阵
+
+| 能力 | Claude Code | Codex | 说明 |
+|------|:-----------:|:-----:|------|
+| **IM 接入** | | | |
+| 飞书私聊 | ✅ | — | 主 Director 长驻 daemon |
+| 飞书群聊（小群） | ✅ | ✅ | DirectorPool 按群分配，`/start-with-*` 切换 |
+| 飞书群聊（大群） | ✅ | — | One-shot 无状态响应 |
+| Web 控制台 | ✅ | — | localhost:3000，浏览器直接对话 |
+| **会话管理** | | | |
+| 流式响应 | ✅ | ❌ | Claude 实时 chunk 推送，Codex 整段返回 |
+| 上下文保持 | ✅ daemon | ✅ resume | Claude 常驻进程；Codex 按 turn spawn + session resume |
+| FLUSH（上下文刷新） | ✅ | ✅ | checkpoint → kill → bootstrap |
+| /esc（取消请求） | ✅ | ✅ | SIGINT 中断当前处理 |
+| **多角色系统** | | | |
+| 后台任务（create_task） | ✅ | ✅ | Director 派发，子角色独立执行，MCP 驱动 |
+| Cron 定时任务 | ✅ | ✅ | spawn_role / director_msg / shell_action |
+| 人格定义（personas/） | ✅ | ✅ | Claude Code agent frontmatter 格式 |
+| 技能插件（skills/） | ✅ | — | Claude Code plugin 体系 |
+| **记忆与持久化** | | | |
+| 身份仓库（~/.persona） | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
+| 日报自动生成 | ✅ | — | 主 Director 写入 daily/YYYY-MM-DD.md |
+| 工作记忆（state.md） | ✅ | ✅ | FLUSH checkpoint + bootstrap 恢复 |
+| Pool 状态持久化 | ✅ | ✅ | SQLite，重启后自动恢复 |
+| **附件** | | | |
+| 接收图片/文件/语音 | ✅ | ✅ | 通讯层下载，路径传给 Director |
+| 发送图片/文件 | ✅ | ✅ | MCP send_attachment |
+
 ## 基本对话
 
 启动后，在飞书私聊 Bot 即可对话。你发的每条消息都会进入 Director 的消息队列，按序处理。Director 是你的主分身——它读取你的 soul.md、记忆、技能，以你的人格回复。

@@ -36,35 +36,7 @@
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ 主力后端 |
 | [Codex](https://github.com/openai/codex) | ✅ 后台任务 + 群聊 Director |
 
-## 功能矩阵
-
-| 能力 | Claude Code | Codex | 说明 |
-|------|:-----------:|:-----:|------|
-| **IM 接入** | | | |
-| 飞书私聊 | ✅ | — | 主 Director 长驻 daemon |
-| 飞书群聊（小群） | ✅ | ✅ | DirectorPool 按群分配，`/start-with-*` 切换 |
-| 飞书群聊（大群） | ✅ | — | One-shot 无状态响应 |
-| Web 控制台 | ✅ | — | localhost:3000，浏览器直接对话 |
-| **会话管理** | | | |
-| 流式响应 | ✅ | ❌ | Claude 实时 chunk 推送，Codex 整段返回 |
-| 上下文保持 | ✅ daemon | ✅ resume | Claude 常驻进程；Codex 按 turn spawn + session resume |
-| FLUSH（上下文刷新） | ✅ | ✅ | checkpoint → kill → bootstrap |
-| /esc（取消请求） | ✅ | ✅ | SIGINT 中断当前处理 |
-| **多角色系统** | | | |
-| 后台任务（create_task） | ✅ | ✅ | Director 派发，子角色独立执行，MCP 驱动 |
-| Cron 定时任务 | ✅ | ✅ | spawn_role / director_msg / shell_action |
-| 人格定义（personas/） | ✅ | ✅ | Claude Code agent frontmatter 格式 |
-| 技能插件（skills/） | ✅ | — | Claude Code plugin 体系 |
-| **记忆与持久化** | | | |
-| 身份仓库（~/.persona） | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
-| 日报自动生成 | ✅ | — | 主 Director 写入 daily/YYYY-MM-DD.md |
-| 工作记忆（state.md） | ✅ | ✅ | FLUSH checkpoint + bootstrap 恢复 |
-| Pool 状态持久化 | ✅ | ✅ | SQLite，重启后自动恢复 |
-| **附件** | | | |
-| 接收图片/文件/语音 | ✅ | ✅ | 通讯层下载，路径传给 Director |
-| 发送图片/文件 | ✅ | ✅ | MCP send_attachment |
-
-详细用法见 [使用指南](docs/usage.md)。
+完整功能矩阵和详细用法见 [使用指南](docs/usage.md)。
 
 ## 快速开始
 
@@ -111,11 +83,10 @@ persona-shell/                 # 本仓库
 │   ├── director-session-adapter/  # Claude / Codex 协议适配
 │   ├── director-runtime/        # Claude / Codex 进程管理
 │   ├── director-pool.ts         # 多 Director 实例管理
-│   ├── feishu.ts                # 飞书 WebSocket 客户端
-│   ├── messaging.ts             # 通讯层抽象接口
 │   ├── console.ts               # Web 控制台 + API
-│   ├── task-runner.ts           # 后台任务
-│   ├── scheduler.ts             # Cron 调度
+│   ├── messaging/               # 通讯层（飞书、路由、接口）
+│   ├── task/                    # 任务系统（存储、执行、MCP、调度）
+│   ├── __tests__/               # 单元测试
 │   └── ...
 ├── docs/
 └── logs/
@@ -128,7 +99,7 @@ persona-shell/                 # 本仓库
 | [安装与配置](docs/setup.md) | 飞书应用创建、配置文件、服务化、身份仓库 |
 | [使用指南](docs/usage.md) | 命令、群聊策略、任务、Cron、Web 控制台、人格自定义 |
 | [技术架构](docs/architecture.md) | 三层架构、通讯层、消息路由、FLUSH、进程容灾 |
-| [Claude Code 启动机制](docs/claude-code-startup.md) | CLI 参数链、stream-json 协议、会话恢复 |
+| [Agent 后端](docs/agent-backends.md) | Claude Code / Codex 启动机制、协议、参数、会话恢复 |
 | [运维速查](docs/ops-reference.md) | 命令、日志路径、运行时文件 |
 
 ## License

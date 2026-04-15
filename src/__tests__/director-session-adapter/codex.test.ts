@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { CodexSessionAdapter } from './codex.js';
+import { CodexSessionAdapter } from '../../director-session-adapter/codex.js';
 import type {
   DirectorSessionAdapterHooks,
   DirectorSessionAdapterOptions,
   DirectorTurnResult,
   DirectorSessionMetricsUpdate,
-} from './index.js';
+} from '../../director-session-adapter/index.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
