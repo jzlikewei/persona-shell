@@ -160,6 +160,134 @@ describe('SessionBridge', () => {
     expect(adapter.sent).toHaveLength(0);
     expect(bridge.isFlushing).toBe(false);
   });
+
+  test('sendSystemMessage enqueues system-absorbed turn and absorbs response', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const onEmit = spyOn(bridge, 'emit');
+
+    await bridge.start();
+    await bridge.sendSystemMessage('system info');
+    adapter.completeTurn({ responseText: 'ack', durationMs: 5 });
+
+    // system-absorbed should NOT emit 'response' to the user
+    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+    expect(bridge.getStatus().pendingCount).toBe(0);
+  });
+
+  test('sendCronMessage emits cron-response on turn completion', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const onEmit = spyOn(bridge, 'emit');
+
+    await bridge.start();
+    await bridge.sendCronMessage('cron trigger');
+    adapter.completeTurn({ responseText: 'cron result', durationMs: 10 });
+
+    expect(onEmit).toHaveBeenCalledWith('cron-response', 'cron result');
+    // Should NOT emit regular 'response'
+    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+  });
+
+  test('notifyTaskDone with replyToMessageId emits system-response', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const onEmit = spyOn(bridge, 'emit');
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-1', true, 'msg-123');
+    adapter.completeTurn({ responseText: 'task report', durationMs: 20 });
+
+    expect(onEmit).toHaveBeenCalledWith('system-response', 'task report', 'msg-123');
+    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+  });
+
+  test('handleTurnFailure emits error response for user turn', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const onEmit = spyOn(bridge, 'emit');
+
+    await bridge.start();
+    await bridge.send('hello');
+    adapter.failTurn('API error');
+
+    expect(onEmit).toHaveBeenCalledWith('response', '处理失败，请稍后重试');
+    expect(onEmit).toHaveBeenCalledWith('alert', expect.stringContaining('API error'));
+  });
+
+  test('handleTurnFailure resolves bootstrap without emitting response', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const onEmit = spyOn(bridge, 'emit');
+
+    await bridge.start();
+    const bootstrapPromise = bridge.bootstrap();
+    adapter.failTurn('timeout');
+    await bootstrapPromise;
+
+    // Should NOT emit 'response' for bootstrap failure
+    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+    expect(bridge.getStatus().pendingCount).toBe(0);
+  });
+
+  test('empty response text does not emit response event', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const onEmit = spyOn(bridge, 'emit');
+
+    await bridge.start();
+    await bridge.send('hello');
+    adapter.completeTurn({ responseText: '', durationMs: 5 });
+
+    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+  });
+
+  test('whitespace-only response text does not emit response event', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const onEmit = spyOn(bridge, 'emit');
+
+    await bridge.start();
+    await bridge.send('hello');
+    adapter.completeTurn({ responseText: '   \n  ', durationMs: 5 });
+
+    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+  });
+
+  test('getStatus returns correct activity states', async () => {
+    const bridge = createBridge();
+    await bridge.start();
+
+    expect(bridge.getStatus().activityState).toBe('idle');
+    expect(bridge.getStatus().pendingCount).toBe(0);
+  });
+
+  test('send throws when adapter is not ready', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    adapter.ready = false;
+    await bridge.start();
+
+    expect(bridge.send('hello')).rejects.toThrow();
+  });
+
+  test('multiple pending turns resolve in order', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const responses: string[] = [];
+
+    bridge.on('response', (reply: string) => responses.push(reply));
+
+    await bridge.start();
+    await bridge.send('first');
+    await bridge.send('second');
+
+    adapter.completeTurn({ responseText: 'reply-1', durationMs: 5 });
+    adapter.completeTurn({ responseText: 'reply-2', durationMs: 5 });
+
+    expect(responses).toEqual(['reply-1', 'reply-2']);
+    expect(bridge.getStatus().pendingCount).toBe(0);
+  });
 });
 
 function createBridge(): SessionBridge {
