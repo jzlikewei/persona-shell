@@ -8,6 +8,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { existsSync, readdirSync, mkdirSync, openSync, closeSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { getLogDir } from './logger.js';
 import type { AgentProviderConfig } from './config.js';
 
 export interface AgentRuntimeConfig extends AgentProviderConfig {
@@ -241,7 +242,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   if (options.extraArgs) args.push(...options.extraArgs);
 
   // stderr 重定向到日志文件
-  const defaultLogDir = join(import.meta.dirname, '..', 'logs');
+  const defaultLogDir = getLogDir();
   const stderrPath = options.stderrPath ?? join(defaultLogDir, `${options.role}-stderr.log`);
   const stderrDir = dirname(stderrPath);
   if (!existsSync(stderrDir)) mkdirSync(stderrDir, { recursive: true });

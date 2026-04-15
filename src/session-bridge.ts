@@ -15,9 +15,8 @@ import type {
   RestoredSessionState,
 } from './director-session-adapter/index.js';
 import { getState, setState, listTasks } from './task/task-store.js';
-import { log } from './logger.js';
+import { log, getLogDir } from './logger.js';
 
-const LOG_BASE = join(import.meta.dirname, '..', 'logs');
 
 interface BridgePersistedState {
   lastFlushAt: number;
@@ -119,7 +118,7 @@ export class SessionBridge extends EventEmitter {
   }
 
   private get logDir(): string {
-    return join(LOG_BASE, this.label);
+    return join(getLogDir(), this.label);
   }
 
   private get logDate(): string {

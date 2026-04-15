@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import { readFileSync } from 'fs';
 import { SessionBridge } from '../session-bridge.js';
 import { initTaskStore } from '../task/task-store.js';
+import { initLogDir } from '../logger.js';
 import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
@@ -103,6 +104,7 @@ describe('SessionBridge', () => {
   beforeEach(() => {
     FakeAdapter.instances = [];
     initTaskStore('/tmp/persona-test');
+    initLogDir('/tmp/persona-test');
   });
 
   test('dispatches user responses through adapter turn completion', async () => {

@@ -5,6 +5,7 @@ import { join } from 'path';
 import { createInterface } from 'readline';
 import { spawnPersona } from '../persona-process.js';
 import { resolveAgentProvider, type Config } from '../config.js';
+import { getLogDir } from '../logger.js';
 
 export interface TaskRunnerConfig {
   agents: Config['agents'];
@@ -39,7 +40,6 @@ interface RunningTask {
   timedOut: boolean;
 }
 
-const LOG_DIR = join(import.meta.dirname, '..', '..', 'logs');
 const GRACEFUL_KILL_DELAY = 5_000;
 
 export class TaskRunner extends EventEmitter {
@@ -93,7 +93,7 @@ export class TaskRunner extends EventEmitter {
       agent,
       mode: 'background',
       prompt: fullPrompt,
-      stderrPath: join(LOG_DIR, `task-${input.taskId}.stderr.log`),
+      stderrPath: join(getLogDir(), `task-${input.taskId}.stderr.log`),
     });
 
     // 防止未处理的 error 事件导致 Shell 进程崩溃
@@ -122,7 +122,7 @@ export class TaskRunner extends EventEmitter {
 
     // Parse stream-json stdout and log to file
     let costUsd: number | undefined;
-    const stdoutLogPath = join(LOG_DIR, `task-${input.taskId}.stdout.log`);
+    const stdoutLogPath = join(getLogDir(), `task-${input.taskId}.stdout.log`);
 
     const rl = createInterface({ input: child.stdout! });
     rl.on('line', (line) => {

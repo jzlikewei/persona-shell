@@ -14,6 +14,7 @@ import { join } from 'path';
 
 // Direct import for testing the function behavior through spawn args
 import { spawnPersona } from '../persona-process.js';
+import { initLogDir } from '../logger.js';
 
 const TEST_DIR = '/tmp/persona-process-test';
 const MCP_CONFIG_PATH = join(TEST_DIR, '.mcp.json');
@@ -23,6 +24,7 @@ describe('persona-process', () => {
     rmSync(TEST_DIR, { recursive: true, force: true });
     mkdirSync(join(TEST_DIR, 'personas'), { recursive: true });
     mkdirSync(join(TEST_DIR, 'logs'), { recursive: true });
+    initLogDir(TEST_DIR);
   });
 
   afterEach(() => {

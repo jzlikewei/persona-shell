@@ -2,12 +2,13 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { parseConversationLog, parseSessions, parseTaskLog } from '../log-parser.js';
+import { initLogDir, getLogDir } from '../logger.js';
 
 // ── Temp directories for input/output log tests ──
 const TMP_DIR = '/tmp/persona-log-parser-test';
 
-// ── Project logs directory for parseTaskLog tests ──
-const PROJECT_LOGS_DIR = join(import.meta.dirname, '..', '..', 'logs');
+// parseTaskLog uses getLogDir(), so we init it to a temp location
+const TEST_LOG_PERSONA_DIR = '/tmp/persona-log-parser-test-persona';
 
 // Unique prefix to avoid collision with real logs
 const TEST_TASK_PREFIX = '_test_lp_';
@@ -319,21 +320,19 @@ describe('log-parser', () => {
   describe('parseTaskLog', () => {
     const testTaskId = (suffix: string) => `${TEST_TASK_PREFIX}${suffix}`;
 
+    beforeEach(() => {
+      rmSync(TEST_LOG_PERSONA_DIR, { recursive: true, force: true });
+      initLogDir(TEST_LOG_PERSONA_DIR);
+    });
+
     afterEach(() => {
-      // Clean up any test log files
-      try {
-        const { readdirSync, unlinkSync } = require('fs');
-        for (const f of readdirSync(PROJECT_LOGS_DIR)) {
-          if (f.startsWith(`task-${TEST_TASK_PREFIX}`)) {
-            unlinkSync(join(PROJECT_LOGS_DIR, f));
-          }
-        }
-      } catch { /* ignore */ }
+      rmSync(TEST_LOG_PERSONA_DIR, { recursive: true, force: true });
     });
 
     function writeTaskLog(taskId: string, lines: string[]): void {
-      if (!existsSync(PROJECT_LOGS_DIR)) mkdirSync(PROJECT_LOGS_DIR, { recursive: true });
-      writeFileSync(join(PROJECT_LOGS_DIR, `task-${taskId}.stdout.log`), lines.join('\n') + '\n');
+      const logDir = getLogDir();
+      if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
+      writeFileSync(join(logDir, `task-${taskId}.stdout.log`), lines.join('\n') + '\n');
     }
 
     test('non-existent log → empty entries', () => {

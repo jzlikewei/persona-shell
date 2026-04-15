@@ -7,6 +7,7 @@
 
 import { readFileSync, existsSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
+import { getLogDir } from './logger.js';
 
 /** 从文件尾部读取最多 maxBytes 字节，返回完整行（丢弃首行截断部分） */
 function readTail(filePath: string, maxBytes: number): string {
@@ -226,12 +227,9 @@ export function parseSessions(outputLog: string): SessionInfo[] {
   })).sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));
 }
 
-/** Director log base directory */
-const LOG_DIR = join(import.meta.dirname, '..', 'logs');
-
 /** Parse a task's stdout log into structured entries for the web console */
 export function parseTaskLog(taskId: string, afterLine: number): { entries: TaskLogEntry[]; totalLines: number } {
-  const logPath = join(LOG_DIR, `task-${taskId}.stdout.log`);
+  const logPath = join(getLogDir(), `task-${taskId}.stdout.log`);
   if (!existsSync(logPath)) return { entries: [], totalLines: 0 };
 
   let raw: string;

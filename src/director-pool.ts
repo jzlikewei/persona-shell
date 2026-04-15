@@ -9,7 +9,7 @@ import type { Config } from './config.js';
 import type { MessagingClient } from './messaging/messaging.js';
 import { getState, setState } from './task/task-store.js';
 import type { AttachmentBuffer } from './console.js';
-import { log } from './logger.js';
+import { log, getLogDir } from './logger.js';
 
 /** Pool entry data persisted to SQLite for crash recovery */
 interface PersistedPoolEntry {
@@ -171,7 +171,7 @@ export class DirectorPool extends EventEmitter {
       groupName: name,
     } satisfies SessionBridgeOptions);
 
-    const queue = new MessageQueue(`logs/queue-${label}.log`);
+    const queue = new MessageQueue(join(getLogDir(), `queue-${label}.log`));
 
     await bridge.start();
 

@@ -13,7 +13,7 @@ import { Scheduler } from './task/scheduler.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task/task-store.js';
 import { writeFileSync } from 'fs';
 import { join, extname } from 'path';
-import { setLogLevel, log } from './logger.js';
+import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -26,8 +26,14 @@ for (const method of ['log', 'warn', 'error'] as const) {
 async function main() {
   const config = loadConfig();
   setLogLevel(config.logging.level);
+  initLogDir(config.director.persona_dir);
   initTaskStore(config.director.persona_dir);
-  const queue = new MessageQueue(config.logging.queue_log, undefined, { restorable: false });
+
+  // 启动时清理过期日志（默认 7 天）
+  const cleaned = cleanupOldLogs(7);
+  if (cleaned > 0) log.info(`[startup] Cleaned ${cleaned} old log file(s)`);
+
+  const queue = new MessageQueue(join(getLogDir(), 'queue.log'), undefined, { restorable: false });
   const director = new SessionBridge({ agents: config.agents, config: config.director, label: 'main', isMain: true });
   const feishu = createFeishuClient(config.feishu, {
     skipMentionChatIds: config.pool.parallel_chat_ids,
