@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import { SessionBridge } from './session-bridge.js';
+import { initTaskStore } from './task-store.js';
 import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
@@ -62,7 +63,11 @@ class FakeAdapter implements DirectorSessionAdapter {
     return this.shouldWaitOnShutdown;
   }
 
-  async restartTransport(): Promise<void> {}
+  restartCalls = 0;
+
+  async restartTransport(): Promise<void> {
+    this.restartCalls += 1;
+  }
 
   describeSessionReady(label: string, sessionId: string | null, sessionName: string | null): string {
     return `[bridge:${label}] fake ready ${sessionId ?? 'new'} ${sessionName ?? ''}`.trim();
@@ -96,6 +101,7 @@ class FakeAdapter implements DirectorSessionAdapter {
 describe('SessionBridge', () => {
   beforeEach(() => {
     FakeAdapter.instances = [];
+    initTaskStore('/tmp/persona-test');
   });
 
   test('dispatches user responses through adapter turn completion', async () => {
@@ -139,6 +145,20 @@ describe('SessionBridge', () => {
 
     await adapter.closeRuntime();
     await shutdownPromise;
+  });
+
+  test('clearContext restarts transport without bootstrap', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    await bridge.start();
+
+    const success = await bridge.clearContext();
+
+    expect(success).toBe(true);
+    expect(adapter.terminations).toEqual(['SIGTERM']);
+    expect(adapter.restartCalls).toBe(1);
+    expect(adapter.sent).toHaveLength(0);
+    expect(bridge.isFlushing).toBe(false);
   });
 });
 

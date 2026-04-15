@@ -59,6 +59,7 @@ export class CodexDirectorRuntime {
       mode: 'background',
       prompt: content,
       resumeSessionId: this.hooks.getSessionId() ?? undefined,
+      mcpConfigPath: join(this.options.config.persona_dir, ".mcp.json"),
       stderrPath: join(this.options.logDir, 'director-stderr.log'),
       env: { DIRECTOR_LABEL: this.options.label },
     });

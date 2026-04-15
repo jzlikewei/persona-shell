@@ -18,6 +18,9 @@
 - 编码、写作、操作 → Executor
 - 审核、评估、找漏洞 → Critic
 - 系统自省、偏差检测 → Introspector
+- 用户明确说“派活”、要求某个子角色先做、或任务需要异步/并行/后台执行时，默认调用 MCP `create_task`
+- 不要用当前 Director 直接完成本该派发的工作
+- 不要默认用内置 Agent/spawn_agent 代替后台任务；只有 `create_task` 不可用时才降级，并在结果里说明
 - 简单任务 Director 自己做，不必派发
 
 ## 产出管理

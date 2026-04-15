@@ -23,8 +23,8 @@ export interface PersonaSpawnOptions {
   agent: AgentRuntimeConfig;
   /** foreground: FIFO 双向管道 (Director); background: 一次性 prompt (子角色) */
   mode: 'foreground' | 'background';
-  // --- foreground 专用 ---
-  /** MCP 配置文件路径 */
+  // --- transport / runtime 配置 ---
+  /** MCP 配置文件路径。Claude Director 走 --mcp-config；Codex turn-based 走 -c mcp_servers.* overrides */
   mcpConfigPath?: string;
   /** 恢复已有 session */
   sessionId?: string;
@@ -105,6 +105,59 @@ function argsToShellCmd(executable: string, args: string[]): string {
   return `${executable} ${args.map(shellQuote).join(' ')}`;
 }
 
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function tomlInlineTable(value: Record<string, string>): string {
+  const entries = Object.entries(value);
+  if (entries.length === 0) return '{}';
+  return `{ ${entries.map(([k, v]) => `${k} = ${tomlString(v)}`).join(', ')} }`;
+}
+
+function buildCodexMcpOverrideArgs(mcpConfigPath?: string): string[] {
+  if (!mcpConfigPath || !existsSync(mcpConfigPath)) return [];
+
+  try {
+    const raw = JSON.parse(readFileSync(mcpConfigPath, 'utf-8')) as {
+      mcpServers?: Record<string, {
+        command?: unknown;
+        args?: unknown;
+        env?: unknown;
+      }>;
+    };
+    const servers = raw.mcpServers;
+    if (!servers || typeof servers !== 'object') return [];
+
+    const args: string[] = [];
+    for (const [name, server] of Object.entries(servers)) {
+      if (!server || typeof server !== 'object' || typeof server.command !== 'string' || !server.command.trim()) {
+        continue;
+      }
+      const base = `mcp_servers.${tomlString(name)}`;
+      args.push('-c', `${base}.command=${tomlString(server.command.trim())}`);
+
+      const serverArgs = Array.isArray(server.args)
+        ? server.args.filter((value): value is string => typeof value === 'string')
+        : [];
+      if (serverArgs.length > 0) {
+        args.push('-c', `${base}.args=[${serverArgs.map(tomlString).join(', ')}]`);
+      }
+
+      const envEntries = server.env && typeof server.env === 'object'
+        ? Object.entries(server.env as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+        : [];
+      if (envEntries.length > 0) {
+        args.push('-c', `${base}.env=${tomlInlineTable(Object.fromEntries(envEntries))}`);
+      }
+    }
+    return args;
+  } catch {
+    return [];
+  }
+}
+
 /**
  * 统一 spawn agent 进程。
  * - foreground 模式：当前仅支持 Claude，通过 sh -c 做 FIFO 管道重定向 (Director)
@@ -126,6 +179,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.agent.search) {
       args.push('--search');
     }
+    args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath));
     args.push('--cd', options.personaDir);
   }
 
