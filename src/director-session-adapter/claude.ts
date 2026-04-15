@@ -214,12 +214,18 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
 
   private extractResponseText(event: unknown): string {
     if (!event || typeof event !== 'object') return '';
-    const assistant = event as {
+    const evt = event as {
+      result?: string;
       message?: {
         content?: string | Array<{ type?: string; text?: string }>;
       };
     };
-    const content = assistant.message?.content;
+
+    // Claude CLI result events carry the final text in `event.result` (string).
+    // Fall back to `event.message.content` for forward-compatibility.
+    if (typeof evt.result === 'string') return evt.result.trim();
+
+    const content = evt.message?.content;
     if (typeof content === 'string') return content.trim();
     if (!Array.isArray(content)) return '';
     return content
