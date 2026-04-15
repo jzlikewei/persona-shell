@@ -22,8 +22,9 @@ export class MessageQueue {
   private items: Map<string, QueueItem> = new Map();
   private logPath: string;
   private stateKey: string;
+  private restorable: boolean;
 
-  constructor(logPath: string, stateKey?: string) {
+  constructor(logPath: string, stateKey?: string, options?: { restorable?: boolean }) {
     this.logPath = logPath;
     // Derive a unique state key from logPath to prevent cross-queue contamination
     // e.g., "logs/queue.log" → "queue:main", "logs/queue-465eda2a.log" → "queue:465eda2a"
@@ -33,6 +34,7 @@ export class MessageQueue {
       const base = logPath.replace(/^.*\/queue-?/, '').replace(/\.log$/, '');
       this.stateKey = base ? `queue:${base}` : 'queue:main';
     }
+    this.restorable = options?.restorable ?? true;
     const dir = dirname(logPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
@@ -43,6 +45,22 @@ export class MessageQueue {
    *  Skips items older than 5 minutes — after Shell restart, Director has moved on
    *  and those messages are orphans. */
   restoreFromState(): number {
+    if (!this.restorable) {
+      const saved = getState<QueueItem[]>(this.stateKey);
+      if (saved && Array.isArray(saved) && saved.length > 0) {
+        deleteState(this.stateKey);
+        this.log('RESTORE', '-', `discarded ${saved.length} persisted items (queue restore disabled)`);
+      }
+      // Migration: also clear legacy shared key for main queue if present.
+      if (this.stateKey === 'queue:main') {
+        const legacy = getState<QueueItem[]>('queue');
+        if (legacy && Array.isArray(legacy) && legacy.length > 0) {
+          deleteState('queue');
+        }
+      }
+      return 0;
+    }
+
     const saved = getState<QueueItem[]>(this.stateKey);
     // Migration: also check legacy shared key 'queue' for main queue
     if (!saved && this.stateKey === 'queue:main') {

@@ -63,7 +63,7 @@ function createTestAdapter(hooks: DirectorSessionAdapterHooks): ClaudeSessionAda
       defaults: { director: 'fake', default: 'fake' },
       providers: { fake: { type: 'claude', command: 'echo' } },
     },
-    directorAgent: { type: 'claude', command: 'echo' },
+    directorAgent: { type: 'claude', command: 'echo', name: 'fake' },
     logDir: '/tmp/persona-test/logs',
   };
 

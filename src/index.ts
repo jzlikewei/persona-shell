@@ -27,7 +27,7 @@ async function main() {
   const config = loadConfig();
   setLogLevel(config.logging.level);
   initTaskStore(config.director.persona_dir);
-  const queue = new MessageQueue(config.logging.queue_log);
+  const queue = new MessageQueue(config.logging.queue_log, undefined, { restorable: false });
   const director = new SessionBridge({ agents: config.agents, config: config.director, label: 'main', isMain: true });
   const feishu = createFeishuClient(config.feishu, {
     skipMentionChatIds: config.pool.parallel_chat_ids,
@@ -539,8 +539,8 @@ async function main() {
       return;
     }
 
-    // /session-restart — restart current session's Director (routes to correct Director, preserves session)
-    if (text.trim() === '/session-restart') {
+    // /session-restart | /restart — restart current session's Director (routes to correct Director, preserves session)
+    if (text.trim() === '/session-restart' || text.trim() === '/restart') {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
@@ -553,8 +553,8 @@ async function main() {
       return;
     }
 
-    // /shell-restart — shutdown all Directors + exit Shell (launchd will respawn)
-    if (text.trim() === '/shell-restart') {
+    // /shell-restart | /restart-shell — shutdown all Directors + exit Shell (launchd will respawn)
+    if (text.trim() === '/shell-restart' || text.trim() === '/restart-shell') {
       if (!isMaster) return;
       await messaging.reply(messageId, 'Shell 正在重启...');
       console.log('[shell] /shell-restart: shutting down all Directors and exiting for launchd respawn');
