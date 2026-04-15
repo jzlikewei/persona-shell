@@ -21,8 +21,8 @@ agents:
       search: false
 
 # 配置模板 — 复制到 config.yaml 并填入实际值
+# 飞书凭据（app_id + app_secret）放 im_secret.yaml，不在此文件中
 feishu:
-  app_id: "cli_xxxx"
   master_id: ""               # 本体的飞书 open_id（配置后仅本体可执行 /restart 等命令）
 
 director:

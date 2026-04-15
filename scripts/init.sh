@@ -36,15 +36,8 @@ if [ ! -f "$CONFIG" ]; then
   read -r APP_SECRET
 
   if [ -n "$APP_ID" ] && [ -n "$APP_SECRET" ]; then
-    # macOS sed requires -i '', GNU sed requires -i without argument
-    if sed -i '' "s/cli_xxxx/$APP_ID/" "$CONFIG" 2>/dev/null; then
-      : # macOS sed succeeded
-    else
-      sed -i "s/cli_xxxx/$APP_ID/" "$CONFIG"
-    fi
-    printf 'feishu:\n  app_secret: "%s"\n' "$APP_SECRET" > "$IM_SECRET_CONFIG"
-    echo "   ✓ App ID 已写入 $CONFIG"
-    echo "   ✓ App Secret 已写入 $IM_SECRET_CONFIG"
+    printf 'feishu:\n  app_id: "%s"\n  app_secret: "%s"\n' "$APP_ID" "$APP_SECRET" > "$IM_SECRET_CONFIG"
+    echo "   ✓ 飞书凭据已写入 $IM_SECRET_CONFIG"
   else
     echo "   ⏭️  跳过，请稍后手动编辑 $CONFIG"
   fi
