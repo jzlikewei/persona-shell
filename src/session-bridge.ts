@@ -163,6 +163,16 @@ export class SessionBridge extends EventEmitter {
     return freshStart;
   }
 
+  /** Whether this bridge resumed an existing session (has a persisted session ID). */
+  get hasRestoredSession(): boolean {
+    return this.sessionId !== null;
+  }
+
+  /** Detach from the underlying process without killing it (for shell restart). */
+  async detach(): Promise<void> {
+    await this.adapter.stop();
+  }
+
   async interrupt(): Promise<void> {
     if (this.flushing && this.adapter.shouldSkipInterruptWhileFlushing()) {
       console.log(`[bridge:${this.label}] Interrupt skipped: flush in progress`);

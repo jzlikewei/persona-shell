@@ -569,12 +569,12 @@ async function main() {
       return;
     }
 
-    // /shell-restart | /restart-shell — shutdown all Directors + exit Shell (launchd will respawn)
+    // /shell-restart | /restart-shell — detach pool Directors + shutdown main Director + exit Shell (launchd will respawn)
     if (text.trim() === '/shell-restart' || text.trim() === '/restart-shell') {
       if (!isMaster) return;
       await messaging.reply(messageId, 'Shell 正在重启...');
-      console.log('[shell] /shell-restart: shutting down all Directors and exiting for launchd respawn');
-      await pool.shutdownAll();
+      console.log('[shell] /shell-restart: detaching pool Directors and exiting for launchd respawn');
+      await pool.detachAll();
       await director.shutdown();
       process.exit(0);
     }
@@ -809,10 +809,10 @@ async function main() {
     }, 3000);
   }
 
-  // Graceful shutdown
+  // Graceful shutdown — detach pool Directors (keep alive for reconnect), stop main Director
   process.on('SIGINT', async () => {
-    console.log('[shell] Shutting down...');
-    await Promise.allSettled([pool.shutdownAll(), director.stop()]);
+    console.log('[shell] Shutting down (SIGINT) — detaching pool Directors...');
+    await Promise.allSettled([pool.detachAll(), director.stop()]);
     process.exit(0);
   });
 }

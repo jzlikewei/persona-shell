@@ -190,8 +190,14 @@ export class DirectorPool extends EventEmitter {
     this.entries.set(routingKey, entry);
     this.closedEntries.delete(routingKey); // re-activated
     this.persistEntries();
-    // won't be merged into the bootstrap turn by Claude Code
-    await bridge.bootstrap();
+
+    // Skip bootstrap if resuming an existing session (e.g. after shell restart).
+    // The Director already has context from the previous session.
+    if (!bridge.hasRestoredSession) {
+      await bridge.bootstrap();
+    } else {
+      console.log(`[pool] Skipping bootstrap for "${name}" — resumed existing session`);
+    }
 
     return entry;
   }
@@ -292,6 +298,25 @@ export class DirectorPool extends EventEmitter {
       await this.shutdown(key);
     }
     console.log(`[pool] All ${keys.length} group Director(s) shut down`);
+  }
+
+  /** Detach from all pool Directors without killing them (for shell restart).
+   *  Processes become orphans; restoreEntries() will reconnect on next startup. */
+  async detachAll(): Promise<void> {
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
+    }
+    const keys = [...this.entries.keys()];
+    for (const key of keys) {
+      const entry = this.entries.get(key);
+      if (entry) {
+        console.log(`[pool] Detaching Director for group "${entry.groupName}" (keeping alive for reconnect)`);
+        await entry.bridge.detach();
+      }
+    }
+    // Keep entries in persisted state so restoreEntries() can reconnect
+    console.log(`[pool] Detached ${keys.length} group Director(s) — orphans preserved for reconnect`);
   }
 
   /** Get status of all pool entries (active + closed) for dashboard */
