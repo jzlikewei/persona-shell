@@ -29,6 +29,9 @@ export class Scheduler {
   private callbacks: SchedulerCallbacks;
   private lastTickTime: number = 0;
   private ticking: boolean = false;
+  /** Track consecutive spawn failures per job to apply backoff */
+  private failCount = new Map<string, number>();
+  private static readonly MAX_FAIL_BACKOFF_TICKS = 30; // max ~30 minutes between retries
 
   constructor(config: SchedulerConfig, callbacks: SchedulerCallbacks) {
     this.config = config;
@@ -96,11 +99,29 @@ export class Scheduler {
         try {
           switch (actionType) {
             case 'spawn_role': {
+              // Exponential backoff on consecutive spawn failures:
+              // skip ticks based on 2^failCount (capped at MAX_FAIL_BACKOFF_TICKS).
+              const fails = this.failCount.get(job.id) ?? 0;
+              if (fails > 0) {
+                const backoffTicks = Math.min(2 ** fails, Scheduler.MAX_FAIL_BACKOFF_TICKS);
+                // Use lastTickTime modulo to decide whether to skip this tick
+                const ticksSinceEpoch = Math.floor(Date.now() / TICK_INTERVAL_MS);
+                if (ticksSinceEpoch % backoffTicks !== 0) {
+                  continue; // skip this tick, retry later
+                }
+              }
+
               this.callbacks.notifyCronFired?.(job);
               const taskId = await this.callbacks.executeSpawnRole(job);
               if (taskId) {
                 this.callbacks.markJobRun(job.id);
+                this.failCount.delete(job.id);
                 console.log(`[scheduler] Created task ${taskId} for ${job.name}`);
+              } else {
+                const newFails = fails + 1;
+                this.failCount.set(job.id, newFails);
+                const nextRetryMin = Math.min(2 ** newFails, Scheduler.MAX_FAIL_BACKOFF_TICKS);
+                console.warn(`[scheduler] Spawn failed for ${job.name} (${newFails}x), next retry in ~${nextRetryMin}min`);
               }
               break;
             }
