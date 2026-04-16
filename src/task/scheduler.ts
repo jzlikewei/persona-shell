@@ -85,11 +85,11 @@ export class Scheduler {
 
         const actionType = job.action_type ?? 'spawn_role';
 
-        // Universal overlap check: skip if previous run of this job is still active
+        // Universal overlap check: skip if previous run of this job is still active.
+        // Don't markJobRun here — let shouldRun() re-evaluate on the next tick.
+        // This ensures daily jobs aren't silently swallowed when overlapping.
         if (this.callbacks.isOverlapping(job.role)) {
           console.log(`[scheduler] Skipping ${job.name}: previous run still active`);
-          // Still mark as run to prevent pile-up on next tick
-          this.callbacks.markJobRun(job.id);
           continue;
         }
 
