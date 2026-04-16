@@ -344,6 +344,16 @@ export function startConsole(
             }
           }
 
+          // GET /api/state — read state.md and TODO.md for dashboard
+          if (url.pathname === '/api/state' && req.method === 'GET') {
+            const personaDir = config.director.persona_dir;
+            let state = '';
+            let todo = '';
+            try { state = readFileSync(join(personaDir, 'daily', 'state.md'), 'utf-8'); } catch { /* ok */ }
+            try { todo = readFileSync(join(personaDir, 'TODO.md'), 'utf-8'); } catch { /* ok */ }
+            return Response.json({ state, todo });
+          }
+
           // POST /api/send — send arbitrary text to Director (bypass messaging)
           if (url.pathname === '/api/send' && req.method === 'POST') {
             const body = await req.json() as { text: string; director?: string };

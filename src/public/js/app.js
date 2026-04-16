@@ -68,6 +68,53 @@
   var wsConnected = false;
   var ws = null;
 
+  // ── State/TODO panel ──
+  var statePanelOpen = false;
+  var stateData = { state: '', todo: '' };
+  var stateActiveTab = 'state';
+
+  window.toggleStatePanel = function() {
+    var wrap = document.getElementById('state-wrap');
+    statePanelOpen = !statePanelOpen;
+    if (statePanelOpen) {
+      wrap.classList.add('open');
+      loadStateData();
+    } else {
+      wrap.classList.remove('open');
+    }
+  };
+
+  window.switchStateTab = function(tab) {
+    stateActiveTab = tab;
+    document.getElementById('state-tab-state').classList.toggle('active', tab === 'state');
+    document.getElementById('state-tab-todo').classList.toggle('active', tab === 'todo');
+    renderStatePanel();
+  };
+
+  window.loadStateData = function() {
+    var body = document.getElementById('state-panel-body');
+    body.innerHTML = '<div class="empty">Loading...</div>';
+    fetch('/api/state')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        stateData = d;
+        renderStatePanel();
+      })
+      .catch(function() {
+        body.innerHTML = '<div class="empty">Failed to load</div>';
+      });
+  };
+
+  function renderStatePanel() {
+    var body = document.getElementById('state-panel-body');
+    var raw = stateActiveTab === 'state' ? stateData.state : stateData.todo;
+    if (!raw) {
+      body.innerHTML = '<div class="empty">Empty</div>';
+      return;
+    }
+    body.innerHTML = md(raw);
+  }
+
   // View state
   var viewMode = 'dashboard'; // 'dashboard' | 'session' | 'task' | 'pool-session'
   var selectedSessionId = null;
@@ -780,6 +827,12 @@
       expandedCronId = null;
       loadCronJobs();
     }
+    // Close state panel on outside click
+    var stateWrap = $('state-wrap');
+    if (statePanelOpen && stateWrap && !stateWrap.contains(e.target)) {
+      statePanelOpen = false;
+      stateWrap.classList.remove('open');
+    }
   });
 
   // Close cron panel on ESC key
@@ -790,6 +843,11 @@
       if (cronWrap) cronWrap.classList.remove('open');
       expandedCronId = null;
       loadCronJobs();
+    }
+    if (e.key === 'Escape' && statePanelOpen) {
+      statePanelOpen = false;
+      var stateWrap = $('state-wrap');
+      if (stateWrap) stateWrap.classList.remove('open');
     }
   });
 

@@ -38,6 +38,23 @@
       <span class="queue-badge" id="hb-queue"></span>
     </div>
     <div class="hspacer"></div>
+    <div class="hi state-trigger-wrap" id="state-wrap">
+      <button class="state-trigger" id="state-trigger" onclick="toggleStatePanel()">
+        <span class="state-icon">📋</span>
+      </button>
+      <div class="state-panel" id="state-panel">
+        <div class="state-panel-header">
+          <div class="state-tabs">
+            <button class="state-tab active" id="state-tab-state" onclick="switchStateTab('state')">State</button>
+            <button class="state-tab" id="state-tab-todo" onclick="switchStateTab('todo')">TODO</button>
+          </div>
+          <button class="state-refresh-btn" onclick="loadStateData()">↻</button>
+        </div>
+        <div class="state-panel-body" id="state-panel-body">
+          <div class="empty">Loading...</div>
+        </div>
+      </div>
+    </div>
     <div class="hi cron-trigger-wrap" id="cron-wrap">
       <button class="cron-trigger" id="cron-trigger" onclick="toggleCronPanel()">
         <span class="cron-icon">⏱</span>
