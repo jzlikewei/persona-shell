@@ -9,7 +9,7 @@ export interface SchedulerCallbacks {
   listEnabledJobs: () => CronJob[];
   // spawn_role: 创建子角色进程（原 executeJob）
   executeSpawnRole: (job: CronJob) => Promise<string | null>;
-  isOverlapping: (role: string) => boolean;
+  isOverlapping: (jobId: string, role: string) => boolean;
   markJobRun: (jobId: string) => void;
   // director_msg: 给 Director 发系统消息
   executeDirectorMsg: (job: CronJob) => Promise<void>;
@@ -88,7 +88,7 @@ export class Scheduler {
         // Universal overlap check: skip if previous run of this job is still active.
         // Don't markJobRun here — let shouldRun() re-evaluate on the next tick.
         // This ensures daily jobs aren't silently swallowed when overlapping.
-        if (this.callbacks.isOverlapping(job.role)) {
+        if (this.callbacks.isOverlapping(job.id, job.role)) {
           console.log(`[scheduler] Skipping ${job.name}: previous run still active`);
           continue;
         }

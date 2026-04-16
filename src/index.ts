@@ -267,9 +267,12 @@ async function main() {
         taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, prompt: task.prompt, description: task.description });
         return task.id;
       },
-      isOverlapping: (role) => {
-        const active = listTasks({ role });
-        return active.some((t) => t.type === 'cron' && (t.status === 'running' || t.status === 'dispatched'));
+      isOverlapping: (jobId, _role) => {
+        const active = listTasks({ status: 'running' });
+        const dispatched = listTasks({ status: 'dispatched' });
+        return [...active, ...dispatched].some(
+          (t) => t.type === 'cron' && (t.extra as Record<string, unknown>)?.cronJobId === jobId,
+        );
       },
       markJobRun: (jobId) => {
         updateCronJob(jobId, { last_run_at: localNow() });
