@@ -346,9 +346,21 @@ export function startConsole(
 
           // POST /api/send — send arbitrary text to Director (bypass messaging)
           if (url.pathname === '/api/send' && req.method === 'POST') {
-            const body = await req.json() as { text: string };
+            const body = await req.json() as { text: string; director?: string };
             if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
             try {
+              // Route to pool Director if specified
+              if (body.director && pool) {
+                const poolStatus = pool.getPoolStatus().find((e) => e.label === body.director);
+                if (poolStatus) {
+                  const entry = pool.get(poolStatus.routingKey);
+                  if (entry) {
+                    await entry.bridge.send(body.text);
+                    return Response.json({ ok: true, message: 'sent to pool director' });
+                  }
+                }
+                return Response.json({ ok: false, message: `Pool director "${body.director}" not found` }, { status: 404 });
+              }
               await director.send(body.text);
               return Response.json({ ok: true, message: 'sent' });
             } catch (err) {
@@ -591,7 +603,25 @@ export function startConsole(
               ...result,
             }));
           } else if (msg.type === 'chat' && msg.text) {
-            // Web chat 消息 → 走 MessagingClient handler
+            // Web chat 消息 — route to specific Director if specified
+            const targetLabel: string | null = msg.director ?? null;
+            if (targetLabel && pool) {
+              // Route to pool Director
+              const poolStatus = pool.getPoolStatus().find((e) => e.label === targetLabel);
+              if (poolStatus) {
+                const entry = pool.get(poolStatus.routingKey);
+                if (entry) {
+                  try {
+                    await entry.bridge.send(msg.text);
+                  } catch (err) {
+                    console.error(`[console] Web chat send to pool "${targetLabel}" failed:`, err);
+                  }
+                  return;
+                }
+              }
+              console.warn(`[console] Pool Director "${targetLabel}" not found, falling back to main`);
+            }
+            // Fall back to main Director via MessagingClient handler
             const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
             messageWsMap.set(messageId, { ws, createdAt: Date.now() });
             for (const handler of chatHandlers) {

@@ -110,7 +110,7 @@
 
     // Send via WebSocket chat message (goes through MessagingRouter)
     var messageId = 'web-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
-    ws.send(JSON.stringify({ type: 'chat', text: text, messageId: messageId }));
+    ws.send(JSON.stringify({ type: 'chat', text: text, messageId: messageId, director: selectedPoolLabel || null }));
 
     // Append user message to chat immediately
     var el = $('chat-messages');
