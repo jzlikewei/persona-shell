@@ -67,21 +67,13 @@ export class Scheduler {
     try {
       const now = Date.now();
 
-      // Detect sleep/wake: if gap since last tick is too large, skip this tick
+      // Log sleep/wake detection for observability, but don't skip any jobs.
+      // shouldRun() already prevents pile-up: interval jobs check elapsed time
+      // since last_run_at, daily jobs check if already ran today.
       if (this.lastTickTime > 0) {
         const gap = now - this.lastTickTime;
         if (gap > SLEEP_THRESHOLD_MS) {
-          console.log(`[scheduler] Sleep detected (gap=${Math.round(gap / 1000)}s), skipping tick to avoid pile-up`);
-          // Update last_run_at for all due jobs so they don't fire on next tick either
-          const jobs = this.callbacks.listEnabledJobs();
-          for (const job of jobs) {
-            if (shouldRun(job.schedule, job.last_run_at)) {
-              this.callbacks.markJobRun(job.id);
-              console.log(`[scheduler] Marked ${job.name} as run (sleep skip)`);
-            }
-          }
-          this.lastTickTime = now;
-          return;
+          console.log(`[scheduler] Sleep detected (gap=${Math.round(gap / 1000)}s), resuming normal execution`);
         }
       }
       this.lastTickTime = now;
@@ -193,4 +185,9 @@ export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
 
   console.warn(`[scheduler] Unknown schedule format: ${schedule}`);
   return false;
+}
+
+/** Check if a schedule string is a daily schedule (e.g. "daily 03:00") */
+export function isDailySchedule(schedule: string): boolean {
+  return /^daily\s+\d{2}:\d{2}$/.test(schedule);
 }
