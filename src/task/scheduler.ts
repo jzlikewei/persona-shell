@@ -67,21 +67,23 @@ export class Scheduler {
     try {
       const now = Date.now();
 
-      // Detect sleep/wake: if gap since last tick is too large, skip this tick
+      // Detect sleep/wake: if gap since last tick is too large, handle missed jobs
       if (this.lastTickTime > 0) {
         const gap = now - this.lastTickTime;
         if (gap > SLEEP_THRESHOLD_MS) {
-          console.log(`[scheduler] Sleep detected (gap=${Math.round(gap / 1000)}s), skipping tick to avoid pile-up`);
-          // Update last_run_at for all due jobs so they don't fire on next tick either
+          console.log(`[scheduler] Sleep detected (gap=${Math.round(gap / 1000)}s), checking for missed jobs`);
+          // For interval-based jobs (every Nm/Nh): mark as run to avoid pile-up.
+          // For daily jobs: let them fall through to normal execution — they only fire
+          // once per day and must not be silently swallowed.
           const jobs = this.callbacks.listEnabledJobs();
           for (const job of jobs) {
-            if (shouldRun(job.schedule, job.last_run_at)) {
+            if (shouldRun(job.schedule, job.last_run_at) && !isDailySchedule(job.schedule)) {
               this.callbacks.markJobRun(job.id);
-              console.log(`[scheduler] Marked ${job.name} as run (sleep skip)`);
+              console.log(`[scheduler] Marked ${job.name} as run (sleep skip, interval-based)`);
             }
           }
           this.lastTickTime = now;
-          return;
+          // Don't return — let daily jobs execute in the normal loop below
         }
       }
       this.lastTickTime = now;
@@ -193,4 +195,9 @@ export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
 
   console.warn(`[scheduler] Unknown schedule format: ${schedule}`);
   return false;
+}
+
+/** Check if a schedule string is a daily schedule (e.g. "daily 03:00") */
+function isDailySchedule(schedule: string): boolean {
+  return /^daily\s+\d{2}:\d{2}$/.test(schedule);
 }
