@@ -168,21 +168,6 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
           break;
         }
 
-        // Claude CLI stream-json mode emits 'assistant' events (one per internal turn)
-        // instead of fine-grained 'stream_event' deltas. Extract text blocks as chunks
-        // so the WebUI can show real-time streaming.
-        case 'assistant': {
-          const content = event.message?.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              if (block?.type === 'text' && typeof block.text === 'string' && block.text) {
-                this.hooks.onChunk(block.text);
-              }
-            }
-          }
-          break;
-        }
-
         case 'result': {
           if (event.is_error && event.errors?.some((e: string) => e.includes('No conversation found'))) {
             console.warn(`[bridge:${this.options.label}] Session expired, clearing session for fresh start`);
