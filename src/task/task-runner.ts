@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { type ChildProcess } from 'child_process';
-import { mkdirSync, existsSync, appendFileSync } from 'fs';
+import { mkdirSync, existsSync, appendFileSync, copyFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { spawnPersona } from '../persona-process.js';
@@ -38,9 +38,12 @@ interface RunningTask {
   child: ChildProcess;
   startedAt: number;
   timedOut: boolean;
+  outputPath: string;
+  resultFile: string;
 }
 
 const GRACEFUL_KILL_DELAY = 5_000;
+const CODEX_RESULT_STAGING_DIR = '/tmp/persona-task-results';
 
 export class TaskRunner extends EventEmitter {
   private config: TaskRunnerConfig;
@@ -76,16 +79,23 @@ export class TaskRunner extends EventEmitter {
       return;
     }
 
-    // 构建产出文件名：用描述语义化，保留 ID 保证唯一
+    // 构建产出文件名：只用任务 ID，描述写在报告头部
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
     const outboxDir = join(personaDir, 'outbox', today);
     if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true });
-    const safeName = input.description
-      ? input.description.replace(/[/\\]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 50)
-      : '';
-    const fileName = safeName ? `${input.taskId}_${safeName}.md` : `${input.taskId}.md`;
+    const fileName = `${input.taskId}.md`;
     const resultFile = join(outboxDir, fileName);
-    const fullPrompt = `${input.prompt}\n\n[系统指令] 将输出结果保存到 ${resultFile}。完成后只回复"done"，不要输出总结。`;
+    const outputPath = agent.type === 'codex'
+      ? join(CODEX_RESULT_STAGING_DIR, `${input.taskId}.md`)
+      : resultFile;
+
+    if (agent.type === 'codex') {
+      if (!existsSync(CODEX_RESULT_STAGING_DIR)) mkdirSync(CODEX_RESULT_STAGING_DIR, { recursive: true });
+      rmSync(outputPath, { force: true });
+    }
+
+    const descHeader = input.description ? `报告头部请注明任务信息：「${input.taskId} — ${input.description}」。` : '';
+    const fullPrompt = `${input.prompt}\n\n[系统指令] 将输出结果保存到 ${outputPath}。${descHeader}完成后只回复"done"，不要输出总结。`;
 
     const { child, args } = spawnPersona({
       role: input.role,
@@ -118,7 +128,7 @@ export class TaskRunner extends EventEmitter {
       this.killWithEscalation(input.taskId, child.pid!);
     }, timeoutMs);
 
-    this.running.set(input.taskId, { pid: child.pid, timer, child, startedAt, timedOut: false });
+    this.running.set(input.taskId, { pid: child.pid, timer, child, startedAt, timedOut: false, outputPath, resultFile });
 
     // Parse stream-json stdout and log to file
     let costUsd: number | undefined;
@@ -161,13 +171,27 @@ export class TaskRunner extends EventEmitter {
         return;
       }
 
-      const success = code === 0;
+      let error: string | undefined;
+      let finalResultFile: string | undefined;
+
+      if (code === 0) {
+        const moved = this.materializeResultFile(entry.outputPath, entry.resultFile);
+        if (moved.ok) {
+          finalResultFile = entry.resultFile;
+        } else {
+          error = moved.error;
+        }
+      } else {
+        error = `exit code ${code}`;
+      }
+
+      const success = !error;
       const result: TaskResult = {
         taskId: input.taskId,
         success,
         durationMs,
         costUsd,
-        ...(success ? { resultFile: resultFile } : { error: `exit code ${code}` }),
+        ...(success ? { resultFile: finalResultFile } : { error }),
       };
 
       console.log(`[task-runner] Task ${input.taskId} ${success ? 'completed' : 'failed'} (duration=${durationMs}ms, code=${code})`);
@@ -231,6 +255,24 @@ export class TaskRunner extends EventEmitter {
       process.kill(-pid, signal);
     } catch {
       // process already dead
+    }
+  }
+
+  private materializeResultFile(outputPath: string, resultFile: string): { ok: true } | { ok: false; error: string } {
+    if (!existsSync(outputPath)) {
+      return { ok: false, error: 'result file missing' };
+    }
+
+    if (outputPath === resultFile) {
+      return { ok: true };
+    }
+
+    try {
+      copyFileSync(outputPath, resultFile);
+      rmSync(outputPath, { force: true });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'failed to move result file into outbox' };
     }
   }
 }
