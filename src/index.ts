@@ -308,7 +308,12 @@ async function main() {
           parts.push(`📋 ${job.description}`);
           parts.push(`🔄 ${job.schedule} | ${actionType}`);
           if (actionType === 'director_msg' && job.message) {
-            parts.push(`💬 ${job.message.slice(0, 100)}`);
+            // Apply same template variable substitution as executeDirectorMsg
+            const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+            const d = new Date(); d.setDate(d.getDate() - 1);
+            const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+            const rendered = job.message.replace(/\{today\}/g, today).replace(/\{yesterday\}/g, yesterday);
+            parts.push(`💬 ${rendered.slice(0, 100)}`);
           }
           messaging.sendMessage(lastChatId, parts.join('\n')).catch((err) => {
             console.warn('[shell] Failed to send cron notification:', err);
