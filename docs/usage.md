@@ -152,9 +152,11 @@ agents:
     executor: "claude"      # 执行任务用 Claude
 ```
 
-### 群级切换
+### 会话级切换
 
-在小群里发 `/start-with-codex`，该群的 Director 切换为 Codex 后端。发 `/start-with-claude` 切回。只影响当前群。
+在任意当前会话里发 `/switch-agent <agent>`，可把该会话切到指定 Director agent。切换前会先 flush，让旧 agent 把上下文写入状态文件；切换后新 agent 会自动读取并恢复。这个选择会按会话持久化，不会只跟随全局默认值。
+
+快捷命令：`/start-with-codex` 等价于 `/switch-agent codex`，`/start-with-claude` 等价于 `/switch-agent claude`。
 
 ### Claude vs Codex 的区别
 
@@ -277,8 +279,9 @@ curl localhost:3000/api/sessions
 | `/clear` | 当前会话 | 清空上下文（不保存）🔒 |
 | `/restart` | 当前会话 | 重启 Director（保留 session）🔒 |
 | `/shell-restart` `/restart-shell` | 全局 | 重启整个 Shell 🔒 |
-| `/start-with-codex` | 当前小群 | 切到 Codex 后端 |
-| `/start-with-claude` | 当前小群 | 切回 Claude 后端 |
+| `/switch-agent <agent>` | 当前会话 | 切换当前会话的 Director agent，并持久化恢复上下文 |
+| `/start-with-codex` | 当前会话 | 快捷切到 Codex 后端 |
+| `/start-with-claude` | 当前会话 | 快捷切回 Claude 后端 |
 | `/status` | 当前会话 | 查看状态摘要 |
 | `/help` | 全局 | 显示命令列表 |
 
