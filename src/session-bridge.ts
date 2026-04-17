@@ -992,11 +992,16 @@ export class SessionBridge extends EventEmitter {
   private async handleRuntimeClosed(): Promise<void> {
     this.runtimeCloseResolve?.();
     this.runtimeCloseResolve = null;
-    this.pendingTurns = [];
-    this.systemReplyQueue = [];
+    // Don't clear pendingTurns during flush — the flush flow manages its own
+    // turns (checkpoint → terminate → restart → bootstrap) and clearing here
+    // would race with the restart that adds new pending turns.
+    if (!this.flushing) {
+      this.pendingTurns = [];
+      this.systemReplyQueue = [];
+    }
     this.resolveDrainIfNeeded();
 
-    if (this.bootstrapResolve) {
+    if (this.bootstrapResolve && !this.flushing) {
       this.bootstrapResolve();
       this.bootstrapResolve = null;
       this.bootstrapping = false;
