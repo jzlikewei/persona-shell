@@ -110,9 +110,15 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
           codexTurnTimestamp = evt._ts || evt.timestamp;
         } else if (evt.type === 'result') {
           if (evt.session_id) lastSessionId = evt.session_id;
-          // Prefer evt.result (final clean response, same as what Feishu receives)
-          // over pendingText (accumulated intermediate assistant turns including tool-call thinking).
-          const resultText = (typeof evt.result === 'string' ? evt.result : '') || pendingText;
+          const finalResult = typeof evt.result === 'string' ? evt.result.trim() : '';
+          const intermediate = pendingText.trim();
+          let resultText: string;
+          if (intermediate && finalResult && intermediate !== finalResult) {
+            // Show both: intermediate thinking + final result
+            resultText = intermediate + '\n\n---\n\n' + finalResult;
+          } else {
+            resultText = finalResult || intermediate;
+          }
           if (resultText) {
             outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts });
           }
