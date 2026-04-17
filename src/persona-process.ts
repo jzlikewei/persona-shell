@@ -92,6 +92,21 @@ function buildClaudeRoleArgs(role: string, personaDir: string): string[] {
 }
 
 /**
+ * 构建 agent 级别的 system prompt 参数。
+ * 如果 agent config 指定了 system_prompt_file，注入为 --append-system-prompt-file。
+ * 路径相对于 personaDir 解析。
+ */
+function buildAgentPromptArgs(agent: PersonaSpawnOptions['agent'], personaDir: string): string[] {
+  if (!agent.system_prompt_file) return [];
+  const filePath = join(personaDir, agent.system_prompt_file);
+  if (existsSync(filePath)) {
+    return ['--append-system-prompt-file', filePath];
+  }
+  console.warn(`[persona-process] Agent system_prompt_file not found: ${filePath}`);
+  return [];
+}
+
+/**
  * Shell 安全引用：含特殊字符的参数用单引号包裹
  */
 function shellQuote(arg: string): string {
@@ -206,6 +221,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       args.push('--effort', options.agent.effort);
     }
     args.push(...buildClaudeInjectionArgs(options.personaDir));
+    args.push(...buildAgentPromptArgs(options.agent, options.personaDir));
     args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
     if (options.mcpConfigPath) args.push('--mcp-config', options.mcpConfigPath);
     if (options.sessionId) args.push('--resume', options.sessionId);
@@ -223,6 +239,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
         args.push('--bare');
       }
       args.push(...buildClaudeInjectionArgs(options.personaDir));
+      args.push(...buildAgentPromptArgs(options.agent, options.personaDir));
       args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
       if (options.prompt) args.push('-p', options.prompt);
     } else if (options.agent.type === 'codex') {

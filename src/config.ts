@@ -18,6 +18,8 @@ export interface AgentProviderConfig {
   approval?: CodexApproval;
   search?: boolean;
   model?: string;
+  /** Per-agent system prompt file, relative to persona_dir (e.g. "prompts/gemini.md") */
+  system_prompt_file?: string;
 }
 
 export interface AgentsConfig {
@@ -112,6 +114,7 @@ export function loadConfig(path?: string): Config {
     approval?: unknown;
     search?: unknown;
     model?: unknown;
+    system_prompt_file?: unknown;
   }> | undefined;
   const providerEntries = Object.entries(rawProviders ?? {});
   const providers: Record<string, AgentProviderConfig> = {};
@@ -138,6 +141,9 @@ export function loadConfig(path?: string): Config {
           : {}),
         ...(typeof provider?.search === 'boolean' ? { search: provider.search } : {}),
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
+        ...(typeof provider?.system_prompt_file === 'string' && provider.system_prompt_file.trim()
+          ? { system_prompt_file: provider.system_prompt_file.trim() }
+          : {}),
       };
     }
   }
