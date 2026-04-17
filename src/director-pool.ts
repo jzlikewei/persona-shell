@@ -133,9 +133,8 @@ export class DirectorPool extends EventEmitter {
       if (opts.groupName && opts.groupName !== existing.groupName) {
         existing.groupName = opts.groupName;
       }
-      if (opts.directorAgentName) {
-        existing.directorAgentName = opts.directorAgentName;
-      }
+      existing.directorAgentName = existing.bridge.getDirectorAgentName();
+      this.persistEntries();
       return existing;
     }
 
@@ -174,6 +173,7 @@ export class DirectorPool extends EventEmitter {
     const queue = new MessageQueue(join(getLogDir(), `queue-${label}.log`));
 
     await bridge.start();
+    const activeDirectorAgentName = bridge.getDirectorAgentName();
 
     // Wire events BEFORE bootstrap so response handler is ready
     this.wireEvents(bridge, queue, routingKey, opts.feishuChatId, name);
@@ -185,7 +185,7 @@ export class DirectorPool extends EventEmitter {
       feishuChatId: opts.feishuChatId,
       groupName: name,
       lastActiveAt: Date.now(),
-      directorAgentName: opts.directorAgentName,
+      directorAgentName: activeDirectorAgentName,
     };
     this.entries.set(routingKey, entry);
     this.closedEntries.delete(routingKey); // re-activated
@@ -194,7 +194,9 @@ export class DirectorPool extends EventEmitter {
     // Skip bootstrap if resuming an existing session (e.g. after shell restart).
     // The Director already has context from the previous session.
     if (!bridge.hasRestoredSession) {
-      await bridge.bootstrap();
+      // Pass session state file so the Director can restore group context if available.
+      const statePath = bridge.getSessionStatePath();
+      await bridge.bootstrap(statePath);
     } else {
       console.log(`[pool] Skipping bootstrap for "${name}" — resumed existing session`);
     }
@@ -265,13 +267,38 @@ export class DirectorPool extends EventEmitter {
 
   async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<PoolEntry> {
     const existing = this.entries.get(routingKey);
-    if (existing && existing.directorAgentName === opts.directorAgentName) {
+    if (existing) {
+      if (opts.groupName && opts.groupName !== existing.groupName) {
+        existing.groupName = opts.groupName;
+      }
+      existing.feishuChatId = opts.feishuChatId;
       existing.lastActiveAt = Date.now();
+      const currentAgentName = existing.bridge.getDirectorAgentName();
+      if (currentAgentName === opts.directorAgentName) {
+        existing.directorAgentName = currentAgentName;
+        this.persistEntries();
+        return existing;
+      }
+      const switched = await existing.bridge.switchAgent(opts.directorAgentName);
+      if (!switched) {
+        throw new Error(`failed to switch Director for ${routingKey} to ${opts.directorAgentName}`);
+      }
+      existing.directorAgentName = existing.bridge.getDirectorAgentName();
+      existing.lastActiveAt = Date.now();
+      this.closedEntries.delete(routingKey);
+      this.persistEntries();
       return existing;
     }
-    if (existing) {
-      await this.shutdown(routingKey);
+
+    const closed = this.closedEntries.get(routingKey);
+    if (closed) {
+      if (opts.groupName) closed.groupName = opts.groupName;
+      closed.feishuChatId = opts.feishuChatId;
+      closed.lastActiveAt = Date.now();
+      closed.directorAgentName = opts.directorAgentName;
+      setState('pool:closed', [...this.closedEntries.values()]);
     }
+
     return this.getOrCreate(routingKey, opts);
   }
 
@@ -408,7 +435,7 @@ export class DirectorPool extends EventEmitter {
 
       const queue = new MessageQueue(`logs/queue-${item.label}.log`);
 
-      if (item.directorAgentName !== 'codex') {
+      if (bridge.getDirectorAgentType() !== 'codex') {
         const pipeDir = join(pipeBaseDir, item.label);
         const pidFile = join(pipeDir, 'director.pid');
 
@@ -452,7 +479,7 @@ export class DirectorPool extends EventEmitter {
         feishuChatId: item.feishuChatId,
         groupName: item.groupName,
         lastActiveAt: item.lastActiveAt,
-        directorAgentName: item.directorAgentName,
+        directorAgentName: bridge.getDirectorAgentName(),
       };
       this.entries.set(item.routingKey, entry);
       this.closedEntries.delete(item.routingKey); // re-activated, remove stale closed entry

@@ -51,6 +51,7 @@ export class SessionBridge extends EventEmitter {
   private groupName?: string;
   private directorAgent: AgentRuntimeConfig;
   private adapter: DirectorSessionAdapter;
+  private readonly adapterFactory: (directorAgent: AgentRuntimeConfig) => DirectorSessionAdapter;
   private sessionFile: string;
   private sessionId: string | null = null;
   private sessionName: string | null = null;
@@ -68,6 +69,7 @@ export class SessionBridge extends EventEmitter {
   private bootstrapResolve: (() => void) | null = null;
   private flushCheckpointResolve: (() => void) | null = null;
   private flushBootstrapResolve: (() => void) | null = null;
+  private runtimeCloseResolve: (() => void) | null = null;
   private drainResolve: (() => void) | null = null;
   private currentMessagePreview: string | null = null;
   private currentMessageStartedAt: number | null = null;
@@ -89,7 +91,6 @@ export class SessionBridge extends EventEmitter {
     this.label = options.label;
     this.isMain = options.isMain ?? true;
     this.groupName = options.groupName;
-    this.directorAgent = resolveAgentProvider(this.agents, 'director', options.directorAgentName);
 
     const pipeDir = this.isMain ? this.config.pipe_dir : join(this.config.pipe_dir, this.label);
     const pidFile = this.isMain ? this.config.pid_file : join(pipeDir, 'director.pid');
@@ -101,20 +102,34 @@ export class SessionBridge extends EventEmitter {
       groupName: this.groupName,
       config: this.config,
       agents: this.agents,
-      directorAgent: this.directorAgent,
+      directorAgent: resolveAgentProvider(this.agents, 'director', options.directorAgentName),
       logDir: this.logDir,
     };
 
     const hooks = this.buildAdapterHooks();
-    this.adapter = options.directorFactory
-      ? options.directorFactory(adapterOptions, hooks)
-      : this.directorAgent.type === 'claude'
-        ? new ClaudeSessionAdapter(new ClaudeDirectorRuntime({ pipeDir, pidFile, label: this.label }), adapterOptions, hooks)
-        : new CodexSessionAdapter(adapterOptions, hooks);
+    this.adapterFactory = (directorAgent) => {
+      const resolvedOptions: DirectorSessionAdapterOptions = {
+        ...adapterOptions,
+        directorAgent,
+      };
+      return options.directorFactory
+        ? options.directorFactory(resolvedOptions, hooks)
+        : directorAgent.type === 'claude'
+          ? new ClaudeSessionAdapter(new ClaudeDirectorRuntime({ pipeDir, pidFile, label: this.label }), resolvedOptions, hooks)
+          : new CodexSessionAdapter(resolvedOptions, hooks);
+    };
+
+    const persistedAgentName = this.readPersistedDirectorAgentName();
+    this.directorAgent = resolveAgentProvider(this.agents, 'director', options.directorAgentName ?? persistedAgentName);
+    this.adapter = this.adapterFactory(this.directorAgent);
   }
 
   private get stateKey(): string {
     return `director:${this.label}`;
+  }
+
+  private get directorAgentStateKey(): string {
+    return `director:agent:${this.label}`;
   }
 
   private get logDir(): string {
@@ -159,6 +174,7 @@ export class SessionBridge extends EventEmitter {
 
   async start(): Promise<boolean> {
     const freshStart = await this.adapter.start();
+    this.persistDirectorAgentName(this.directorAgent.name);
     console.log(this.adapter.describeSessionReady(this.label, this.sessionId, this.sessionName));
     return freshStart;
   }
@@ -200,11 +216,53 @@ export class SessionBridge extends EventEmitter {
 
     if (!this.isMain) {
       this.flushing = true;
+
+      // Checkpoint: ask Director to save group context before termination
+      const statePath = this.getSessionStateFilePath();
+      console.log(`[bridge:${this.label}] FLUSH: starting checkpoint (non-main) → ${statePath}`);
+      const checkpointDone = new Promise<void>((resolve) => {
+        this.flushCheckpointResolve = resolve;
+      });
+      this.enqueuePendingTurn({ type: 'flush-checkpoint' });
+      await this.writeRaw(
+        `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」当前会话的工作状态保存到 ${statePath}，包括：当前讨论焦点、关键决策、未完成事项。只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`,
+      );
+
+      const checkpointOk = await Promise.race([
+        checkpointDone.then(() => true),
+        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+      ]);
+      if (!checkpointOk) {
+        console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout (non-main), forcing reset`);
+        this.flushCheckpointResolve = null;
+        this.discardNextResponse = true;
+      } else {
+        console.log(`[bridge:${this.label}] FLUSH: checkpoint done (non-main)`);
+      }
+
       this.adapter.terminate('SIGTERM');
       this.clearSession();
       await this.restart();
+
+      // Bootstrap with saved state
+      const bootstrapDone = new Promise<void>((resolve) => {
+        this.flushBootstrapResolve = resolve;
+      });
+      this.enqueuePendingTurn({ type: 'flush-bootstrap' });
+      await this.writeRaw(this.buildBootstrapMessage(statePath));
+
+      const bootstrapOk = await Promise.race([
+        bootstrapDone.then(() => true),
+        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+      ]);
+      if (!bootstrapOk) {
+        console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout (non-main) — forcing flush finish`);
+        this.flushBootstrapResolve = null;
+        this.discardNextResponse = true;
+      }
+
       this.finishFlush();
-      console.log(`[bridge:${this.label}] FLUSH: complete (non-main, no checkpoint)`);
+      console.log(`[bridge:${this.label}] FLUSH: complete (non-main)`);
       return true;
     }
 
@@ -305,6 +363,14 @@ export class SessionBridge extends EventEmitter {
     return this.flushing;
   }
 
+  getDirectorAgentName(): string {
+    return this.directorAgent.name;
+  }
+
+  getDirectorAgentType(): AgentRuntimeConfig['type'] {
+    return this.directorAgent.type;
+  }
+
   getStatus(): {
     alive: boolean;
     pid: number | null;
@@ -377,15 +443,101 @@ export class SessionBridge extends EventEmitter {
     });
   }
 
-  async bootstrap(): Promise<void> {
-    if (!this.adapter.isReady() || this.flushing) return;
+  async switchAgent(agentName: string): Promise<boolean> {
+    if (this.flushing) {
+      console.log(`[bridge:${this.label}] Agent switch skipped: flush in progress`);
+      return false;
+    }
+
+    const targetAgent = resolveAgentProvider(this.agents, 'director', agentName);
+    if (targetAgent.name === this.directorAgent.name) {
+      this.persistDirectorAgentName(targetAgent.name);
+      return true;
+    }
+
+    if (this.interrupted) {
+      console.log(`[bridge:${this.label}] Agent switch waiting for interrupt to complete...`);
+      await new Promise<void>((resolve) => {
+        this.once('restarted', resolve);
+      });
+    }
+
+    this.flushing = true;
+    let switched = false;
+
+    try {
+      if (this.pendingCount > 0) {
+        console.log(`[bridge:${this.label}] Agent switch: draining ${this.pendingCount} in-flight messages...`);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+        if (!drained) {
+          console.warn(`[bridge:${this.label}] Agent switch: drain timeout, aborting`);
+          return false;
+        }
+      }
+
+      this.emit('flush-drain-complete');
+
+      const checkpointDone = new Promise<void>((resolve) => {
+        this.flushCheckpointResolve = resolve;
+      });
+      this.enqueuePendingTurn({ type: 'flush-checkpoint' });
+      await this.writeRaw(this.buildAgentSwitchCheckpointPrompt(targetAgent.name));
+
+      const checkpointOk = await Promise.race([
+        checkpointDone.then(() => true),
+        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+      ]);
+      if (!checkpointOk) {
+        console.warn(`[bridge:${this.label}] Agent switch: checkpoint timeout, continuing`);
+        this.flushCheckpointResolve = null;
+        this.discardNextResponse = true;
+      }
+
+      const currentAdapter = this.adapter;
+      const closeWait = currentAdapter.hasActiveTurn()
+        ? this.waitForRuntimeClose(10_000)
+        : null;
+      currentAdapter.terminate('SIGTERM');
+      if (closeWait) {
+        const closed = await closeWait;
+        if (!closed) {
+          console.warn(`[bridge:${this.label}] Agent switch: runtime close timeout, continuing with cold start`);
+        }
+      }
+      this.clearSession();
+      this.directorAgent = targetAgent;
+      this.adapter = this.adapterFactory(this.directorAgent);
+
+      const freshStart = await this.start();
+      await this.bootstrapInternal(this.getAgentSwitchBootstrapSource(freshStart), true);
+      switched = true;
+      console.log(`[bridge:${this.label}] Agent switched to ${this.directorAgent.name}`);
+      return true;
+    } catch (err) {
+      console.error(`[bridge:${this.label}] Agent switch failed:`, err);
+      this.emit('alert', `⚠️ 会话切换到 ${targetAgent.name} 失败: ${String(err).slice(0, 200)}`);
+      return false;
+    } finally {
+      if (switched) {
+        this.finishFlush();
+      } else {
+        this.flushing = false;
+        this.discardNextResponse = false;
+      }
+    }
+  }
+
+  async bootstrap(sourcePath?: string): Promise<void> {
+    await this.bootstrapInternal(sourcePath, false);
+  }
+
+  private async bootstrapInternal(sourcePath?: string, allowDuringFlush: boolean = false): Promise<void> {
+    if (!this.adapter.isReady() || (this.flushing && !allowDuringFlush)) return;
 
     this.bootstrapping = true;
     const pendingTurn = this.enqueuePendingTurn({ type: 'bootstrap' });
 
-    const msg = this.isMain
-      ? '[系统] 新 session 已启动。请读取 daily/state.md 恢复工作上下文，了解当前待处理事项。'
-      : `[系统] 新 session 已启动。你正在为群「${this.groupName ?? this.label}」服务。请读取 daily/state.md 了解全局状态（只读）。`;
+    const msg = this.buildBootstrapMessage(sourcePath);
 
     const done = new Promise<void>((resolve) => {
       this.bootstrapResolve = resolve;
@@ -540,6 +692,21 @@ export class SessionBridge extends EventEmitter {
     });
   }
 
+  private waitForRuntimeClose(timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      const finish = (ok: boolean) => {
+        if (this.runtimeCloseResolve === onClose) {
+          this.runtimeCloseResolve = null;
+        }
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const onClose = () => finish(true);
+      const timer = setTimeout(() => finish(false), timeoutMs);
+      this.runtimeCloseResolve = onClose;
+    });
+  }
+
   private enqueuePendingTurn(turn: PendingType): PendingType {
     this.pendingTurns.push(turn);
     return turn;
@@ -645,6 +812,65 @@ export class SessionBridge extends EventEmitter {
     if (sessionName !== null) this.sessionName = sessionName;
     this.saveSession(sessionId);
     if (sessionName) this.rememberSessionName(sessionId, sessionName);
+  }
+
+  private readPersistedDirectorAgentName(): string | undefined {
+    return getState<string>(this.directorAgentStateKey)
+      ?? (this.isMain ? getState<string>('director:agent') : undefined)
+      ?? undefined;
+  }
+
+  private persistDirectorAgentName(agentName: string): void {
+    setState(this.directorAgentStateKey, agentName);
+    if (this.isMain) {
+      setState('director:agent', agentName);
+    }
+  }
+
+  /** Get the path to this session's state file (for checkpoint/bootstrap). */
+  getSessionStatePath(): string {
+    return this.getSessionStateFilePath();
+  }
+
+  private getSessionStateFilePath(): string {
+    const dir = join(this.config.persona_dir, 'state', 'sessions');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${this.label}.md`);
+    if (!existsSync(file)) writeFileSync(file, '');
+    return file;
+  }
+
+  private getSessionStatePromptPath(): string {
+    return this.isMain ? 'daily/state.md' : this.getSessionStateFilePath();
+  }
+
+  private getAgentSwitchBootstrapSource(freshStart: boolean): string | undefined {
+    if (!freshStart) return undefined;
+    return this.isMain ? 'daily/state.md' : this.getSessionStateFilePath();
+  }
+
+  private buildAgentSwitchCheckpointPrompt(targetAgentName: string): string {
+    const sessionStatePath = this.getSessionStatePromptPath();
+    if (this.isMain) {
+      return `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请先将当前工作状态保存到 ${sessionStatePath}，包括：进行中的任务、待处理事项、关键上下文、切换后需要继续的动作。保存完成后回复"已保存"。`;
+    }
+
+    return `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请把群「${this.groupName ?? this.label}」当前会话的上下文保存到 ${sessionStatePath}，包括：讨论目标、当前结论、未完成事项、后续动作。该文件只服务于这个会话。保存完成后回复"已保存"。`;
+  }
+
+  private buildBootstrapMessage(sourcePath?: string): string {
+    const sharedNote = '注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。';
+
+    if (this.isMain) {
+      const path = sourcePath ?? 'daily/state.md';
+      return `[系统] 新 session 已启动。请读取 ${path} 恢复工作上下文，了解当前待处理事项。${sharedNote}`;
+    }
+
+    if (sourcePath) {
+      return `[系统] 新 session 已启动。你正在为群「${this.groupName ?? this.label}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote}`;
+    }
+
+    return `[系统] 新 session 已启动。你正在为群「${this.groupName ?? this.label}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
   }
 
   private handleStreamChunk(text: string): void {
@@ -764,6 +990,8 @@ export class SessionBridge extends EventEmitter {
   }
 
   private async handleRuntimeClosed(): Promise<void> {
+    this.runtimeCloseResolve?.();
+    this.runtimeCloseResolve = null;
     this.pendingTurns = [];
     this.systemReplyQueue = [];
     this.resolveDrainIfNeeded();

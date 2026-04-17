@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, spyOn } from 'bun:test';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { SessionBridge } from '../session-bridge.js';
 import { initTaskStore } from '../task/task-store.js';
 import { initLogDir } from '../logger.js';
@@ -134,6 +134,20 @@ describe('SessionBridge', () => {
     expect(adapter.sent).toHaveLength(1);
     expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
     expect(bridge.getStatus().pendingCount).toBe(0);
+  });
+
+  test('bootstrap guidance tells director to trust MCP tools over localhost probes', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+
+    await bridge.start();
+    const bootstrapPromise = bridge.bootstrap();
+
+    expect(adapter.sent[0]).toContain('不要用 curl localhost:3000、launchctl');
+    expect(adapter.sent[0]).toContain('直接调用 MCP 工具 create_task / list_tasks');
+
+    adapter.completeTurn({ responseText: 'boot ok', durationMs: 5 });
+    await bootstrapPromise;
   });
 
   test('uses adapter capability methods for shutdown path', async () => {
@@ -318,15 +332,22 @@ describe('SessionBridge', () => {
     await flushPromise;
   });
 
-  test('flush on non-main bridge terminates and restarts without checkpoint', async () => {
+  test('flush on non-main bridge does checkpoint, terminate, restart, bootstrap', async () => {
     const bridge = createBridgeWithOptions({ isMain: false });
     const adapter = FakeAdapter.instances.at(-1)!;
     await bridge.start();
-    const result = await bridge.flush();
-    expect(result).toBe(true);
+    const flushPromise = bridge.flush();
+    await new Promise(r => setTimeout(r, 10));
+    // Non-main now sends checkpoint message
+    expect(adapter.sent.some(s => s.includes('[FLUSH]'))).toBe(true);
+    // Complete checkpoint
+    adapter.completeTurn({ responseText: '已保存', durationMs: 1 });
+    await new Promise(r => setTimeout(r, 50));
+    // Complete bootstrap
+    adapter.completeTurn({ responseText: 'restored', durationMs: 1 });
+    expect(await flushPromise).toBe(true);
     expect(adapter.terminations).toContain('SIGTERM');
     expect(adapter.restartCalls).toBe(1);
-    expect(adapter.sent).toHaveLength(0);
     expect(bridge.isFlushing).toBe(false);
   });
 
@@ -361,6 +382,55 @@ describe('SessionBridge', () => {
     await new Promise(r => setTimeout(r, 50));
     adapter.completeTurn({ responseText: 'ok', durationMs: 1 });
     await flushPromise;
+  });
+
+  test('switchAgent checkpoints, rebuilds adapter, bootstraps, and persists agent state', async () => {
+    const bridge = createBridgeWithOptions({ isMain: false, providerName: 'fake-claude', directorAgentName: 'fake-claude' });
+    const initialAdapter = FakeAdapter.instances.at(-1)!;
+    await bridge.start();
+
+    const switchPromise = bridge.switchAgent('fake-codex');
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(initialAdapter.sent[0]).toContain('切换到 fake-codex');
+    expect(initialAdapter.sent[0]).toContain('state/sessions/test-bridge.md');
+
+    initialAdapter.completeTurn({ responseText: '已保存', durationMs: 1 });
+    await new Promise(r => setTimeout(r, 10));
+
+    const switchedAdapter = FakeAdapter.instances.at(-1)!;
+    expect(switchedAdapter).not.toBe(initialAdapter);
+    expect(switchedAdapter.options.directorAgent.name).toBe('fake-codex');
+    expect(switchedAdapter.sent[0]).toContain('state/sessions/test-bridge.md');
+    expect(switchedAdapter.sent[0]).toContain('恢复这个会话的上下文');
+    expect(existsSync('/tmp/persona-test/state/sessions/test-bridge.md')).toBe(true);
+
+    switchedAdapter.completeTurn({ responseText: 'restored', durationMs: 1 });
+    await expect(switchPromise).resolves.toBe(true);
+    expect(bridge.getDirectorAgentName()).toBe('fake-codex');
+    expect(bridge.isFlushing).toBe(false);
+
+    const restored = createBridgeWithOptions({ isMain: false, providerName: 'fake', directorAgentName: undefined });
+    expect(restored.getDirectorAgentName()).toBe('fake-codex');
+  });
+
+  test('switchAgent on main session restores from daily state and updates legacy agent key', async () => {
+    const bridge = createBridgeWithOptions({ isMain: true, providerName: 'fake-claude', directorAgentName: 'fake-claude', label: 'main' });
+    const initialAdapter = FakeAdapter.instances.at(-1)!;
+    await bridge.start();
+
+    const switchPromise = bridge.switchAgent('fake-codex');
+    await new Promise(r => setTimeout(r, 10));
+    initialAdapter.completeTurn({ responseText: '已保存', durationMs: 1 });
+    await new Promise(r => setTimeout(r, 10));
+
+    const switchedAdapter = FakeAdapter.instances.at(-1)!;
+    expect(switchedAdapter.sent[0]).toContain('daily/state.md');
+    switchedAdapter.completeTurn({ responseText: 'restored', durationMs: 1 });
+
+    await expect(switchPromise).resolves.toBe(true);
+    const restored = createBridgeWithOptions({ isMain: true, providerName: 'fake', directorAgentName: undefined, label: 'main' });
+    expect(restored.getDirectorAgentName()).toBe('fake-codex');
   });
 
   // ---- 3. handleStreamChunk ----
@@ -578,6 +648,8 @@ function createBridge(): SessionBridge {
       defaults: { director: 'fake', default: 'fake' },
       providers: {
         fake: { type: 'codex', command: 'fake-codex' },
+        'fake-codex': { type: 'codex', command: 'fake-codex' },
+        'fake-claude': { type: 'claude', command: 'fake-claude' },
       },
     },
     config: {
@@ -603,13 +675,17 @@ function createBridgeWithOptions(overrides: {
   groupName?: string;
   label?: string;
   timeSyncIntervalMs?: number;
+  providerName?: string;
+  directorAgentName?: string;
 } = {}): SessionBridge {
   const hasGroupName = 'groupName' in overrides;
   return new SessionBridge({
     agents: {
-      defaults: { director: 'fake', default: 'fake' },
+      defaults: { director: overrides.providerName ?? 'fake', default: overrides.providerName ?? 'fake' },
       providers: {
         fake: { type: 'codex', command: 'fake-codex' },
+        'fake-codex': { type: 'codex', command: 'fake-codex' },
+        'fake-claude': { type: 'claude', command: 'fake-claude' },
       },
     },
     config: {
@@ -621,6 +697,7 @@ function createBridgeWithOptions(overrides: {
       flush_interval_ms: 999999,
       quote_max_length: 32,
     },
+    directorAgentName: overrides.directorAgentName,
     label: overrides.label ?? 'test-bridge',
     isMain: overrides.isMain ?? false,
     groupName: hasGroupName ? overrides.groupName : 'Test Group',
