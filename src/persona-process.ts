@@ -186,11 +186,15 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.agent.model) {
       args.push('--model', options.agent.model);
     }
-    if (options.agent.sandbox) {
-      args.push('--sandbox', options.agent.sandbox);
-    }
-    if (options.agent.approval) {
-      args.push('--ask-for-approval', options.agent.approval);
+    if (options.agent.sandbox === 'danger-full-access' && options.agent.approval === 'never') {
+      args.push('--dangerously-bypass-approvals-and-sandbox');
+    } else {
+      if (options.agent.sandbox) {
+        args.push('--sandbox', options.agent.sandbox);
+      }
+      if (options.agent.approval) {
+        args.push('--ask-for-approval', options.agent.approval);
+      }
     }
     if (options.agent.search) {
       args.push('--search');

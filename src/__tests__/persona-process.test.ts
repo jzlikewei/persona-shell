@@ -322,7 +322,26 @@ describe('persona-process', () => {
   });
 
   describe('codex agent config options', () => {
-    test('includes model, sandbox, approval, and search flags', () => {
+    test('uses bypass flag for danger-full-access plus never approval', () => {
+      const { child, args } = spawnPersona({
+        role: 'explorer',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex', model: 'o3', sandbox: 'danger-full-access', approval: 'never', search: true },
+        mode: 'background',
+        prompt: 'test',
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      expect(args).toContain('--model');
+      expect(args).toContain('o3');
+      expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(args).not.toContain('--sandbox');
+      expect(args).not.toContain('--ask-for-approval');
+      expect(args).toContain('--search');
+    });
+
+    test('keeps explicit sandbox and approval flags for other codex modes', () => {
       const { child, args } = spawnPersona({
         role: 'explorer',
         personaDir: TEST_DIR,
@@ -339,6 +358,7 @@ describe('persona-process', () => {
       expect(args).toContain('read-only');
       expect(args).toContain('--ask-for-approval');
       expect(args).toContain('on-request');
+      expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(args).toContain('--search');
     });
   });
