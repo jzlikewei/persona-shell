@@ -7,5 +7,9 @@
 [[ -f ~/.zprofile ]] && source ~/.zprofile 2>/dev/null || true
 [[ -f ~/.zshrc ]] && source ~/.zshrc 2>/dev/null || true
 
+# Optional service-scoped env vars (for launchd-only secrets such as GH_TOKEN)
+SERVICE_ENV="$HOME/.persona/service.env"
+[[ -f "${SERVICE_ENV}" ]] && source "${SERVICE_ENV}" 2>/dev/null || true
+
 cd "$(dirname "$0")" || exit 1
 exec bun src/index.ts

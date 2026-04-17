@@ -2,6 +2,7 @@
 
 ## Git 提交
 
+- 总是在 `dev` 分支上开发；不要直接在 `main` 分支上改代码或提交
 - 提交信息末尾追加一行：`Automated-By: Persona Shell With <当前agent名称>`，例如 `Automated-By: Persona Shell With Claude Code`
 
 ## 状态维护

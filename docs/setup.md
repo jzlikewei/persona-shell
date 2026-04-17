@@ -118,6 +118,20 @@ launchctl stop  com.persona.shell
 bun run uninstall-service
 ```
 
+如果服务模式下需要让 Codex 继承 GitHub 凭据，不要只在当前终端 `export`，而是写到 `~/.persona/service.env`：
+
+```bash
+cat >> ~/.persona/service.env <<'EOF'
+export GH_TOKEN=ghp_xxx
+# 或者：export GITHUB_TOKEN=ghp_xxx
+EOF
+
+launchctl stop com.persona.shell
+launchctl start com.persona.shell
+```
+
+`start.sh` 会在 launchd 启动时额外 `source ~/.persona/service.env`，这样 `persona-shell` 以及它再拉起的 Codex 子进程都能继承到同一份 token。
+
 ## 身份仓库
 
 `bun run init` 会在 `~/.persona/` 创建身份仓库。建议用独立的 git 仓库维护，和日常项目代码隔离。
