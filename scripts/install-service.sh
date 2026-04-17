@@ -14,6 +14,18 @@ sed "s|__PROJECT_DIR__|${PROJECT_DIR}|g" "${PLIST_SRC}" > "${PLIST_DST}"
 # Ensure logs dir exists
 mkdir -p "${PROJECT_DIR}/logs"
 
+# Service env file for launchd-only secrets (optional)
+SERVICE_ENV="$HOME/.persona/service.env"
+if [ ! -f "${SERVICE_ENV}" ]; then
+  cat > "${SERVICE_ENV}" <<'EOF'
+# Launchd-only environment for persona-shell.
+# Example:
+# export GH_TOKEN=ghp_xxx
+# export GITHUB_TOKEN=ghp_xxx
+EOF
+  chmod 600 "${SERVICE_ENV}"
+fi
+
 # Load service
 launchctl unload "${PLIST_DST}" 2>/dev/null || true
 launchctl load "${PLIST_DST}"

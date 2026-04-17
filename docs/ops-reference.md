@@ -8,6 +8,10 @@ launchctl start com.persona.shell                                # 启动
 launchctl stop  com.persona.shell                                # 停止
 ```
 
+服务模式专用环境变量文件：`~/.persona/service.env`
+
+常见用途：给 `persona-shell` 和它拉起的 Codex 注入 `GH_TOKEN` / `GITHUB_TOKEN`。修改后需要重启服务生效。
+
 ## 飞书命令
 
 | 命令 | 作用域 | 说明 |
