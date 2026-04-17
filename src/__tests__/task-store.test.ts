@@ -318,13 +318,13 @@ describe('task-store', () => {
 
     test('setState and getState round-trip', () => {
       setState('testKey', { hello: 'world', num: 42 });
-      expect(getState('testKey')).toEqual({ hello: 'world', num: 42 });
+      expect(getState<{ hello: string; num: number }>('testKey')).toEqual({ hello: 'world', num: 42 });
     });
 
     test('setState upserts existing key', () => {
       setState('key1', 'first');
       setState('key1', 'second');
-      expect(getState('key1')).toBe('second');
+      expect(getState<string>('key1')).toBe('second');
     });
 
     test('deleteState removes key', () => {
@@ -339,13 +339,13 @@ describe('task-store', () => {
 
     test('stores and retrieves arrays', () => {
       setState('arr', [1, 2, 3]);
-      expect(getState('arr')).toEqual([1, 2, 3]);
+      expect(getState<number[]>('arr')).toEqual([1, 2, 3]);
     });
 
     test('stores and retrieves nested objects', () => {
       const data = { a: { b: { c: 'deep' } } };
       setState('nested', data);
-      expect(getState('nested')).toEqual(data);
+      expect(getState<typeof data>('nested')).toEqual(data);
     });
   });
 

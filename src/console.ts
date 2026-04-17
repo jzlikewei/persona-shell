@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, resolve, extname } from 'path';
 import { homedir } from 'os';
-import type { MessagingClient } from './messaging/messaging.js';
+import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
 import type { DirectorPool } from './director-pool.js';
 import { parseConversationLog, parseSessions, parseTaskLog } from './log-parser.js';
 
@@ -59,7 +59,7 @@ export function startConsole(
   const htmlPath = join(publicDir, 'index.html');
 
   // Web chat 消息处理
-  const chatHandlers: Array<(msg: import('./messaging.js').IncomingMessage) => Promise<void> | void> = [];
+  const chatHandlers: Array<(msg: IncomingMessage) => Promise<void> | void> = [];
   // messageId → { ws, createdAt } 连接，用于路由回复
   const messageWsMap = new Map<string, { ws: WsConnection; createdAt: number }>();
 

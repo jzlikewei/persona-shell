@@ -540,26 +540,62 @@ async function main() {
       return;
     }
 
-    // /start-with-* — switch current small-group Director backend
-    if (text.trim() === '/start-with-codex' || text.trim() === '/start-with-claude') {
-      if (!routingKey || chatType !== 'group') {
-        await messaging.reply(messageId, '该命令仅支持群聊');
-        return;
-      }
-      if ((msg.memberCount ?? 0) > config.pool.small_group_threshold) {
+    // /switch-agent | /start-with-* — switch current session Director backend
+    const switchAgentMatch = text.trim().match(/^\/switch-agent\s+([\w-]+)$/i);
+    const slashTargetAgent = text.trim() === '/start-with-codex'
+      ? 'codex'
+      : text.trim() === '/start-with-claude'
+        ? 'claude'
+        : switchAgentMatch?.[1]?.trim();
+    if (slashTargetAgent) {
+      if (!isMaster) return;
+      if (routingKey && chatType === 'group' && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
         await messaging.reply(messageId, `当前群人数超过小群阈值（${config.pool.small_group_threshold}），请先调整阈值或使用小群`);
         return;
       }
-      messaging.addReaction(messageId, 'Typing').catch(() => {});
-      const groupName = msg.groupName ?? chatId.slice(0, 8);
-      const targetAgent = text.trim() === '/start-with-codex' ? 'codex' : 'claude';
-      const currentAgent = pool.getDirectorAgentName(routingKey) ?? config.agents.defaults.director ?? 'claude';
-      if (currentAgent === targetAgent) {
-        await messaging.reply(messageId, `群「${groupName}」已经是 ${targetAgent === 'codex' ? 'Codex' : 'Claude'} 模式`);
+
+      let targetAgent: string;
+      try {
+        targetAgent = resolveAgentProvider(config.agents, 'director', slashTargetAgent).name;
+      } catch (err) {
+        await messaging.reply(messageId, `未知 agent: ${slashTargetAgent}`);
         return;
       }
-      await pool.setDirectorAgent(routingKey, { groupName, feishuChatId: chatId, directorAgentName: targetAgent });
-      await messaging.reply(messageId, `群「${groupName}」已切换为 ${targetAgent === 'codex' ? 'Codex' : 'Claude'} 模式，后续消息将由 ${targetAgent === 'codex' ? 'Codex' : 'Claude'} Director 处理`);
+
+      messaging.addReaction(messageId, 'Typing').catch(() => {});
+
+      if (routingKey && chatType === 'group') {
+        const groupName = msg.groupName ?? chatId.slice(0, 8);
+        const currentAgent = pool.getDirectorAgentName(routingKey)
+          ?? pool.get(routingKey)?.bridge.getDirectorAgentName()
+          ?? config.agents.defaults.director
+          ?? 'claude';
+        if (currentAgent === targetAgent) {
+          await messaging.reply(messageId, `群「${groupName}」已经是 ${targetAgent} 模式`);
+          return;
+        }
+        try {
+          await pool.setDirectorAgent(routingKey, { groupName, feishuChatId: chatId, directorAgentName: targetAgent });
+          await messaging.reply(messageId, `群「${groupName}」已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`);
+        } catch (err) {
+          console.error('[shell] group switch-agent failed:', err);
+          await messaging.reply(messageId, `群「${groupName}」切换到 ${targetAgent} 失败，请稍后重试`);
+        }
+        return;
+      }
+
+      const currentAgent = director.getDirectorAgentName();
+      if (currentAgent === targetAgent) {
+        await messaging.reply(messageId, `主会话已经是 ${targetAgent} 模式`);
+        return;
+      }
+
+      const success = await director.switchAgent(targetAgent);
+      if (success) {
+        await messaging.reply(messageId, `主会话已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`);
+      } else {
+        await messaging.reply(messageId, `主会话切换到 ${targetAgent} 失败，请稍后重试`);
+      }
       return;
     }
 
@@ -623,8 +659,9 @@ async function main() {
       const lines = [
         '📖 可用命令:',
         '/status — 查看 Director 状态摘要',
-        '/start-with-codex — 将当前小群切到 Codex Director 模式',
-        '/start-with-claude — 将当前小群切回 Claude Director 模式',
+        '/switch-agent <agent> — 切换当前会话的 Director agent，并持久化恢复上下文',
+        '/start-with-codex — 将当前会话切到 Codex Director 模式',
+        '/start-with-claude — 将当前会话切回 Claude Director 模式',
         '/flush — 保存上下文后刷新（checkpoint → 新 session）',
         '/clear — 清空上下文（不保存，直接重置）',
         '/esc — 取消队列中最早的消息',
