@@ -11,5 +11,10 @@
 SERVICE_ENV="$HOME/.persona/service.env"
 [[ -f "${SERVICE_ENV}" ]] && source "${SERVICE_ENV}" 2>/dev/null || true
 
+# Auto-inherit GitHub token from gh CLI auth store if not already set
+if [[ -z "${GH_TOKEN}" ]] && command -v gh &>/dev/null; then
+  export GH_TOKEN="$(gh auth token 2>/dev/null)"
+fi
+
 cd "$(dirname "$0")" || exit 1
 exec bun src/index.ts
