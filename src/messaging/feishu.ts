@@ -232,6 +232,7 @@ async function isFeishuReachable(client: Lark.Client): Promise<boolean> {
 
 export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[]; attachmentDir?: string }) {
   // 飞书是国内服务，不走代理（Lark SDK multipart 上传经代理会 ECONNRESET）
+  // 设置 no_proxy 环境变量作为后备，同时创建 proxy: false 的 axios 实例确保生效
   const feishuDomains = 'open.feishu.cn,*.feishu.cn,*.larkoffice.com';
   const existing = process.env.no_proxy ?? '';
   if (!existing.includes('feishu.cn')) {
@@ -246,6 +247,18 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     appId: config.app_id,
     appSecret: config.app_secret,
   });
+  // 强制禁用代理：Lark SDK 内部 axios 的 no_proxy 支持不可靠，
+  // 通过 interceptor 在每个请求级别设置 proxy: false，确保飞书 API 不走代理
+  if (client.httpInstance?.interceptors) {
+    client.httpInstance.interceptors.request.use((config: any) => {
+      config.proxy = false;
+      // 同时清除可能被 axios 从环境变量读取的代理设置
+      delete config.httpsAgent;
+      return config;
+    });
+  } else if (client.httpInstance?.defaults) {
+    client.httpInstance.defaults.proxy = false;
+  }
 
   const handlers: MessageHandler[] = [];
   let lastActiveTime = Date.now();
