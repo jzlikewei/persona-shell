@@ -372,6 +372,15 @@ async function main() {
     }
   });
 
+  // Clear orphaned queue items after Director crash — pendingTurns were reset
+  // but MessageQueue still has items that would match the wrong response.
+  director.on('queue-desync', () => {
+    const orphans = queue.clearAll();
+    if (orphans.length > 0) {
+      console.warn(`[shell] Cleared ${orphans.length} orphaned queue items after crash`);
+    }
+  });
+
   // 4.1: Alert notification — forward Director and system alerts to messaging
   director.on('alert', (message: string) => {
     metrics.addError(message);
@@ -400,7 +409,7 @@ async function main() {
 
     if (!child.pid || !child.stdout) {
       if (child.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch {} }
-      await messaging.reply(messageId, '处理失败，请稍后重试');
+      await messaging.reply(messageId, '处理失败，请稍后重试').catch(() => {});
       return;
     }
 
@@ -438,10 +447,10 @@ async function main() {
     const elapsedSec = (elapsedMs / 1000).toFixed(1);
 
     if (timedOut || !responseText) {
-      await messaging.reply(messageId, timedOut ? '处理超时，请稍后重试' : '未生成回复');
+      await messaging.reply(messageId, timedOut ? '处理超时，请稍后重试' : '未生成回复').catch(() => {});
     } else {
       const costStr = costUsd != null ? ` $${costUsd.toFixed(3)}` : '';
-      await messaging.reply(messageId, `${responseText}\n\n(one-shot ${elapsedSec}s${costStr})`);
+      await messaging.reply(messageId, `${responseText}\n\n(one-shot ${elapsedSec}s${costStr})`).catch(() => {});
     }
 
     metrics.addMessage({ direction: 'out', preview: (responseText || 'timeout').slice(0, 80), timestamp: Date.now(), responseSec: elapsedMs / 1000 });
@@ -482,18 +491,18 @@ async function main() {
         if (cancelled) {
           console.log(`[shell] /esc (group ${poolEntry.groupName}): cancelling ${cancelled.messageId}`);
           await poolEntry.bridge.interrupt();
-          await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+          await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`).catch(() => {});
         } else {
-          await messaging.reply(messageId, '队列为空，没有可取消的消息');
+          await messaging.reply(messageId, '队列为空，没有可取消的消息').catch(() => {});
         }
       } else {
         const cancelled = queue.cancelOldest();
         if (cancelled) {
           console.log(`[shell] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
           await director.interrupt();
-          await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`);
+          await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`).catch(() => {});
         } else {
-          await messaging.reply(messageId, '队列为空，没有可取消的消息');
+          await messaging.reply(messageId, '队列为空，没有可取消的消息').catch(() => {});
         }
       }
       return;
@@ -505,16 +514,16 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       if (routingKey && !poolEntry) {
-        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 flush');
+        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 flush').catch(() => {});
         return;
       }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.flush();
       if (success) {
-        await messaging.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`);
+        await messaging.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`).catch(() => {});
       } else {
-        await messaging.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`);
+        await messaging.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`).catch(() => {});
       }
       return;
     }
@@ -525,16 +534,16 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       if (routingKey && !poolEntry) {
-        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 clear');
+        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 clear').catch(() => {});
         return;
       }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.clearContext();
       if (success) {
-        await messaging.reply(messageId, `CLEAR 完成，${label} 上下文已清空（未保存）`);
+        await messaging.reply(messageId, `CLEAR 完成，${label} 上下文已清空（未保存）`).catch(() => {});
       } else {
-        await messaging.reply(messageId, `CLEAR 未能完成（${label}，正在进行中），请稍后重试`);
+        await messaging.reply(messageId, `CLEAR 未能完成（${label}，正在进行中），请稍后重试`).catch(() => {});
       }
       return;
     }
@@ -549,7 +558,7 @@ async function main() {
     if (slashTargetAgent) {
       if (!isMaster) return;
       if (routingKey && chatType === 'group' && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
-        await messaging.reply(messageId, `当前群人数超过小群阈值（${config.pool.small_group_threshold}），请先调整阈值或使用小群`);
+        await messaging.reply(messageId, `当前群人数超过小群阈值（${config.pool.small_group_threshold}），请先调整阈值或使用小群`).catch(() => {});
         return;
       }
 
@@ -557,7 +566,7 @@ async function main() {
       try {
         targetAgent = resolveAgentProvider(config.agents, 'director', slashTargetAgent).name;
       } catch (err) {
-        await messaging.reply(messageId, `未知 agent: ${slashTargetAgent}`);
+        await messaging.reply(messageId, `未知 agent: ${slashTargetAgent}`).catch(() => {});
         return;
       }
 
@@ -570,30 +579,30 @@ async function main() {
           ?? config.agents.defaults.director
           ?? 'claude';
         if (currentAgent === targetAgent) {
-          await messaging.reply(messageId, `群「${groupName}」已经是 ${targetAgent} 模式`);
+          await messaging.reply(messageId, `群「${groupName}」已经是 ${targetAgent} 模式`).catch(() => {});
           return;
         }
         try {
           await pool.setDirectorAgent(routingKey, { groupName, feishuChatId: chatId, directorAgentName: targetAgent });
-          await messaging.reply(messageId, `群「${groupName}」已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`);
+          await messaging.reply(messageId, `群「${groupName}」已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`).catch(() => {});
         } catch (err) {
           console.error('[shell] group switch-agent failed:', err);
-          await messaging.reply(messageId, `群「${groupName}」切换到 ${targetAgent} 失败，请稍后重试`);
+          await messaging.reply(messageId, `群「${groupName}」切换到 ${targetAgent} 失败，请稍后重试`).catch(() => {});
         }
         return;
       }
 
       const currentAgent = director.getDirectorAgentName();
       if (currentAgent === targetAgent) {
-        await messaging.reply(messageId, `主会话已经是 ${targetAgent} 模式`);
+        await messaging.reply(messageId, `主会话已经是 ${targetAgent} 模式`).catch(() => {});
         return;
       }
 
       const success = await director.switchAgent(targetAgent);
       if (success) {
-        await messaging.reply(messageId, `主会话已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`);
+        await messaging.reply(messageId, `主会话已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`).catch(() => {});
       } else {
-        await messaging.reply(messageId, `主会话切换到 ${targetAgent} 失败，请稍后重试`);
+        await messaging.reply(messageId, `主会话切换到 ${targetAgent} 失败，请稍后重试`).catch(() => {});
       }
       return;
     }
@@ -605,17 +614,17 @@ async function main() {
       const poolEntry = getTargetEntry();
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
-      await messaging.reply(messageId, `正在重启 ${label} Director...`);
+      await messaging.reply(messageId, `正在重启 ${label} Director...`).catch(() => {});
       console.log(`[shell] /session-restart: restarting ${label} Director`);
       await targetDirector.restartProcess();
-      await messaging.reply(messageId, `${label} Director 已重启`);
+      await messaging.reply(messageId, `${label} Director 已重启`).catch(() => {});
       return;
     }
 
     // /shell-restart | /restart-shell — detach pool Directors + shutdown main Director + exit Shell (launchd will respawn)
     if (text.trim() === '/shell-restart' || text.trim() === '/restart-shell') {
       if (!isMaster) return;
-      await messaging.reply(messageId, 'Shell 正在重启...');
+      await messaging.reply(messageId, 'Shell 正在重启...').catch(() => {});
       console.log('[shell] /shell-restart: detaching pool Directors and exiting for launchd respawn');
       await pool.detachAll();
       await director.shutdown();
@@ -635,7 +644,7 @@ async function main() {
           `🔄 Flushing: ${s.flushing ? 'yes' : 'no'}`,
           `⏱️ Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
         ];
-        await messaging.reply(messageId, lines.join('\n'));
+        await messaging.reply(messageId, lines.join('\n')).catch(() => {});
       } else {
         const s = director.getStatus();
         const uptime = Math.floor((Date.now() - startTime) / 1000);
@@ -648,7 +657,7 @@ async function main() {
           `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
           `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
         ];
-        await messaging.reply(messageId, lines.join('\n'));
+        await messaging.reply(messageId, lines.join('\n')).catch(() => {});
       }
       return;
     }
@@ -668,7 +677,7 @@ async function main() {
         '/shell-restart — 重启整个 Shell 进程（代码更新生效）',
         '/help — 显示此帮助信息',
       ];
-      await messaging.reply(messageId, lines.join('\n'));
+      await messaging.reply(messageId, lines.join('\n')).catch(() => {});
       return;
     }
 
@@ -735,7 +744,7 @@ async function main() {
         console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
       } catch (err) {
         if (String(err).includes('flushing')) {
-          await messaging.reply(messageId, '正在刷新上下文，请稍后重试');
+          await messaging.reply(messageId, '正在刷新上下文，请稍后重试').catch(() => {});
         } else {
           console.error(`[shell] pool send failed:`, err);
           metrics.addError(`Pool send failed: ${String(err).slice(0, 200)}`);
@@ -752,7 +761,7 @@ async function main() {
         // 3.3: All send errors must clean up queue state to prevent orphaned items
         queue.resolve(correlationId);
         if (String(err).includes('flushing')) {
-          await messaging.reply(messageId, '正在刷新上下文，请稍后重试');
+          await messaging.reply(messageId, '正在刷新上下文，请稍后重试').catch(() => {});
         } else {
           console.error(`[shell] send failed, queue item cleaned:`, err);
           metrics.addError(`Send failed: ${String(err).slice(0, 200)}`);
@@ -810,7 +819,10 @@ async function main() {
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
       metrics.addError(`Reply failed: ${String(err).slice(0, 200)}`);
-      console.error(`[shell] Failed to reply:`, err);
+      console.error(`[shell] reply failed, trying sendMessage as fallback:`, err);
+      await messaging.sendMessage(item.chatId, replyWithTiming).catch((e) => {
+        console.error(`[shell] sendMessage fallback also failed:`, e);
+      });
     }
   });
 

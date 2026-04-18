@@ -239,6 +239,9 @@ export class SessionBridge extends EventEmitter {
         console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout (non-main), forcing reset`);
         this.flushCheckpointResolve = null;
         this.discardNextResponse = true;
+        // 清除过期的 checkpoint pending turn
+        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
+        if (idx >= 0) this.pendingTurns.splice(idx, 1);
       } else {
         console.log(`[bridge:${this.label}] FLUSH: checkpoint done (non-main)`);
       }
@@ -262,6 +265,9 @@ export class SessionBridge extends EventEmitter {
         console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout (non-main) — forcing flush finish`);
         this.flushBootstrapResolve = null;
         this.discardNextResponse = true;
+        // 清除过期的 bootstrap pending turn
+        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
+        if (idx >= 0) this.pendingTurns.splice(idx, 1);
       }
 
       this.finishFlush();
@@ -312,6 +318,9 @@ export class SessionBridge extends EventEmitter {
       console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset`);
       this.flushCheckpointResolve = null;
       this.discardNextResponse = true;
+      // 清除过期的 checkpoint pending turn
+      const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
+      if (idx >= 0) this.pendingTurns.splice(idx, 1);
     } else {
       console.log(`[bridge:${this.label}] FLUSH: checkpoint done`);
     }
@@ -336,6 +345,9 @@ export class SessionBridge extends EventEmitter {
       console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout — forcing flush finish`);
       this.flushBootstrapResolve = null;
       this.discardNextResponse = true;
+      // 清除过期的 bootstrap pending turn
+      const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
+      if (idx >= 0) this.pendingTurns.splice(idx, 1);
       this.finishFlush();
     } else {
       this.finishFlush();
@@ -498,6 +510,9 @@ export class SessionBridge extends EventEmitter {
         console.warn(`[bridge:${this.label}] Agent switch: checkpoint timeout, continuing`);
         this.flushCheckpointResolve = null;
         this.discardNextResponse = true;
+        // 清除过期的 checkpoint pending turn
+        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
+        if (idx >= 0) this.pendingTurns.splice(idx, 1);
       }
 
       const currentAdapter = this.adapter;
@@ -585,8 +600,14 @@ export class SessionBridge extends EventEmitter {
       this.lastTimeSyncAt = now;
     }
 
-    this.enqueuePendingTurn({ type: 'user' });
-    await this.writeRaw(content);
+    const pendingTurn = this.enqueuePendingTurn({ type: 'user' });
+    try {
+      await this.writeRaw(content);
+    } catch (err) {
+      this.removePendingTurn(pendingTurn);
+      this.resolveDrainIfNeeded();
+      throw err;
+    }
   }
 
   async sendSystemMessage(msg: string): Promise<void> {
@@ -1025,6 +1046,7 @@ export class SessionBridge extends EventEmitter {
     if (!this.flushing) {
       this.pendingTurns = [];
       this.systemReplyQueue = [];
+      this.emit('queue-desync');  // 通知外层清理 MessageQueue
     }
     this.resolveDrainIfNeeded();
 
