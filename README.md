@@ -4,7 +4,7 @@
 
 > 把你最顺手的 agent 当虾养。
 
-把现成的 agent 接入 IM、赋予持久记忆和人格、7×24 替你在线。Persona Shell 不造 agent，只做这层壳。
+你精心维护的 prompt 才是核心资产。Persona Shell 不造 agent，只让现成的 agent（Claude Code、Codex）用你的 prompt 来干活——接入 IM、7×24 替你在线。你只需要把 Markdown 写好。
 
 不知道怎么用？clone 下来，让你的 agent 来读。
 
@@ -14,22 +14,14 @@
 
 ## TL;DR
 
-外挂IM让CC干活、并行干，后台干、定时干、用不同身份干。
-![飞书会话](docs/feishu-chats.png)
-
-干完了写md。
-![日报](docs/daily-md.png)
-
-有个简单的管理页面。
-![Web 控制台](docs/webui-screenshot.png)
+外挂IM，让Agent用你精心维护的prompt干活、并行干，后台干、定时干、用不同身份干。
 
 ## 设计理念
 
-- **保持简单** — agent 的推理、工具调用、代码能力由 Claude Code / Codex 提供，Persona Shell 只做编排和消息转发
-- **持久记忆** — Just md files. 身份、人格、日报、工作记忆，全部是 Markdown，git 管理
-- **长期运行** — daemon 模式 + 自动上下文刷新（FLUSH），不怕 context window 耗尽
-- **多实例** — 主分身 + 群聊 Director Pool，并行任务、后台任务、定时任务
-- **多后端** — 同一套编排支持 Claude Code 和 Codex，按角色或按群独立切换
+- **不重复造轮子** — agent 的推理、工具调用、代码能力已经被 Claude Code / Codex 做好了，Persona Shell 不重新实现这些，只做编排和消息转发
+- **Prompt 是你的核心资产** — soul.md（人格）、personas/（角色）、prompts/（系统行为模板）、memory/（记忆）—— 全部是 Markdown，你用 git 管理、精心迭代，这才是你的 AI 分身区别于别人的地方
+- **持久运行，自动刷新** — daemon 模式 + 自动上下文刷新（FLUSH），你维护的 prompt 和记忆会被持久保存，跨会话生效，不怕 context window 耗尽
+- **多实例，多后端** — 主分身 + 群聊 Director Pool，并行任务、后台任务、定时任务；同一套 prompt 可以被不同 agent 后端使用
 
 ## 支持的 Agent 后端
 
@@ -39,6 +31,17 @@
 | [Codex](https://github.com/openai/codex) | ✅ 后台任务 + 群聊 Director |
 
 完整功能矩阵和详细用法见 [使用指南](docs/usage.md)。
+
+## 效果展示
+
+通过飞书和你的 agent 分身对话：
+![飞书会话](docs/feishu-chats.png)
+
+agent 自主产出结构化日报和工作记录：
+![日报](docs/daily-md.png)
+
+Web 控制台查看运行状态：
+![Web 控制台](docs/webui-screenshot.png)
 
 ## 快速开始
 
@@ -58,6 +61,21 @@ bun run dev
 
 需要先创建飞书应用，详见 [安装指南](docs/setup.md)。
 
+## 身份仓库结构
+
+你的 prompt 资产存放在 `~/.persona/`，由 git 管理：
+
+```
+~/.persona/
+├── soul.md              # 人格定义 — 你的 AI 分身是谁
+├── personas/            # 角色 — 不同场景下的行为模式
+├── prompts/             # 系统行为模板 — 编排指令
+├── memory/              # 记忆 — 跨会话持久保存
+├── daily/               # 日报与工作记忆
+├── TODO.md              # 待办事项
+└── config.yaml          # 运行配置
+```
+
 ## 架构概览
 
 ```
@@ -73,39 +91,7 @@ IM 消息 → TS Shell → MessageQueue → SessionBridge (主 Director)
               └── Web Console (localhost:3000)
 ```
 
-Director 通过三层架构支持多后端：**SessionBridge**（会话编排）→ **Adapter**（协议适配）→ **Runtime**（进程管理）。技术细节见 [架构文档](docs/architecture.md)。
-
-## 目录结构
-
-```
-persona-shell/
-├── src/
-│   ├── index.ts                   # 入口，消息路由 + 命令分发
-│   ├── session-bridge.ts          # 会话桥（FLUSH / 队列 / bootstrap）
-│   ├── director-session-adapter/  # Claude / Codex 协议适配
-│   ├── director-runtime/          # Claude / Codex 进程管理
-│   ├── director-pool.ts           # 多 Director 实例管理
-│   ├── console.ts                 # Web 控制台 + API
-│   ├── queue.ts                   # 消息队列（持久化 + cancel）
-│   ├── config.ts                  # 配置加载（YAML → typed config）
-│   ├── persona-process.ts         # 统一进程 spawn（Claude / Codex）
-│   ├── claude-process.ts          # Claude FIFO 管道进程管理
-│   ├── log-parser.ts              # 日志解析（Web 控制台用）
-│   ├── logger.ts                  # 日志分级
-│   ├── messaging/                 # 通讯层
-│   │   ├── messaging.ts             # 接口定义
-│   │   ├── messaging-router.ts      # 消息路由
-│   │   └── feishu.ts                # 飞书 WebSocket 实现
-│   ├── task/                      # 任务系统
-│   │   ├── task-store.ts            # SQLite 存储（Task + CronJob + State KV）
-│   │   ├── task-runner.ts           # 后台任务执行
-│   │   ├── task-mcp-server.ts       # MCP 工具服务器
-│   │   └── scheduler.ts            # Cron 调度
-│   └── __tests__/                 # 单元测试（263 tests, 75% 行覆盖率）
-├── docs/
-├── logs/
-└── scripts/
-```
+技术细节见 [架构文档](docs/architecture.md)。
 
 ## 文档
 

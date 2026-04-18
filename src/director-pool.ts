@@ -586,7 +586,10 @@ export class DirectorPool extends EventEmitter {
         }
       } catch (err) {
         queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
-        console.error(`[pool:${groupName}] Failed to reply:`, err);
+        console.error(`[pool:${groupName}] reply failed, trying sendMessage as fallback:`, err);
+        await this.messaging.sendMessage(feishuChatId, replyWithTiming).catch((e) => {
+          console.error(`[pool:${groupName}] sendMessage fallback also failed:`, e);
+        });
       }
     });
 
@@ -628,6 +631,14 @@ export class DirectorPool extends EventEmitter {
       const orphaned = queue.clearAll();
       if (orphaned.length > 0) {
         console.log(`[pool:${groupName}] Cleared ${orphaned.length} orphaned queue items after flush drain`);
+      }
+    });
+
+    // queue-desync → clear orphaned queue items after Director crash
+    bridge.on('queue-desync', () => {
+      const orphans = queue.clearAll();
+      if (orphans.length > 0) {
+        console.warn(`[pool:${groupName}] Cleared ${orphans.length} orphaned queue items after crash`);
       }
     });
 

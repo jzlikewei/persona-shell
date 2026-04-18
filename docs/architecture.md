@@ -85,6 +85,15 @@ SessionBridge (session-bridge.ts)
 - 自动 flush 策略（token 阈值 / 时间间隔）
 - 时间同步注入（消息间隔超过阈值时注入当前时间前缀）
 
+### Prompt Loader
+
+`prompt-loader.ts` 从 `{personaDir}/prompts/` 目录加载用户可覆盖的 prompt 模板。文件存在则使用文件内容（`---` 分隔符后的部分），否则 fallback 到各调用点的硬编码默认值。支持 `{var_name}` 模板变量替换。
+
+调用点：
+- **SessionBridge**：bootstrap / flush checkpoint / agent-switch checkpoint
+- **task-runner**：子角色任务产出指令
+- **index**（cron 调度）：`@prompts/xxx.md` 文件引用，解析为消息内容
+
 发出的事件：
 
 | 事件 | 载荷 | 触发时机 |

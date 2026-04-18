@@ -146,6 +146,7 @@ launchctl start com.persona.shell
 │   ├── explorer.md                # 研究员角色
 │   └── critic.md                  # 审查员角色
 ├── skills/                      # 技能（= Claude Code plugin）
+├── prompts/                     # 系统 prompt 模板，可自定义以覆盖默认行为
 ├── memory/                      # 跨会话记忆
 ├── daily/                       # 日报 + 工作记忆
 │   ├── state.md                   # FLUSH checkpoint

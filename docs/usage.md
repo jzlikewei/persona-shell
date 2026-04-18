@@ -220,6 +220,35 @@ tools: [Read, Grep, Glob, Bash]
 cd ~/.persona && claude /soul-crafting
 ```
 
+### Prompt 自定义
+
+`~/.persona/prompts/` 存放系统行为的 prompt 模板。用户可修改这些文件来自定义 Shell 的内部指令（bootstrap、flush checkpoint、任务产出格式等），无需改代码。
+
+**文件格式**：每个 `.md` 文件以 `---` 分隔——分隔符之前是元数据说明（给人看的），之后是实际注入给 agent 的 prompt 内容。
+
+**模板变量**：`{var_name}` 格式，每个文件头部有可用变量说明。运行时由调用方自动替换。
+
+**Fallback 机制**：文件不存在或被删除时，自动使用内置硬编码默认值。零配置即可运行，只在需要自定义时才编辑。
+
+**Cron 文件引用**：Cron 定时任务的 message 字段支持 `@prompts/xxx.md` 语法，运行时读取文件内容作为消息体。
+
+**现有模板**：
+
+| 文件 | 用途 |
+|------|------|
+| `bootstrap-main.md` | 主 Director 首次启动指令 |
+| `bootstrap-pool-fresh.md` | 群 Director 首次启动（无历史） |
+| `bootstrap-pool-with-state.md` | 群 Director 启动（有 state 恢复） |
+| `flush-checkpoint-main.md` | 主 Director FLUSH checkpoint 指令 |
+| `flush-checkpoint-pool.md` | 群 Director FLUSH checkpoint 指令 |
+| `flush-bootstrap-main.md` | 主 Director FLUSH 后重启指令 |
+| `agent-switch-checkpoint-main.md` | 主 Director 切换 agent 时的 checkpoint |
+| `agent-switch-checkpoint-pool.md` | 群 Director 切换 agent 时的 checkpoint |
+| `task-output-instruction.md` | 子角色任务产出格式指令 |
+| `codex.md` | Codex agent 的 system prompt |
+| `daily-report.md` | 日报生成 prompt |
+| `weekly-introspection.md` | 周度自省 prompt |
+
 ## Web 控制台
 
 `http://localhost:3000`，仅监听 localhost。

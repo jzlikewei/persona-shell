@@ -616,7 +616,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
           data: { content: JSON.stringify({ text }), msg_type: 'text' },
         });
         lastActiveTime = Date.now();
-      }).catch(() => { /* withRetry already logged */ });
+      });
     },
 
     async sendMessage(chatId: string, text: string): Promise<string | null> {
@@ -627,7 +627,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         });
         lastActiveTime = Date.now();
         return r;
-      }).catch(() => null);
+      });
       return res?.data?.message_id ?? null;
     },
 
