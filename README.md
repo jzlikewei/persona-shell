@@ -14,18 +14,7 @@
 
 ## TL;DR
 
-外挂IM让Agent用你精心维护的prompt干活、并行干，后台干、定时干、用不同身份干。
-
-## 效果展示
-
-通过飞书和你的 agent 分身对话：
-![飞书会话](docs/feishu-chats.png)
-
-agent 自主产出结构化日报和工作记录：
-![日报](docs/daily-md.png)
-
-Web 控制台查看运行状态：
-![Web 控制台](docs/webui-screenshot.png)
+外挂IM，让Agent用你精心维护的prompt干活、并行干，后台干、定时干、用不同身份干。
 
 ## 设计理念
 
@@ -42,6 +31,17 @@ Web 控制台查看运行状态：
 | [Codex](https://github.com/openai/codex) | ✅ 后台任务 + 群聊 Director |
 
 完整功能矩阵和详细用法见 [使用指南](docs/usage.md)。
+
+## 效果展示
+
+通过飞书和你的 agent 分身对话：
+![飞书会话](docs/feishu-chats.png)
+
+agent 自主产出结构化日报和工作记录：
+![日报](docs/daily-md.png)
+
+Web 控制台查看运行状态：
+![Web 控制台](docs/webui-screenshot.png)
 
 ## 快速开始
 
