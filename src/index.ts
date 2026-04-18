@@ -93,6 +93,7 @@ async function main() {
         env: {
           SHELL_PORT: String(config.console.port),
           ...(config.console.token ? { SHELL_TOKEN: config.console.token } : {}),
+          no_proxy: '127.0.0.1,localhost',
         },
       },
     },

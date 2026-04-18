@@ -29,15 +29,20 @@ bun run dev
 2. **开启机器人能力**：应用能力 → 添加应用能力 → 机器人
 3. **添加权限**（权限管理 → API 权限）：
 
-   | 权限 | 用途 |
-   |------|------|
-   | `im:message` | 接收消息 |
-   | `im:message:send_as_bot` | 发送消息 |
-   | `im:chat:readonly` | 获取群名称和成员数 |
-   | `im:resource` | 上传图片和文件 |
-   | `im:message.reactions:write` | 添加表情回复 |
+   | 权限标识 | 说明 | 用途 |
+   |----------|------|------|
+   | `im:message:send_as_bot` | 以应用的身份发消息 | 发送消息（必需） |
+   | `im:message:readonly` | 获取单聊、群组消息 | 接收和读取消息（必需） |
+   | `im:chat:readonly` | 获取群信息 | 获取群名称和成员数（必需） |
+   | `im:resource` | 上传图片和文件 | 发送图片/文件附件 |
+   | `im:message.reactions:read` | 查看消息表情回复 | 读取 emoji 反应 |
+   | `im:message.reactions:write_only` | 发送、删除消息表情回复 | 添加 emoji 反应 |
+   | `im:message.pins:read` | 查看 Pin 消息 | 读取置顶消息 |
+   | `im:message.pins:write_only` | 添加、取消 Pin 消息 | 管理置顶消息 |
+   | `im:message:recall` | 撤回消息 | 撤回已发送的消息 |
 
 4. **事件订阅**：事件与回调 → 事件配置 → 添加 `im.message.receive_v1`（接收消息）
+   - ⚠️ **消息接收模式**：务必选择「**接收群中所有消息**」而非「仅接收 @机器人 的消息」，否则小群中不 @ 机器人就无法触发回复
 5. **连接方式选择 WebSocket**：事件与回调 → 使用长连接接收事件（非 Webhook）
 6. **发布应用**：版本管理与发布 → 创建版本 → 申请发布
 7. 复制 **App ID** 和 **App Secret** 到 `~/.persona/im_secret.yaml`
@@ -155,3 +160,19 @@ launchctl start com.persona.shell
 ```
 
 这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`），通过 bare 模式忽略系统 CC 的配置。详见 [`claude-code-startup.md`](claude-code-startup.md)。
+
+## 常见问题（FAQ）
+
+### 群聊中必须 @机器人 才能回复
+
+飞书开放平台默认只推送 @机器人 的群消息。即使代码中有小群免 @ 逻辑，如果平台不推送消息，代码层面也收不到。
+
+**解决方法**：飞书开放平台 → 你的应用 → 事件与回调 → 事件配置 → `im.message.receive_v1` → 将消息接收模式改为「**接收群中所有消息**」。
+
+### 权限不足导致功能异常
+
+如果出现发消息失败、无法获取群信息、无法添加表情回复等问题，请检查飞书应用的 API 权限是否全部开通（参见上方权限列表）。添加权限后需要**重新发布应用版本**才能生效。
+
+### 飞书 WebSocket 断连
+
+Shell 内置了 watchdog 机制，断连超过 2 分钟且飞书 API 可达时会自动重启进程。如果使用 launchd 服务化部署，进程退出后会自动拉起。持续断连通常是网络问题，检查代理配置（飞书域名应在 `no_proxy` 列表中）。
