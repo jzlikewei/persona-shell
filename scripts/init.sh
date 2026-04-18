@@ -2,15 +2,15 @@
 set -e
 
 PERSONA_DIR="$HOME/.persona"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "🔧 Persona Shell 初始化"
 echo ""
 
 # 1. 安装依赖
-if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+if [ ! -d "$PROJECT_DIR/node_modules" ]; then
   echo "📦 安装依赖..."
-  cd "$SCRIPT_DIR" && bun install
+  cd "$PROJECT_DIR" && bun install
 fi
 
 # 2. 初始化身份仓库
@@ -18,7 +18,7 @@ if [ -d "$PERSONA_DIR" ]; then
   echo "⚠️  $PERSONA_DIR 已存在，跳过模板复制"
 else
   echo "📁 初始化身份仓库 → $PERSONA_DIR"
-  cp -r "$SCRIPT_DIR/persona-template" "$PERSONA_DIR"
+  cp -r "$PROJECT_DIR/persona-template" "$PERSONA_DIR"
   cd "$PERSONA_DIR" && git init -q && git add -A && git commit -q -m "init persona"
   echo "   ✓ 已创建并初始化 git"
 fi
@@ -27,7 +27,7 @@ fi
 CONFIG="$PERSONA_DIR/config.yaml"
 IM_SECRET_CONFIG="$PERSONA_DIR/im_secret.yaml"
 if [ ! -f "$CONFIG" ]; then
-  cp "$SCRIPT_DIR/config.example.yaml" "$CONFIG"
+  cp "$PROJECT_DIR/config.example.yaml" "$CONFIG"
   echo ""
   echo "📝 请输入飞书应用凭据（从开放平台控制台获取）："
   printf "   App ID: "

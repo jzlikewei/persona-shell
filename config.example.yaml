@@ -19,6 +19,7 @@ agents:
       sandbox: "danger-full-access"
       approval: "never"
       search: false
+    # system_prompt_file: "prompts/codex.md"  # Per-agent system prompt (relative to persona_dir)
 
 # 配置模板 — 复制到 config.yaml 并填入实际值
 # 飞书凭据（app_id + app_secret）放 im_secret.yaml，不在此文件中
