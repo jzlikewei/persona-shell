@@ -341,10 +341,11 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       // Group chat @mention filter: skip messages that don't mention the bot
       // Exceptions:
       //   1. chats in skipMentionSet (configured parallel groups)
-      //   2. small groups with 1 user — treat like p2p
+      //   2. small groups (≤2 members, i.e. 1 user + bot) — treat like p2p
+      //   3. getChatInfo fails — be lenient, don't require @mention
       if (chatType === 'group' && !skipMentionSet.has(chat_id)) {
         const info = await getChatInfo(chat_id);
-        const isSmallGroup = info && info.memberCount <= 1;
+        const isSmallGroup = !info || info.memberCount <= 2;
         if (!isSmallGroup) {
           const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
           if (!hasBotMention) {
