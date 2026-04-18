@@ -174,7 +174,11 @@ async function main() {
     const target = await resolveTaskTarget(task ?? {});
     let notifyMsgId: string | undefined;
     if (target.chatId) {
-      notifyMsgId = (await messaging.sendMessage(target.chatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
+      try {
+        notifyMsgId = (await messaging.sendMessage(target.chatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
+      } catch (err) {
+        console.warn('[shell] Failed to send task-completed notification:', err);
+      }
     }
     target.notifyDirector(result.taskId, true, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task completion:', err);
@@ -208,7 +212,11 @@ async function main() {
       const msg = isCancelled
         ? `🚫 后台任务「${desc}」(${result.taskId}) 已取消`
         : `❌ 后台任务「${desc}」(${result.taskId}) 失败 — ${result.error}`;
-      notifyMsgId = (await messaging.sendMessage(target.chatId, msg)) ?? undefined;
+      try {
+        notifyMsgId = (await messaging.sendMessage(target.chatId, msg)) ?? undefined;
+      } catch (err) {
+        console.warn('[shell] Failed to send task-failed notification:', err);
+      }
     }
     target.notifyDirector(result.taskId, false, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task failure:', err);
