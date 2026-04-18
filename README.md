@@ -2,9 +2,9 @@
 
 [![Test](https://github.com/jzlikewei/persona-shell/actions/workflows/test.yml/badge.svg)](https://github.com/jzlikewei/persona-shell/actions/workflows/test.yml)
 
-> 你精心维护的 prompt 才是核心资产。persona-shell 不造 agent，只让现成的 agent 用你的 prompt 来干活。
+> 把你最顺手的 agent 当虾养。
 
-你用 Markdown 写人格、写角色、写记忆，用 git 迭代它们——这些才是你的 AI 分身区别于别人的东西。Persona Shell 把现成的 agent（Claude Code、Codex）接入 IM，让它们带着你维护的 prompt 7×24 替你在线。你只需要把 Markdown 写好。
+你精心维护的 prompt 才是核心资产。Persona Shell 不造 agent，只让现成的 agent（Claude Code、Codex）用你的 prompt 来干活——接入 IM、7×24 替你在线。你只需要把 Markdown 写好。
 
 不知道怎么用？clone 下来，让你的 agent 来读。
 
@@ -73,7 +73,7 @@ bun run dev
 ├── memory/              # 记忆 — 跨会话持久保存
 ├── daily/               # 日报与工作记忆
 ├── TODO.md              # 待办事项
-└── config.yml           # 运行配置
+└── config.yaml          # 运行配置
 ```
 
 ## 架构概览
