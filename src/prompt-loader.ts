@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { join, resolve, sep } from 'path';
 
 /**
  * 从 {personaDir}/prompts/{name}.md 加载 prompt 模板。
@@ -62,7 +62,11 @@ export function resolveCronMessage(
   }
 
   const refPath = message.slice(1).trim();
-  const filePath = join(personaDir, refPath);
+  const filePath = resolve(personaDir, refPath);
+  if (!filePath.startsWith(resolve(personaDir) + sep)) {
+    console.warn(`[prompt-loader] Path traversal blocked: ${refPath}`);
+    return message;
+  }
   if (!existsSync(filePath)) {
     console.warn(`[prompt-loader] Cron message file not found: ${filePath}`);
     return message;
