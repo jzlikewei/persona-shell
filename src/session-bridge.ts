@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendF
 import { dirname, join } from 'path';
 import { resolveAgentProvider, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
+import { loadPrompt } from './prompt-loader.js';
 import { ClaudeDirectorRuntime } from './director-runtime/claude.js';
 import { CodexSessionAdapter } from './director-session-adapter/codex.js';
 import { ClaudeSessionAdapter } from './director-session-adapter/claude.js';
@@ -224,9 +225,11 @@ export class SessionBridge extends EventEmitter {
         this.flushCheckpointResolve = resolve;
       });
       this.enqueuePendingTurn({ type: 'flush-checkpoint' });
-      await this.writeRaw(
-        `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」当前会话的工作状态保存到 ${statePath}，包括：当前讨论焦点、关键决策、未完成事项。只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`,
-      );
+      const poolCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-pool', {
+        group_name: this.groupName ?? this.label,
+        state_path: statePath,
+      }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」当前会话的工作状态保存到 ${statePath}，包括：当前讨论焦点、关键决策、未完成事项。只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
+      await this.writeRaw(poolCheckpointMsg);
 
       const checkpointOk = await Promise.race([
         checkpointDone.then(() => true),
@@ -297,7 +300,9 @@ export class SessionBridge extends EventEmitter {
       this.flushCheckpointResolve = resolve;
     });
     this.enqueuePendingTurn({ type: 'flush-checkpoint' });
-    await this.writeRaw('[FLUSH] 系统即将进行上下文刷新。请将当前工作状态保存到 daily/state.md，包括：进行中的任务、待处理的事项、需要保留的上下文。保存完成后回复"已保存"。');
+    const mainCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-main')
+      ?? '[FLUSH] 系统即将进行上下文刷新。请将当前工作状态保存到 daily/state.md，包括：进行中的任务、待处理的事项、需要保留的上下文。保存完成后回复"已保存"。';
+    await this.writeRaw(mainCheckpointMsg);
 
     const checkpointOk = await Promise.race([
       checkpointDone.then(() => true),
@@ -319,7 +324,9 @@ export class SessionBridge extends EventEmitter {
       this.flushBootstrapResolve = resolve;
     });
     this.enqueuePendingTurn({ type: 'flush-bootstrap' });
-    await this.writeRaw('[FLUSH] 你刚经历了上下文刷新。请读取 daily/state.md 恢复工作上下文。');
+    const flushBootstrapMsg = loadPrompt(this.config.persona_dir, 'flush-bootstrap-main')
+      ?? '[FLUSH] 你刚经历了上下文刷新。请读取 daily/state.md 恢复工作上下文。';
+    await this.writeRaw(flushBootstrapMsg);
 
     const bootstrapOk = await Promise.race([
       bootstrapDone.then(() => true),
@@ -851,26 +858,46 @@ export class SessionBridge extends EventEmitter {
 
   private buildAgentSwitchCheckpointPrompt(targetAgentName: string): string {
     const sessionStatePath = this.getSessionStatePromptPath();
+    const vars = {
+      current_agent: this.directorAgent.name,
+      target_agent: targetAgentName,
+      state_path: sessionStatePath,
+      group_name: this.groupName ?? this.label,
+    };
+
     if (this.isMain) {
-      return `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请先将当前工作状态保存到 ${sessionStatePath}，包括：进行中的任务、待处理事项、关键上下文、切换后需要继续的动作。保存完成后回复"已保存"。`;
+      return loadPrompt(this.config.persona_dir, 'agent-switch-checkpoint-main', vars)
+        ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请先将当前工作状态保存到 ${sessionStatePath}，包括：进行中的任务、待处理事项、关键上下文、切换后需要继续的动作。保存完成后回复"已保存"。`;
     }
 
-    return `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请把群「${this.groupName ?? this.label}」当前会话的上下文保存到 ${sessionStatePath}，包括：讨论目标、当前结论、未完成事项、后续动作。该文件只服务于这个会话。保存完成后回复"已保存"。`;
+    return loadPrompt(this.config.persona_dir, 'agent-switch-checkpoint-pool', vars)
+      ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请把群「${this.groupName ?? this.label}」当前会话的上下文保存到 ${sessionStatePath}，包括：讨论目标、当前结论、未完成事项、后续动作。该文件只服务于这个会话。保存完成后回复"已保存"。`;
   }
 
   private buildBootstrapMessage(sourcePath?: string): string {
     const sharedNote = '注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。';
+    const groupName = this.groupName ?? this.label;
 
     if (this.isMain) {
-      const path = sourcePath ?? 'daily/state.md';
-      return `[系统] 新 session 已启动。请读取 ${path} 恢复工作上下文，了解当前待处理事项。${sharedNote}`;
+      const statePath = sourcePath ?? 'daily/state.md';
+      return loadPrompt(this.config.persona_dir, 'bootstrap-main', {
+        state_path: statePath,
+        shared_note: sharedNote,
+      }) ?? `[系统] 新 session 已启动。请读取 ${statePath} 恢复工作上下文，了解当前待处理事项。${sharedNote}`;
     }
 
     if (sourcePath) {
-      return `[系统] 新 session 已启动。你正在为群「${this.groupName ?? this.label}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote}`;
+      return loadPrompt(this.config.persona_dir, 'bootstrap-pool-with-state', {
+        group_name: groupName,
+        state_path: sourcePath,
+        shared_note: sharedNote,
+      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote}`;
     }
 
-    return `[系统] 新 session 已启动。你正在为群「${this.groupName ?? this.label}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
+    return loadPrompt(this.config.persona_dir, 'bootstrap-pool-fresh', {
+      group_name: groupName,
+      shared_note: sharedNote,
+    }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
   }
 
   private handleStreamChunk(text: string): void {

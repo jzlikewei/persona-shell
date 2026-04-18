@@ -10,6 +10,7 @@ import { TaskRunner, type TaskResult } from './task/task-runner.js';
 import { spawnPersona } from './persona-process.js';
 import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
+import { resolveCronMessage } from './prompt-loader.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task/task-store.js';
 import { writeFileSync } from 'fs';
 import { join, extname } from 'path';
@@ -278,13 +279,11 @@ async function main() {
         updateCronJob(jobId, { last_run_at: localNow() });
       },
       executeDirectorMsg: async (job) => {
-        // 模板变量替换：{today} {yesterday}
-        let msg = job.message ?? '';
         const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
         const d = new Date();
         d.setDate(d.getDate() - 1);
         const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-        msg = msg.replace(/\{today\}/g, today).replace(/\{yesterday\}/g, yesterday);
+        const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
         await director.sendCronMessage(msg);
       },
       executeShellAction: async (job) => {
@@ -308,11 +307,11 @@ async function main() {
           parts.push(`📋 ${job.description}`);
           parts.push(`🔄 ${job.schedule} | ${actionType}`);
           if (actionType === 'director_msg' && job.message) {
-            // Apply same template variable substitution as executeDirectorMsg
+            // Resolve file references (@prompts/...) and apply template variables
             const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
             const d = new Date(); d.setDate(d.getDate() - 1);
             const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-            const rendered = job.message.replace(/\{today\}/g, today).replace(/\{yesterday\}/g, yesterday);
+            const rendered = resolveCronMessage(config.director.persona_dir, job.message, { today, yesterday });
             parts.push(`💬 ${rendered.slice(0, 100)}`);
           }
           messaging.sendMessage(lastChatId, parts.join('\n')).catch((err) => {
@@ -344,7 +343,7 @@ async function main() {
       prompt: '',
       schedule: 'daily 03:00',
       action_type: 'director_msg',
-      message: '[系统] 日期已变更为 {today}。请为 {yesterday} 撰写日报，保存到 daily/{yesterday}.md。同时更新 daily/state.md 的状态。',
+      message: '@prompts/daily-report.md',
     });
     console.log('[shell] Seeded built-in cron job: daily-report');
   }

@@ -5,6 +5,7 @@ import { join } from 'path';
 import { createInterface } from 'readline';
 import { spawnPersona } from '../persona-process.js';
 import { resolveAgentProvider, type Config } from '../config.js';
+import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
 
 export interface TaskRunnerConfig {
@@ -95,7 +96,14 @@ export class TaskRunner extends EventEmitter {
     }
 
     const descHeader = input.description ? `报告头部请注明任务信息：「${input.taskId} — ${input.description}」。` : '';
-    const fullPrompt = `${input.prompt}\n\n[系统指令] 将输出结果保存到 ${outputPath}。${descHeader}完成后只回复"done"，不要输出总结。`;
+    const hardcodedInstruction = `[系统指令] 将输出结果保存到 ${outputPath}。${descHeader}完成后只回复"done"，不要输出总结。`;
+    const outputInstruction = loadPrompt(personaDir, 'task-output-instruction', {
+      output_path: outputPath,
+      task_id: input.taskId,
+      description: input.description ?? '',
+      desc_header: descHeader,
+    }) ?? hardcodedInstruction;
+    const fullPrompt = `${input.prompt}\n\n${outputInstruction}`;
 
     const { child, args } = spawnPersona({
       role: input.role,
