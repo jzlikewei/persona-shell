@@ -130,6 +130,8 @@ async function main() {
    *  Falls back to main Director + last chatId if source is unknown. */
   async function resolveTaskTarget(task: { source_director?: string | null }): Promise<{
     chatId: string | null;
+    isWeb: boolean;
+    webLabel: string | null;
     notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
   }> {
     const source = task.source_director;
@@ -137,8 +139,13 @@ async function main() {
       // Pool Director — look up or revive
       const poolChatId = pool.getChatIdByLabel(source);
       if (poolChatId) {
+        // Check if this is a web session (chatId === 'web-console' is not a valid messaging target)
+        const entry = pool.findByLabel(source);
+        const isWeb = poolChatId === 'web-console' || (entry?.routingKey.startsWith('web-') ?? false);
         return {
-          chatId: poolChatId,
+          chatId: isWeb ? null : poolChatId,
+          isWeb,
+          webLabel: isWeb ? source : null,
           notifyDirector: (taskId, success, msgId) => pool.notifyTaskDone(source, taskId, success, msgId),
         };
       }
@@ -148,6 +155,8 @@ async function main() {
     // Main Director or unknown source
     return {
       chatId: messaging.getLastChatId(),
+      isWeb: false,
+      webLabel: null,
       notifyDirector: (taskId, success, msgId) => director.notifyTaskDone(taskId, success, msgId),
     };
   }
@@ -174,9 +183,13 @@ async function main() {
     // Route notification to the Director/chat that created this task
     const target = await resolveTaskTarget(task ?? {});
     let notifyMsgId: string | undefined;
-    if (target.chatId) {
+    const notifyMsg = `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`;
+    if (target.isWeb && target.webLabel) {
+      // Web session — broadcast via WebSocket instead of messaging
+      pool.emit('web-alert', target.webLabel, notifyMsg);
+    } else if (target.chatId) {
       try {
-        notifyMsgId = (await messaging.sendMessage(target.chatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
+        notifyMsgId = (await messaging.sendMessage(target.chatId, notifyMsg)) ?? undefined;
       } catch (err) {
         console.warn('[shell] Failed to send task-completed notification:', err);
       }
@@ -207,14 +220,17 @@ async function main() {
     // Route notification to the Director/chat that created this task
     const target = await resolveTaskTarget(task ?? {});
     let notifyMsgId: string | undefined;
-    if (target.chatId) {
-      const desc = task?.description ?? result.taskId;
-      const isCancelled = result.error === 'cancelled';
-      const msg = isCancelled
-        ? `🚫 后台任务「${desc}」(${result.taskId}) 已取消`
-        : `❌ 后台任务「${desc}」(${result.taskId}) 失败 — ${result.error}`;
+    const taskDesc = task?.description ?? result.taskId;
+    const isCancelled = result.error === 'cancelled';
+    const failMsg = isCancelled
+      ? `🚫 后台任务「${taskDesc}」(${result.taskId}) 已取消`
+      : `❌ 后台任务「${taskDesc}」(${result.taskId}) 失败 — ${result.error}`;
+    if (target.isWeb && target.webLabel) {
+      // Web session — broadcast via WebSocket instead of messaging
+      pool.emit('web-alert', target.webLabel, failMsg);
+    } else if (target.chatId) {
       try {
-        notifyMsgId = (await messaging.sendMessage(target.chatId, msg)) ?? undefined;
+        notifyMsgId = (await messaging.sendMessage(target.chatId, failMsg)) ?? undefined;
       } catch (err) {
         console.warn('[shell] Failed to send task-failed notification:', err);
       }
@@ -273,6 +289,7 @@ async function main() {
           description: job.description,
           prompt: job.prompt,
           extra: { cronJobId: job.id },
+          source_director: job.source_director ?? undefined,
         });
         taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, prompt: task.prompt, description: task.description });
         return task.id;
@@ -293,6 +310,18 @@ async function main() {
         d.setDate(d.getDate() - 1);
         const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
         const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
+
+        // Route to source Director if available
+        const source = job.source_director;
+        if (source && source !== 'main') {
+          const entry = pool.findByLabel(source);
+          if (entry) {
+            await entry.bridge.sendCronMessage(msg);
+            return;
+          }
+          // Pool entry lost — fall through to main
+          console.warn(`[scheduler] Cron job ${job.name} source_director=${source} not found in pool, falling back to main`);
+        }
         await director.sendCronMessage(msg);
       },
       executeShellAction: async (job) => {
@@ -308,8 +337,18 @@ async function main() {
         }
       },
       notifyCronFired: (job) => {
-        const lastChatId = messaging.getLastChatId();
-        if (lastChatId) {
+        // Resolve target chatId: prefer source Director's chat, fallback to last active chat
+        const source = job.source_director;
+        let targetChatId: string | null = null;
+
+        if (source && source !== 'main') {
+          targetChatId = pool.getChatIdByLabel(source);
+        }
+        if (!targetChatId) {
+          targetChatId = messaging.getLastChatId();
+        }
+
+        if (targetChatId) {
           const actionType = job.action_type ?? 'spawn_role';
           const emoji = actionType === 'spawn_role' ? '🚀' : '⏰';
           const parts = [`${emoji} 定时任务「${job.name}」已触发`];
@@ -323,7 +362,7 @@ async function main() {
             const rendered = resolveCronMessage(config.director.persona_dir, job.message, { today, yesterday });
             parts.push(`💬 ${rendered.slice(0, 100)}`);
           }
-          messaging.sendMessage(lastChatId, parts.join('\n')).catch((err) => {
+          messaging.sendMessage(targetChatId, parts.join('\n')).catch((err) => {
             console.warn('[shell] Failed to send cron notification:', err);
           });
         }

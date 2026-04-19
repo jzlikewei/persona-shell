@@ -173,6 +173,43 @@
     input.focus();
   };
 
+  /** Create a new web chat session */
+  window.doNewWebChat = function() {
+    fetch('/api/web-sessions', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) {
+          showToast('New chat created', true);
+          selectPoolDirector(d.label, 'Web Chat');
+        } else {
+          showToast(d.error || 'Failed to create chat', false);
+        }
+      })
+      .catch(function(err) {
+        showToast('Failed: ' + err.message, false);
+      });
+  };
+
+  /** Close a web chat session */
+  window.doCloseWebChat = function(routingKey) {
+    if (!confirm('Close this web chat session?')) return;
+    fetch('/api/web-sessions/' + encodeURIComponent(routingKey), { method: 'DELETE' })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) {
+          showToast('Chat closed', true);
+          if (viewMode === 'pool-session') {
+            selectDashboard();
+          }
+        } else {
+          showToast(d.error || 'Failed to close', false);
+        }
+      })
+      .catch(function(err) {
+        showToast('Failed: ' + err.message, false);
+      });
+  };
+
   function showChat() {
     $('main').classList.add('chat-active');
   }
@@ -264,15 +301,26 @@
         } else if (msg.type === 'command_result') {
           showToast(msg.message || msg.command, msg.ok);
         } else if (msg.type === 'chat_reply') {
-          // Director 回复 web chat 消息
-          var el = $('chat-messages');
-          if (el) {
-            var div = document.createElement('div');
-            div.className = 'chat-bubble in';
-            div.textContent = msg.text;
-            el.appendChild(div);
-            var scroll = $('chat-scroll');
-            if (scroll) scroll.scrollTop = scroll.scrollHeight;
+          // Director 回复 web chat 消息 — filter by current director
+          var replyDirector = msg.director || null;
+          var showReply = false;
+          if (viewMode === 'pool-session' && selectedPoolLabel) {
+            showReply = (replyDirector === selectedPoolLabel);
+          } else if (viewMode === 'session') {
+            showReply = (!replyDirector || replyDirector === 'main');
+          } else {
+            showReply = true; // dashboard or other views: show all
+          }
+          if (showReply) {
+            var el = $('chat-messages');
+            if (el) {
+              var div = document.createElement('div');
+              div.className = 'chat-bubble in';
+              div.textContent = msg.text;
+              el.appendChild(div);
+              var scroll = $('chat-scroll');
+              if (scroll) scroll.scrollTop = scroll.scrollHeight;
+            }
           }
         }
       } catch (e) { /* ignore */ }
@@ -691,6 +739,11 @@
       '<span class="item-label">Main (Director)</span>' +
       '<span class="item-meta">' + mainStatus + '</span></div>';
 
+    // "+ New Chat" button
+    html += '<div class="list-item" onclick="doNewWebChat()" style="cursor:pointer;color:var(--blue);font-size:12px">' +
+      '<span class="item-icon">＋</span>' +
+      '<span class="item-label">New Chat</span></div>';
+
     // Pool Director entries (active first, then closed)
     var activePool = [];
     var closedPool = [];
@@ -711,9 +764,12 @@
       else { status = 'live'; dotColor = 'var(--green)'; }
       if (p.queueLength > 0) badgeHtml = ' <span class="badge running" style="font-size:8px;padding:0 4px;margin-left:2px">' + p.queueLength + '</span>';
       var shortName = (p.groupName || p.label).slice(0, 8);
+      var isWebSession = p.routingKey && p.routingKey.startsWith('web-');
+      var closeBtn = (isWebSession && !p.closed) ? '<span class="item-close" onclick="event.stopPropagation();doCloseWebChat(\'' + esc(p.routingKey) + '\')" title="Close">&times;</span>' : '';
       html += '<div class="list-item' + (isActive ? ' active' : '') + '" onclick="selectPoolDirector(\'' + esc(p.label) + '\',\'' + esc(p.groupName) + '\')" style="cursor:pointer">' +
         '<span class="item-icon" style="color:' + dotColor + '">&#9679;</span>' +
         '<span class="item-label">' + esc(shortName) + ' (Director)' + badgeHtml + '</span>' +
+        closeBtn +
         '<span class="item-meta">' + status + '</span></div>';
     }
 

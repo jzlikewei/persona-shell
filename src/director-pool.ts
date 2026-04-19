@@ -549,7 +549,9 @@ export class DirectorPool extends EventEmitter {
 
   /** Wire SessionBridge events for a group chat */
   private wireEvents(bridge: SessionBridge, queue: MessageQueue, routingKey: string, feishuChatId: string, groupName: string): void {
-    // response → resolve oldest queue item → reply to feishu
+    const isWeb = routingKey.startsWith('web-');
+
+    // response → resolve oldest queue item → reply to feishu (or web)
     bridge.on('response', async (reply: string, durationMs?: number) => {
       const item = queue.resolveOldest();
       if (!item) {
@@ -562,6 +564,13 @@ export class DirectorPool extends EventEmitter {
         : Date.now() - item.timestamp;
       const elapsedSec = (elapsedMs / 1000).toFixed(1);
       const replyWithTiming = `${reply}\n\n(耗时 ${elapsedSec}s)`;
+
+      if (isWeb) {
+        this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
+        queue.logAction('WEB_REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
+        console.log(`[pool:${groupName}] Web replied to ${item.messageId} (${elapsedSec}s)`);
+        return;
+      }
 
       try {
         await this.messaging.reply(item.messageId, replyWithTiming);
@@ -593,8 +602,12 @@ export class DirectorPool extends EventEmitter {
       }
     });
 
-    // system-response → reply to task notification message
+    // system-response → reply to task notification message (web sessions: forward via WebSocket)
     bridge.on('system-response', async (reply: string, replyToMessageId: string) => {
+      if (isWeb) {
+        this.emit('web-reply', bridge.label, replyToMessageId, reply);
+        return;
+      }
       try {
         await this.messaging.reply(replyToMessageId, reply);
         log.debug(`[pool:${groupName}] System response replied to ${replyToMessageId}`);
@@ -612,15 +625,34 @@ export class DirectorPool extends EventEmitter {
       this.persistEntries();
     });
 
-    // alert → forward to group chat (use feishuChatId, not routingKey)
+    // alert → forward to group chat or web
     bridge.on('alert', (message: string) => {
+      if (isWeb) {
+        this.emit('web-alert', bridge.label, message);
+        return;
+      }
       this.messaging.sendMessage(feishuChatId, message).catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send alert:`, err);
       });
     });
 
-    // auto-flush-complete → notify group chat
+    // cron-response → forward Director's cron message response to the group chat (or web)
+    bridge.on('cron-response', (reply: string) => {
+      if (isWeb) {
+        this.emit('web-alert', bridge.label, reply);
+        return;
+      }
+      this.messaging.sendMessage(feishuChatId, reply).catch((err) => {
+        console.warn(`[pool:${groupName}] Failed to forward cron response:`, err);
+      });
+    });
+
+    // auto-flush-complete → notify group chat or web
     bridge.on('auto-flush-complete', () => {
+      if (isWeb) {
+        this.emit('web-alert', bridge.label, '🔄 上下文已自动刷新');
+        return;
+      }
       this.messaging.sendMessage(feishuChatId, '🔄 上下文已自动刷新').catch((err) => {
         console.warn(`[pool:${groupName}] Failed to send flush notification:`, err);
       });

@@ -171,6 +171,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         action_type: args.action_type,
         message: args.message,
         action_name: args.action_name,
+        source_director: DIRECTOR_LABEL,
       });
     case 'list_cron_jobs':
       return callShell('GET', '/api/cron-jobs');
