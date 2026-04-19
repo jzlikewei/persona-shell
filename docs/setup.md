@@ -176,3 +176,21 @@ launchctl start com.persona.shell
 ### 飞书 WebSocket 断连
 
 Shell 内置了 watchdog 机制，断连超过 2 分钟且飞书 API 可达时会自动重启进程。如果使用 launchd 服务化部署，进程退出后会自动拉起。持续断连通常是网络问题，检查代理配置（飞书域名应在 `no_proxy` 列表中）。
+
+### 代理环境导致飞书 API / Task MCP 失败
+
+如果系统设置了 `http_proxy` / `https_proxy`，可能导致：
+
+- **飞书文件/图片上传 ECONNRESET**：multipart 请求经代理转发时连接被重置
+- **Task MCP 返回 502**：MCP 子进程访问 `127.0.0.1:3000` 的请求被代理劫持
+
+**推荐方案**：在 `~/.zshrc`（或你的 shell profile）中设置代理的同一位置，加上 `no_proxy`：
+
+```bash
+export no_proxy="127.0.0.1,localhost,open.feishu.cn,*.feishu.cn,*.larkoffice.com"
+export NO_PROXY="$no_proxy"
+```
+
+修改后重启 Shell（`/shell-restart`）让 `start.sh` 重新 source 生效。
+
+> **为什么不在代码里解决？** Shell 通过 `start.sh` 继承用户的完整 shell 环境，代理变量会影响所有网络请求层（包括 Bun 运行时、axios、Lark SDK）。在应用层逐个修补不如从源头配置 `no_proxy` 来得干净和可靠。
