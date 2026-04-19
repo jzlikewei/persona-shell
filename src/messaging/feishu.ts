@@ -409,6 +409,12 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
 
           text = stripMentions(text);
           await fetchQuote();
+          // If text is empty after stripping mentions but has a quoted message,
+          // use the quoted text as input (user replied with just @bot and no content)
+          if (!text && msg.quotedText) {
+            text = msg.quotedText;
+            delete msg.quotedText; // avoid duplicating in both text and quote
+          }
           if (!text) return;
 
           msg.text = text;
@@ -431,6 +437,12 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
 
           text = stripMentions(text);
           await fetchQuote();
+          // If text is empty after stripping mentions but has a quoted message,
+          // use the quoted text as input (user replied with just @bot and no content)
+          if (!text && msg.quotedText) {
+            text = msg.quotedText;
+            delete msg.quotedText;
+          }
           if (!text) return;
 
           msg.text = text;
