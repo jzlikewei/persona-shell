@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, resolve, extname } from 'path';
 import { homedir } from 'os';
@@ -294,6 +295,13 @@ export function startConsole(
     pool.on('stream-abort', (label: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label }));
     });
+    // Web session reply/alert routing
+    pool.on('web-reply', (label: string, messageId: string, text: string) => {
+      broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, messageId, text }));
+    });
+    pool.on('web-alert', (label: string, message: string) => {
+      broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, messageId: null, text: '⚠️ ' + message }));
+    });
   }
 
   const server = Bun.serve({
@@ -585,6 +593,32 @@ export function startConsole(
             const ok = deleteCronJob(id);
             return Response.json({ ok, id });
           }
+          // Web session API routes
+          if (url.pathname === '/api/web-sessions' && req.method === 'POST') {
+            if (!pool) return Response.json({ error: 'Pool not available' }, { status: 503 });
+            try {
+              const id = randomUUID().slice(0, 8);
+              const routingKey = `web-${id}`;
+              const timeStr = new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+              const entry = await pool.getOrCreate(routingKey, {
+                groupName: `Web Chat ${timeStr}`,
+                feishuChatId: 'web-console',
+              });
+              return Response.json({ ok: true, routingKey, label: entry.bridge.label });
+            } catch (err) {
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+          if (url.pathname.startsWith('/api/web-sessions/') && req.method === 'DELETE') {
+            if (!pool) return Response.json({ error: 'Pool not available' }, { status: 503 });
+            const routingKey = decodeURIComponent(url.pathname.slice('/api/web-sessions/'.length));
+            try {
+              await pool.shutdown(routingKey);
+              return Response.json({ ok: true });
+            } catch (err) {
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
           return new Response('Not found', { status: 404 });
         }
       }
@@ -616,18 +650,16 @@ export function startConsole(
             // Web chat 消息 — route to specific Director if specified
             const targetLabel: string | null = msg.director ?? null;
             if (targetLabel && pool) {
-              // Route to pool Director
+              // Route to pool Director via queue (ensures response correlation)
               const poolStatus = pool.getPoolStatus().find((e) => e.label === targetLabel);
               if (poolStatus) {
-                const entry = pool.get(poolStatus.routingKey);
-                if (entry) {
-                  try {
-                    await entry.bridge.send(msg.text);
-                  } catch (err) {
-                    console.error(`[console] Web chat send to pool "${targetLabel}" failed:`, err);
-                  }
-                  return;
+                const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                try {
+                  await pool.send(poolStatus.routingKey, msg.text, messageId);
+                } catch (err) {
+                  console.error(`[console] Web chat send to pool "${targetLabel}" failed:`, err);
                 }
+                return;
               }
               console.warn(`[console] Pool Director "${targetLabel}" not found, falling back to main`);
             }
