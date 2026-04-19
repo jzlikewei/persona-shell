@@ -167,6 +167,9 @@ function migrateCronJobsTable(db: Database): void {
   if (!existing.has('action_name')) {
     db.run("ALTER TABLE cron_jobs ADD COLUMN action_name TEXT");
   }
+  if (!existing.has('source_director')) {
+    db.run("ALTER TABLE cron_jobs ADD COLUMN source_director TEXT");
+  }
 }
 
 /** 安全地为 tasks 表添加新列 */
@@ -326,6 +329,8 @@ export interface CronJob {
   action_type: CronActionType;
   message: string | null;
   action_name: string | null;
+  /** 创建该 cron job 的 Director 标识，用于通知/回调路由 */
+  source_director: string | null;
 }
 
 export interface CreateCronJobInput {
@@ -339,6 +344,8 @@ export interface CreateCronJobInput {
   action_type?: CronActionType;
   message?: string;
   action_name?: string;
+  /** 发起方 Director 标识（如 'main' 或 pool label） */
+  source_director?: string;
 }
 
 function rowToCronJob(row: Record<string, unknown>): CronJob {
@@ -348,6 +355,7 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
     action_type: (row.action_type as CronActionType) ?? 'spawn_role',
     message: (row.message as string) ?? null,
     action_name: (row.action_name as string) ?? null,
+    source_director: (row.source_director as string) ?? null,
   } as CronJob;
 }
 
@@ -359,11 +367,12 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const actionType = input.action_type ?? 'spawn_role';
   const message = input.message ?? null;
   const actionName = input.action_name ?? null;
+  const sourceDirector = input.source_director ?? null;
 
   d.run(
-    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName],
+    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name, source_director)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName, sourceDirector],
   );
 
   return getCronJob(id)!;
@@ -384,7 +393,7 @@ export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
 }
 
 export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
-  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name'] as const;
+  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'source_director'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 

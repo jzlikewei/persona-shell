@@ -633,6 +633,17 @@ export class DirectorPool extends EventEmitter {
       });
     });
 
+    // cron-response → forward Director's cron message response to the group chat (or web)
+    bridge.on('cron-response', (reply: string) => {
+      if (isWeb) {
+        this.emit('web-alert', bridge.label, reply);
+        return;
+      }
+      this.messaging.sendMessage(feishuChatId, reply).catch((err) => {
+        console.warn(`[pool:${groupName}] Failed to forward cron response:`, err);
+      });
+    });
+
     // auto-flush-complete → notify group chat or web
     bridge.on('auto-flush-complete', () => {
       if (isWeb) {

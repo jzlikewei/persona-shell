@@ -273,6 +273,7 @@ async function main() {
           description: job.description,
           prompt: job.prompt,
           extra: { cronJobId: job.id },
+          source_director: job.source_director ?? undefined,
         });
         taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, prompt: task.prompt, description: task.description });
         return task.id;
@@ -293,6 +294,18 @@ async function main() {
         d.setDate(d.getDate() - 1);
         const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
         const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
+
+        // Route to source Director if available
+        const source = job.source_director;
+        if (source && source !== 'main') {
+          const entry = pool.findByLabel(source);
+          if (entry) {
+            await entry.bridge.sendCronMessage(msg);
+            return;
+          }
+          // Pool entry lost — fall through to main
+          console.warn(`[scheduler] Cron job ${job.name} source_director=${source} not found in pool, falling back to main`);
+        }
         await director.sendCronMessage(msg);
       },
       executeShellAction: async (job) => {
@@ -308,8 +321,18 @@ async function main() {
         }
       },
       notifyCronFired: (job) => {
-        const lastChatId = messaging.getLastChatId();
-        if (lastChatId) {
+        // Resolve target chatId: prefer source Director's chat, fallback to last active chat
+        const source = job.source_director;
+        let targetChatId: string | null = null;
+
+        if (source && source !== 'main') {
+          targetChatId = pool.getChatIdByLabel(source);
+        }
+        if (!targetChatId) {
+          targetChatId = messaging.getLastChatId();
+        }
+
+        if (targetChatId) {
           const actionType = job.action_type ?? 'spawn_role';
           const emoji = actionType === 'spawn_role' ? '🚀' : '⏰';
           const parts = [`${emoji} 定时任务「${job.name}」已触发`];
@@ -323,7 +346,7 @@ async function main() {
             const rendered = resolveCronMessage(config.director.persona_dir, job.message, { today, yesterday });
             parts.push(`💬 ${rendered.slice(0, 100)}`);
           }
-          messaging.sendMessage(lastChatId, parts.join('\n')).catch((err) => {
+          messaging.sendMessage(targetChatId, parts.join('\n')).catch((err) => {
             console.warn('[shell] Failed to send cron notification:', err);
           });
         }
