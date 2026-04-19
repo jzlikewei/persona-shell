@@ -130,6 +130,8 @@ async function main() {
    *  Falls back to main Director + last chatId if source is unknown. */
   async function resolveTaskTarget(task: { source_director?: string | null }): Promise<{
     chatId: string | null;
+    isWeb: boolean;
+    webLabel: string | null;
     notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
   }> {
     const source = task.source_director;
@@ -137,8 +139,13 @@ async function main() {
       // Pool Director — look up or revive
       const poolChatId = pool.getChatIdByLabel(source);
       if (poolChatId) {
+        // Check if this is a web session (chatId === 'web-console' is not a valid messaging target)
+        const entry = pool.findByLabel(source);
+        const isWeb = poolChatId === 'web-console' || (entry?.routingKey.startsWith('web-') ?? false);
         return {
-          chatId: poolChatId,
+          chatId: isWeb ? null : poolChatId,
+          isWeb,
+          webLabel: isWeb ? source : null,
           notifyDirector: (taskId, success, msgId) => pool.notifyTaskDone(source, taskId, success, msgId),
         };
       }
@@ -148,6 +155,8 @@ async function main() {
     // Main Director or unknown source
     return {
       chatId: messaging.getLastChatId(),
+      isWeb: false,
+      webLabel: null,
       notifyDirector: (taskId, success, msgId) => director.notifyTaskDone(taskId, success, msgId),
     };
   }
@@ -174,9 +183,13 @@ async function main() {
     // Route notification to the Director/chat that created this task
     const target = await resolveTaskTarget(task ?? {});
     let notifyMsgId: string | undefined;
-    if (target.chatId) {
+    const notifyMsg = `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`;
+    if (target.isWeb && target.webLabel) {
+      // Web session — broadcast via WebSocket instead of messaging
+      pool.emit('web-alert', target.webLabel, notifyMsg);
+    } else if (target.chatId) {
       try {
-        notifyMsgId = (await messaging.sendMessage(target.chatId, `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`)) ?? undefined;
+        notifyMsgId = (await messaging.sendMessage(target.chatId, notifyMsg)) ?? undefined;
       } catch (err) {
         console.warn('[shell] Failed to send task-completed notification:', err);
       }
@@ -207,14 +220,17 @@ async function main() {
     // Route notification to the Director/chat that created this task
     const target = await resolveTaskTarget(task ?? {});
     let notifyMsgId: string | undefined;
-    if (target.chatId) {
-      const desc = task?.description ?? result.taskId;
-      const isCancelled = result.error === 'cancelled';
-      const msg = isCancelled
-        ? `🚫 后台任务「${desc}」(${result.taskId}) 已取消`
-        : `❌ 后台任务「${desc}」(${result.taskId}) 失败 — ${result.error}`;
+    const taskDesc = task?.description ?? result.taskId;
+    const isCancelled = result.error === 'cancelled';
+    const failMsg = isCancelled
+      ? `🚫 后台任务「${taskDesc}」(${result.taskId}) 已取消`
+      : `❌ 后台任务「${taskDesc}」(${result.taskId}) 失败 — ${result.error}`;
+    if (target.isWeb && target.webLabel) {
+      // Web session — broadcast via WebSocket instead of messaging
+      pool.emit('web-alert', target.webLabel, failMsg);
+    } else if (target.chatId) {
       try {
-        notifyMsgId = (await messaging.sendMessage(target.chatId, msg)) ?? undefined;
+        notifyMsgId = (await messaging.sendMessage(target.chatId, failMsg)) ?? undefined;
       } catch (err) {
         console.warn('[shell] Failed to send task-failed notification:', err);
       }

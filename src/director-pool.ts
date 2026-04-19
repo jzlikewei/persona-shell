@@ -602,9 +602,12 @@ export class DirectorPool extends EventEmitter {
       }
     });
 
-    // system-response → reply to task notification message (skip for web sessions)
+    // system-response → reply to task notification message (web sessions: forward via WebSocket)
     bridge.on('system-response', async (reply: string, replyToMessageId: string) => {
-      if (isWeb) return; // web sessions don't have task notification messages
+      if (isWeb) {
+        this.emit('web-reply', bridge.label, replyToMessageId, reply);
+        return;
+      }
       try {
         await this.messaging.reply(replyToMessageId, reply);
         log.debug(`[pool:${groupName}] System response replied to ${replyToMessageId}`);

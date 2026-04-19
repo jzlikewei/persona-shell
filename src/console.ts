@@ -412,9 +412,9 @@ export function startConsole(
             }
 
             // Compositor: if this Director is processing a user message, buffer for later delivery
-            const source = body.source_director ?? 'main';
-            if (attachmentBuffer?.isProcessing(source)) {
-              attachmentBuffer.push(source, resolved);
+            const sourceDirector = body.source_director ?? 'main';
+            if (attachmentBuffer?.isProcessing(sourceDirector)) {
+              attachmentBuffer.push(sourceDirector, resolved);
               return Response.json({ queued: true });
             }
 
@@ -426,9 +426,8 @@ export function startConsole(
             try {
               // Resolve target chatId: pool Director → its group chat, main → lastChatId
               let targetChatId: string | null = null;
-              const source = body.source_director;
-              if (source && source !== 'main' && pool) {
-                targetChatId = pool.getChatIdByLabel(source);
+              if (sourceDirector && sourceDirector !== 'main' && pool) {
+                targetChatId = pool.getChatIdByLabel(sourceDirector);
               }
               if (!targetChatId) {
                 targetChatId = messaging.getLastChatId();
