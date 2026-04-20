@@ -1,9 +1,34 @@
 /** Minimal MCP server (stdio transport) for task system — proxies to Shell HTTP API */
 
+import { readdirSync } from 'fs';
+import { join, basename } from 'path';
+
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
 const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
+const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
+
+/** Scan personas/ directory and return available role names */
+function getAvailableRoles(): string[] {
+  if (!PERSONA_DIR) return [];
+  try {
+    const dir = join(PERSONA_DIR, 'personas');
+    return readdirSync(dir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => basename(f, '.md'));
+  } catch {
+    return [];
+  }
+}
+
+function buildRoleDescription(): string {
+  const roles = getAvailableRoles();
+  if (roles.length > 0) {
+    return `角色名 (${roles.join(' / ')})`;
+  }
+  return '角色名 (explorer / executor / critic / philosopher / introspector / cron-builder)';
+}
 
 const TOOLS = [
   {
@@ -12,7 +37,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        role: { type: 'string', description: '角色名 (explorer / executor / critic / philosopher / introspector / cron-builder)' },
+        role: { type: 'string', description: buildRoleDescription() },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt' },
@@ -63,7 +88,7 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Job 名称' },
-        role: { type: 'string', description: '角色名 (explorer / executor / critic / philosopher / introspector / cron-builder)，action_type=director_msg 时可填 "system"' },
+        role: { type: 'string', description: `${buildRoleDescription()}，action_type=director_msg 时可填 "system"` },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt（action_type=spawn_role 时使用）' },
