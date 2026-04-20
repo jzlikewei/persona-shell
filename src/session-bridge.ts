@@ -22,6 +22,7 @@ import { log, getLogDir } from './logger.js';
 interface BridgePersistedState {
   lastFlushAt: number;
   lastInputTokens: number;
+  contextTokens: number;
   contextWindow: number;
 }
 
@@ -64,6 +65,7 @@ export class SessionBridge extends EventEmitter {
   private lastTimeSyncAt = 0;
   private lastFlushAt: number = Date.now();
   private lastInputTokens = 0;
+  private contextTokens = 0;
   private systemReplyQueue: string[] = [];
   private pendingTurns: PendingType[] = [];
   private bootstrapping = false;
@@ -80,6 +82,7 @@ export class SessionBridge extends EventEmitter {
   private contextWindow = 0;
   private restartTimestamps: number[] = [];
   private discardNextResponse = false;
+  private personaRole: string = 'director';
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
   private static readonly FLUSH_STEP_TIMEOUT = 5 * 60_000;
@@ -112,6 +115,7 @@ export class SessionBridge extends EventEmitter {
       const resolvedOptions: DirectorSessionAdapterOptions = {
         ...adapterOptions,
         directorAgent,
+        personaRole: this.personaRole,
       };
       return options.directorFactory
         ? options.directorFactory(resolvedOptions, hooks)
@@ -122,6 +126,7 @@ export class SessionBridge extends EventEmitter {
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
     this.directorAgent = resolveAgentProvider(this.agents, 'director', options.directorAgentName ?? persistedAgentName);
+    this.personaRole = this.readPersistedPersonaRole() ?? 'director';
     this.adapter = this.adapterFactory(this.directorAgent);
   }
 
@@ -131,6 +136,10 @@ export class SessionBridge extends EventEmitter {
 
   private get directorAgentStateKey(): string {
     return `director:agent:${this.label}`;
+  }
+
+  private get personaRoleStateKey(): string {
+    return `persona:role:${this.label}`;
   }
 
   private get logDir(): string {
@@ -161,6 +170,7 @@ export class SessionBridge extends EventEmitter {
     if (!saved) return null;
     if (typeof saved.lastFlushAt === 'number') this.lastFlushAt = saved.lastFlushAt;
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
+    if (typeof saved.contextTokens === 'number') this.contextTokens = saved.contextTokens;
     if (typeof saved.contextWindow === 'number') this.contextWindow = saved.contextWindow;
     return saved;
   }
@@ -169,6 +179,7 @@ export class SessionBridge extends EventEmitter {
     setState<BridgePersistedState>(this.stateKey, {
       lastFlushAt: this.lastFlushAt,
       lastInputTokens: this.lastInputTokens,
+      contextTokens: this.contextTokens,
       contextWindow: this.contextWindow,
     });
   }
@@ -373,6 +384,7 @@ export class SessionBridge extends EventEmitter {
   private finishFlush(): void {
     this.lastFlushAt = Date.now();
     this.lastInputTokens = 0;
+    this.contextTokens = 0;
     this.flushing = false;
     this.discardNextResponse = false;
     this.persistState();
@@ -390,6 +402,10 @@ export class SessionBridge extends EventEmitter {
     return this.directorAgent.type;
   }
 
+  getPersonaRole(): string {
+    return this.personaRole;
+  }
+
   getStatus(): {
     alive: boolean;
     pid: number | null;
@@ -398,7 +414,9 @@ export class SessionBridge extends EventEmitter {
     flushing: boolean;
     interrupted: boolean;
     pendingCount: number;
+    agentType: AgentRuntimeConfig['type'];
     lastInputTokens: number;
+    contextTokens: number;
     lastFlushAt: number;
     flushContextLimit: number;
     contextWindow: number;
@@ -432,7 +450,9 @@ export class SessionBridge extends EventEmitter {
       flushing: this.flushing,
       interrupted: this.interrupted,
       pendingCount: this.pendingCount,
+      agentType: this.directorAgent.type,
       lastInputTokens: this.lastInputTokens,
+      contextTokens: this.contextTokens,
       lastFlushAt: this.lastFlushAt,
       flushContextLimit: this.config.flush_context_limit,
       contextWindow: this.contextWindow,
@@ -538,6 +558,92 @@ export class SessionBridge extends EventEmitter {
     } catch (err) {
       console.error(`[bridge:${this.label}] Agent switch failed:`, err);
       this.emit('alert', `⚠️ 会话切换到 ${targetAgent.name} 失败: ${String(err).slice(0, 200)}`);
+      return false;
+    } finally {
+      if (switched) {
+        this.finishFlush();
+      } else {
+        this.flushing = false;
+        this.discardNextResponse = false;
+      }
+    }
+  }
+
+  async switchPersona(roleName: string): Promise<boolean> {
+    if (this.flushing) {
+      console.log(`[bridge:${this.label}] Persona switch skipped: flush in progress`);
+      return false;
+    }
+
+    if (roleName === this.personaRole) {
+      return true;
+    }
+
+    if (this.interrupted) {
+      console.log(`[bridge:${this.label}] Persona switch waiting for interrupt to complete...`);
+      await new Promise<void>((resolve) => {
+        this.once('restarted', resolve);
+      });
+    }
+
+    this.flushing = true;
+    let switched = false;
+
+    try {
+      if (this.pendingCount > 0) {
+        console.log(`[bridge:${this.label}] Persona switch: draining ${this.pendingCount} in-flight messages...`);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+        if (!drained) {
+          console.warn(`[bridge:${this.label}] Persona switch: drain timeout, aborting`);
+          return false;
+        }
+      }
+
+      this.emit('flush-drain-complete');
+
+      const checkpointDone = new Promise<void>((resolve) => {
+        this.flushCheckpointResolve = resolve;
+      });
+      this.enqueuePendingTurn({ type: 'flush-checkpoint' });
+      await this.writeRaw(this.buildPersonaSwitchCheckpointPrompt(roleName));
+
+      const checkpointOk = await Promise.race([
+        checkpointDone.then(() => true),
+        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+      ]);
+      if (!checkpointOk) {
+        console.warn(`[bridge:${this.label}] Persona switch: checkpoint timeout, continuing`);
+        this.flushCheckpointResolve = null;
+        this.discardNextResponse = true;
+        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
+        if (idx >= 0) this.pendingTurns.splice(idx, 1);
+      }
+
+      const currentAdapter = this.adapter;
+      const closeWait = currentAdapter.hasActiveTurn()
+        ? this.waitForRuntimeClose(10_000)
+        : null;
+      currentAdapter.terminate('SIGTERM');
+      if (closeWait) {
+        const closed = await closeWait;
+        if (!closed) {
+          console.warn(`[bridge:${this.label}] Persona switch: runtime close timeout, continuing with cold start`);
+        }
+      }
+
+      this.personaRole = roleName;
+      this.persistPersonaRole();
+      this.clearSession();
+      this.adapter = this.adapterFactory(this.directorAgent);
+
+      const freshStart = await this.start();
+      await this.bootstrapInternal(this.getPersonaSwitchBootstrapSource(freshStart), true);
+      switched = true;
+      console.log(`[bridge:${this.label}] Persona switched to ${this.personaRole}`);
+      return true;
+    } catch (err) {
+      console.error(`[bridge:${this.label}] Persona switch failed:`, err);
+      this.emit('alert', `⚠️ 人格切换到 ${roleName} 失败: ${String(err).slice(0, 200)}`);
       return false;
     } finally {
       if (switched) {
@@ -760,12 +866,16 @@ export class SessionBridge extends EventEmitter {
   private checkFlush(): void {
     if (this.flushing) return;
 
-    const contextOverLimit = this.lastInputTokens > this.config.flush_context_limit;
+    const trackedContextTokens = this.directorAgent.type === 'codex'
+      ? this.contextTokens
+      : this.lastInputTokens;
+    const contextOverLimit = trackedContextTokens > 0
+      && trackedContextTokens > this.config.flush_context_limit;
     const timeOverLimit = Date.now() - this.lastFlushAt > this.config.flush_interval_ms;
 
     if (contextOverLimit || timeOverLimit) {
       const reason = contextOverLimit
-        ? `context tokens ${this.lastInputTokens} > ${this.config.flush_context_limit}`
+        ? `context tokens ${trackedContextTokens} > ${this.config.flush_context_limit}`
         : `time since last flush exceeded ${this.config.flush_interval_ms}ms`;
       console.log(`[bridge:${this.label}] Auto-flush triggered: ${reason}`);
       this.flush().then((success) => {
@@ -855,6 +965,19 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
+  private readPersistedPersonaRole(): string | undefined {
+    return getState<string>(this.personaRoleStateKey)
+      ?? (this.isMain ? getState<string>('persona:role') : undefined)
+      ?? undefined;
+  }
+
+  private persistPersonaRole(): void {
+    setState(this.personaRoleStateKey, this.personaRole);
+    if (this.isMain) {
+      setState('persona:role', this.personaRole);
+    }
+  }
+
   /** Get the path to this session's state file (for checkpoint/bootstrap). */
   getSessionStatePath(): string {
     return this.getSessionStateFilePath();
@@ -895,30 +1018,61 @@ export class SessionBridge extends EventEmitter {
       ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请把群「${this.groupName ?? this.label}」当前会话的上下文保存到 ${sessionStatePath}，包括：讨论目标、当前结论、未完成事项、后续动作。该文件只服务于这个会话。保存完成后回复"已保存"。`;
   }
 
+  private buildPersonaSwitchCheckpointPrompt(targetRole: string): string {
+    const sessionStatePath = this.getSessionStatePromptPath();
+    const vars = {
+      current_role: this.personaRole,
+      target_role: targetRole,
+      state_path: sessionStatePath,
+      group_name: this.groupName ?? this.label,
+    };
+
+    return loadPrompt(this.config.persona_dir, 'persona-switch-checkpoint', vars)
+      ?? `[FLUSH] 当前人格即将从「${this.personaRole}」切换到「${targetRole}」。请把当前会话的上下文保存到 ${sessionStatePath}，包括：讨论焦点、关键结论、未完成事项。保存完成后回复"已保存"。`;
+  }
+
+  private getPersonaSwitchBootstrapSource(freshStart: boolean): string | undefined {
+    if (!freshStart) return undefined;
+    return this.isMain ? 'daily/state.md' : this.getSessionStateFilePath();
+  }
+
   private buildBootstrapMessage(sourcePath?: string): string {
     const sharedNote = '注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。';
     const groupName = this.groupName ?? this.label;
 
+    let msg: string;
+
     if (this.isMain) {
       const statePath = sourcePath ?? 'daily/state.md';
-      return loadPrompt(this.config.persona_dir, 'bootstrap-main', {
+      msg = loadPrompt(this.config.persona_dir, 'bootstrap-main', {
         state_path: statePath,
         shared_note: sharedNote,
       }) ?? `[系统] 新 session 已启动。请读取 ${statePath} 恢复工作上下文，了解当前待处理事项。${sharedNote}`;
-    }
-
-    if (sourcePath) {
-      return loadPrompt(this.config.persona_dir, 'bootstrap-pool-with-state', {
+    } else if (sourcePath) {
+      msg = loadPrompt(this.config.persona_dir, 'bootstrap-pool-with-state', {
         group_name: groupName,
         state_path: sourcePath,
         shared_note: sharedNote,
       }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote}`;
+    } else {
+      msg = loadPrompt(this.config.persona_dir, 'bootstrap-pool-fresh', {
+        group_name: groupName,
+        shared_note: sharedNote,
+      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
     }
 
-    return loadPrompt(this.config.persona_dir, 'bootstrap-pool-fresh', {
-      group_name: groupName,
-      shared_note: sharedNote,
-    }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
+    if (this.personaRole !== 'director') {
+      const effectiveStatePath = sourcePath ?? (this.isMain ? 'daily/state.md' : this.getSessionStateFilePath());
+      const personaVars = {
+        role: this.personaRole,
+        state_path: effectiveStatePath,
+      };
+      const personaNotice = loadPrompt(this.config.persona_dir, 'persona-switch-bootstrap', personaVars)
+        ?? `[系统] 人格已切换为「${this.personaRole}」。请先读取 ${effectiveStatePath} 恢复上下文。你现在以 ${this.personaRole} 的身份与用户对话。`;
+      msg += '\n\n' + personaNotice;
+    }
+
+    return msg;
   }
 
   private handleStreamChunk(text: string): void {
@@ -931,6 +1085,10 @@ export class SessionBridge extends EventEmitter {
     let shouldPersist = false;
     if (typeof update.lastInputTokens === 'number' && update.lastInputTokens > 0) {
       this.lastInputTokens = update.lastInputTokens;
+      shouldPersist = true;
+    }
+    if (typeof update.contextTokens === 'number' && update.contextTokens > 0) {
+      this.contextTokens = update.contextTokens;
       shouldPersist = true;
     }
     if (typeof update.contextWindow === 'number' && update.contextWindow > 0) {
