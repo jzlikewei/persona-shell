@@ -12,7 +12,7 @@ import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
 import { resolveCronMessage } from './prompt-loader.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task/task-store.js';
-import { writeFileSync } from 'fs';
+import { writeFileSync, existsSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
 
@@ -79,7 +79,7 @@ async function main() {
   if (restoredDirector) {
     const flushAgoSec = Math.floor((Date.now() - restoredDirector.lastFlushAt) / 1000);
     console.log(
-      `[shell] Restored director state: lastFlushAt=${flushAgoSec}s ago, lastInputTokens=${restoredDirector.lastInputTokens}`
+      `[shell] Restored director state: lastFlushAt=${flushAgoSec}s ago, lastInputTokens=${restoredDirector.lastInputTokens}, contextTokens=${restoredDirector.contextTokens ?? 0}`
     );
   }
 
@@ -655,6 +655,56 @@ async function main() {
       return;
     }
 
+    // /persona <name> — switch persona role (e.g. philosopher, critic)
+    const personaMatch = text.trim().match(/^\/persona\s+([\w-]+)$/i);
+    if (personaMatch) {
+      if (!isMaster) return;
+      const personaName = personaMatch[1].toLowerCase();
+
+      // Validate persona file exists
+      const personaFile = join(config.director.persona_dir, 'personas', `${personaName}.md`);
+      if (!existsSync(personaFile)) {
+        await messaging.reply(messageId, `未知人格: ${personaName}，可用人格见 personas/ 目录`).catch(() => {});
+        return;
+      }
+
+      messaging.addReaction(messageId, 'Typing').catch(() => {});
+
+      if (routingKey && chatType === 'group') {
+        const poolEntry = getTargetEntry();
+        if (!poolEntry) {
+          await messaging.reply(messageId, '该群 Director 当前不活跃，无法切换人格').catch(() => {});
+          return;
+        }
+        const currentRole = poolEntry.bridge.getPersonaRole();
+        if (currentRole === personaName) {
+          await messaging.reply(messageId, `群「${poolEntry.groupName}」已经是「${personaName}」人格`).catch(() => {});
+          return;
+        }
+        const success = await poolEntry.bridge.switchPersona(personaName);
+        if (success) {
+          await messaging.reply(messageId, `人格已切换为「${personaName}」`).catch(() => {});
+        } else {
+          await messaging.reply(messageId, `人格切换到「${personaName}」失败，请稍后重试`).catch(() => {});
+        }
+        return;
+      }
+
+      const currentRole = director.getPersonaRole();
+      if (currentRole === personaName) {
+        await messaging.reply(messageId, `主会话已经是「${personaName}」人格`).catch(() => {});
+        return;
+      }
+
+      const success = await director.switchPersona(personaName);
+      if (success) {
+        await messaging.reply(messageId, `人格已切换为「${personaName}」`).catch(() => {});
+      } else {
+        await messaging.reply(messageId, `人格切换到「${personaName}」失败，请稍后重试`).catch(() => {});
+      }
+      return;
+    }
+
     // /session-restart | /restart — restart current session's Director (routes to correct Director, preserves session)
     if (text.trim() === '/session-restart' || text.trim() === '/restart') {
       if (!isMaster) return;
@@ -685,9 +735,12 @@ async function main() {
       if (poolEntry) {
         const s = poolEntry.bridge.getStatus();
         const label = poolEntry.groupName;
+        const tokenLine = s.agentType === 'codex'
+          ? `📊 Turn input: ${s.lastInputTokens.toLocaleString()}`
+          : `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
         const lines = [
           `🟢 [${label}] Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-          `📊 Tokens: ${s.lastInputTokens.toLocaleString()}`,
+          tokenLine,
           `📬 Pending: ${s.pendingCount} | Queue: ${poolEntry.queue.length}`,
           `🔄 Flushing: ${s.flushing ? 'yes' : 'no'}`,
           `⏱️ Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
@@ -697,10 +750,12 @@ async function main() {
         const s = director.getStatus();
         const uptime = Math.floor((Date.now() - startTime) / 1000);
         const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
-        const contextLimit = s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit;
+        const tokenLine = s.agentType === 'codex'
+          ? `📊 Turn input: ${s.lastInputTokens.toLocaleString()}`
+          : `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
         const lines = [
           `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-          `📊 Tokens: ${s.lastInputTokens.toLocaleString()} / ${contextLimit.toLocaleString()}`,
+          tokenLine,
           `📬 Pending: ${s.pendingCount} | Queue: ${queue.length}`,
           `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
           `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
@@ -716,6 +771,7 @@ async function main() {
         '📖 可用命令:',
         '/status — 查看 Director 状态摘要',
         '/switch-agent <agent> — 切换当前会话的 Director agent，并持久化恢复上下文',
+        '/persona <name> — 切换人格角色（如 philosopher, critic 等）',
         '/start-with-codex — 将当前会话切到 Codex Director 模式',
         '/start-with-claude — 将当前会话切回 Claude Director 模式',
         '/flush — 保存上下文后刷新（checkpoint → 新 session）',

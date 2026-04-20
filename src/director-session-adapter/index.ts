@@ -5,6 +5,7 @@ import type { DirectorRuntimeStatus } from '../director-runtime/index.js';
 
 export interface DirectorSessionMetricsUpdate {
   lastInputTokens?: number;
+  contextTokens?: number;
   contextWindow?: number;
   costUsd?: number;
 }
@@ -56,6 +57,7 @@ export interface DirectorSessionAdapterOptions {
   label: string;
   isMain: boolean;
   groupName?: string;
+  personaRole?: string;
   config: Config['director'];
   agents: Config['agents'];
   directorAgent: AgentRuntimeConfig;

@@ -113,7 +113,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
     this.hooks.setSessionName(sessionName);
 
     const pid = this.runtime.spawn({
-      role: 'director',
+      role: this.options.personaRole ?? 'director',
       personaDir,
       agents: this.options.agents,
       mcpConfigPath: join(personaDir, '.mcp.json'),
