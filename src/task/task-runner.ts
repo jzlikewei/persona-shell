@@ -20,6 +20,7 @@ export interface RunTaskInput {
   agent?: string;
   prompt: string;
   description?: string;
+  projectDir?: string;
   timeoutMs?: number;
 }
 
@@ -111,6 +112,7 @@ export class TaskRunner extends EventEmitter {
       agent,
       mode: 'background',
       prompt: fullPrompt,
+      projectDir: input.projectDir,
       stderrPath: join(getLogDir(), `task-${input.taskId}.stderr.log`),
     });
 
