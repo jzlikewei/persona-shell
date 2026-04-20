@@ -323,7 +323,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         processedMessageIds.delete(first);
       }
 
-      const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
+      const msgType = ((message as Record<string, unknown>).message_type as string) ?? 'text';
       const mentions = (message as Record<string, unknown>).mentions as Mention[] | undefined;
       const parentId = (message as Record<string, unknown>).parent_id as string | undefined;
       const chatType = ((message as Record<string, unknown>).chat_type as string) === 'group' ? 'group' : 'p2p';
