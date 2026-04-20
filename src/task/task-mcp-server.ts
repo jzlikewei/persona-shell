@@ -12,10 +12,11 @@ const TOOLS = [
     inputSchema: {
       type: 'object' as const,
       properties: {
-        role: { type: 'string', description: '角色名 (explorer / critic / cron-builder)' },
+        role: { type: 'string', description: '角色名 (explorer / executor / critic / philosopher / introspector / cron-builder)' },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt' },
+        project_dir: { type: 'string', description: '可选，子任务的工作目录（项目路径）；不传则默认在 persona 根目录下执行' },
         max_retry: { type: 'number', description: '最大重试次数 (默认 3)' },
       },
       required: ['role', 'description', 'prompt'],
@@ -62,7 +63,7 @@ const TOOLS = [
       type: 'object' as const,
       properties: {
         name: { type: 'string', description: 'Job 名称' },
-        role: { type: 'string', description: '角色名 (explorer / critic / cron-builder)，action_type=director_msg 时可填 "system"' },
+        role: { type: 'string', description: '角色名 (explorer / executor / critic / philosopher / introspector / cron-builder)，action_type=director_msg 时可填 "system"' },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt（action_type=spawn_role 时使用）' },
@@ -146,6 +147,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         description: args.description,
         prompt: args.prompt,
         max_retry: args.max_retry,
+        project_dir: args.project_dir,
         source_director: DIRECTOR_LABEL,
       });
     case 'get_task':

@@ -24,6 +24,7 @@ export interface CreateTaskInput {
   description: string;
   prompt: string;
   max_retry?: number;
+  project_dir?: string;
   extra?: Record<string, unknown>;
   /** 发起方 Director 的标识（如 'main' 或 pool label），用于回调路由 */
   source_director?: string;
@@ -212,7 +213,9 @@ export function createTask(input: CreateTaskInput): Task {
   const d = getDb();
   const id = generateTaskId(d);
   const now = localNow();
-  const extra = input.extra ? JSON.stringify(input.extra) : null;
+  const extraObj = { ...input.extra };
+  if (input.project_dir) extraObj.project_dir = input.project_dir;
+  const extra = Object.keys(extraObj).length > 0 ? JSON.stringify(extraObj) : null;
   const sourceDirector = input.source_director ?? null;
   const agent = input.agent?.trim() || null;
 

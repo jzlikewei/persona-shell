@@ -40,6 +40,8 @@ export interface PersonaSpawnOptions {
   prompt?: string;
   /** 恢复已有 codex session/thread */
   resumeSessionId?: string;
+  /** 子任务工作目录（项目路径），覆盖默认的 personaDir 作为 cwd */
+  projectDir?: string;
   // --- 公共 ---
   /** stderr 日志文件完整路径 */
   stderrPath?: string;
@@ -200,7 +202,10 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       args.push('--search');
     }
     args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath));
-    args.push('--cd', options.personaDir);
+    const codexCd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
+      ? options.projectDir
+      : options.personaDir;
+    args.push('--cd', codexCd);
   }
 
   // foreground (Director) 专用参数
@@ -274,6 +279,11 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     ? { ...process.env, ...options.env }
     : undefined;  // undefined = inherit parent env as-is
 
+  // Resolve working directory: projectDir overrides personaDir for background tasks
+  const cwd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
+    ? options.projectDir
+    : options.personaDir;
+
   let child: ChildProcess;
 
   if (options.mode === 'foreground' && options.pipeIn && options.pipeOut) {
@@ -282,7 +292,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     child = spawn('sh', ['-c', `${cmd} < "${options.pipeIn}" > "${options.pipeOut}"`], {
       detached: true,
       stdio: ['ignore', 'ignore', stderrFd],
-      cwd: options.personaDir,
+      cwd,
       env: childEnv,
     });
   } else {
@@ -290,7 +300,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     child = spawn(options.agent.command, args, {
       detached: true,
       stdio: ['ignore', 'pipe', stderrFd],
-      cwd: options.personaDir,
+      cwd,
       env: childEnv,
     });
   }
