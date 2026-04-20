@@ -4,6 +4,9 @@ import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessi
 import { attachReadHandle } from './index.js';
 
 export class ClaudeSessionAdapter implements DirectorSessionAdapter {
+  /** Collects text from assistant events across multi-turn responses */
+  private assistantTexts: string[] = [];
+
   constructor(
     private readonly runtime: ClaudeDirectorRuntime,
     private readonly options: DirectorSessionAdapterOptions,
@@ -159,6 +162,20 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
           }
           break;
 
+        case 'assistant': {
+          // Each assistant event contains the complete text for one turn.
+          // Collect these to build the full response across multi-turn (tool-use) interactions.
+          const content = event.message?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+                this.assistantTexts.push(block.text.trim());
+              }
+            }
+          }
+          break;
+        }
+
         case 'stream_event': {
           const streamEvt = event.event;
           if (streamEvt?.type === 'content_block_delta' && streamEvt.delta?.type === 'text_delta') {
@@ -200,8 +217,14 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
           }
           this.hooks.onMetrics(metrics);
 
+          // Use collected assistant texts (full multi-turn response) over result.result (last turn only)
+          const fullResponseText = this.assistantTexts.length > 0
+            ? this.assistantTexts.join('\n\n')
+            : this.extractResponseText(event);
+          this.assistantTexts = [];
+
           this.hooks.onTurnComplete({
-            responseText: this.extractResponseText(event),
+            responseText: fullResponseText,
             durationMs: typeof event.duration_ms === 'number' ? event.duration_ms : null,
           });
           break;
