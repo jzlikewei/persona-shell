@@ -149,6 +149,7 @@
     var text = (input.value || '').trim();
     if (!text) return;
     input.value = '';
+    input.style.height = 'auto';
 
     if (!ws || !wsConnected) {
       showToast('Not connected', false);
@@ -738,11 +739,6 @@
       '<span class="item-icon" style="color:' + mainColor + '">&#9679;</span>' +
       '<span class="item-label">Main (Director)</span>' +
       '<span class="item-meta">' + mainStatus + '</span></div>';
-
-    // "+ New Chat" button
-    html += '<div class="list-item" onclick="doNewWebChat()" style="cursor:pointer;color:var(--blue);font-size:12px">' +
-      '<span class="item-icon">＋</span>' +
-      '<span class="item-label">New Chat</span></div>';
 
     // Pool Director entries (active first, then closed)
     var activePool = [];
@@ -1468,6 +1464,17 @@
     // Skip cron refresh while panel is open to avoid content flicker
     if (wsConnected && !cronPanelOpen) loadCronJobs();
   }, 30000);
+
+  // ── Chat textarea auto-grow ──
+  (function initChatAutoGrow() {
+    var chatInput = $('chat-input');
+    if (chatInput) {
+      chatInput.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 130) + 'px';
+      });
+    }
+  })();
 
   // ── Resize handles (drag to resize panels) ──
   (function initResizeHandles() {

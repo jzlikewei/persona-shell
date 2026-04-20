@@ -105,7 +105,7 @@
 
       <!-- Sessions (main + groups unified) -->
       <div class="sb-section" style="flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden">
-        <div class="sb-title">Sessions <span id="session-count" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span></div>
+        <div class="sb-title" style="display:flex;align-items:center">Sessions <span id="session-count" style="font-size:9px;color:var(--overlay1);text-transform:none;letter-spacing:0;font-weight:400"></span><span style="margin-left:auto;cursor:pointer;color:var(--blue);font-size:14px;font-weight:700;line-height:1" onclick="doNewWebChat()" title="New Chat">＋</span></div>
         <div class="sb-scroll" id="session-list">
           <div class="empty">No sessions</div>
         </div>
@@ -158,7 +158,7 @@
       <div id="chat-container">
         <div id="chat-scroll"><div id="chat-messages"></div></div>
         <div id="chat-input-bar">
-          <input type="text" id="chat-input" placeholder="Send message to Director..." onkeydown="if(event.key==='Enter'&&!event.isComposing)doChatSend()" />
+          <textarea rows="1" id="chat-input" placeholder="Send message to Director..." onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();doChatSend()}"></textarea>
           <button onclick="doChatSend()">Send</button>
         </div>
       </div>
