@@ -92,6 +92,7 @@ async function main() {
         args: ['run', join(import.meta.dirname, 'task', 'task-mcp-server.ts')],
         env: {
           SHELL_PORT: String(config.console.port),
+          PERSONA_DIR: config.director.persona_dir,
           ...(config.console.token ? { SHELL_TOKEN: config.console.token } : {}),
           no_proxy: '127.0.0.1,localhost',
         },
