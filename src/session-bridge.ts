@@ -83,8 +83,6 @@ export class SessionBridge extends EventEmitter {
   private restartTimestamps: number[] = [];
   private discardNextResponse = false;
   private personaRole: string = 'director';
-  /** Accumulates streaming text chunks for the current turn (to capture full response including pre-tool-call text) */
-  private turnTextBuffer: string = '';
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
   private static readonly FLUSH_STEP_TIMEOUT = 5 * 60_000;
@@ -1078,8 +1076,6 @@ export class SessionBridge extends EventEmitter {
   }
 
   private handleStreamChunk(text: string): void {
-    // Always accumulate text for full response capture (pre-tool-call text would be lost otherwise)
-    this.turnTextBuffer += text;
     const headType = this.pendingTurns[0]?.type;
     const shouldStream = !this.flushing && !this.bootstrapping && headType === 'user' && !this.discardNextResponse;
     if (shouldStream) this.emit('chunk', text);
@@ -1111,11 +1107,7 @@ export class SessionBridge extends EventEmitter {
     const pending = this.shiftPendingTurn();
 
     let resolvedTurnType: 'user' | 'system' | 'bootstrap' | 'discarded' | null = null;
-    // Prefer accumulated chunk text (captures full response including pre-tool-call text);
-    // fall back to result.responseText if no chunks were received
-    const accumulatedText = this.turnTextBuffer.trim();
-    this.turnTextBuffer = '';
-    const responseText = accumulatedText || result.responseText.trim();
+    const responseText = result.responseText.trim();
 
     if (pending?.type === 'flush-checkpoint') {
       log.debug(`[bridge:${this.label}] FLUSH checkpoint response: ${responseText.slice(0, 100)}`);
