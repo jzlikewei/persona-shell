@@ -660,7 +660,7 @@ html, body {
   background: var(--mantle);
 }
 #chat-input-bar.visible { display: flex; }
-#chat-input-bar input {
+#chat-input-bar textarea {
   flex: 1;
   padding: 7px 12px;
   background: var(--surface0);
@@ -671,9 +671,14 @@ html, body {
   font-size: 13px;
   outline: none;
   transition: border-color .2s;
+  resize: none;
+  overflow-y: hidden;
+  min-height: 34px;
+  max-height: 130px;
+  line-height: 1.4;
 }
-#chat-input-bar input:focus { border-color: var(--blue); }
-#chat-input-bar input::placeholder { color: var(--overlay0); }
+#chat-input-bar textarea:focus { border-color: var(--blue); }
+#chat-input-bar textarea::placeholder { color: var(--overlay0); }
 #chat-input-bar button {
   padding: 7px 14px;
   background: var(--mauve);
