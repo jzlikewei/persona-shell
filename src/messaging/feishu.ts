@@ -130,7 +130,10 @@ async function fetchMessageText(client: Lark.Client, messageId: string, attachme
     if (msgType === 'image') {
       if (attachmentDir && parsed.image_key) {
         const savePath = join(attachmentDir, `${messageId}.png`);
-        await client.im.v1.image.get({ path: { image_key: parsed.image_key } }).then((r) => r.writeFile(savePath));
+        await client.im.v1.messageResource.get({
+          path: { message_id: messageId, file_key: parsed.image_key },
+          params: { type: 'image' },
+        }).then((r) => r.writeFile(savePath));
         return `[图片，已保存到 ${savePath}]`;
       }
       return '[图片]';
@@ -139,7 +142,10 @@ async function fetchMessageText(client: Lark.Client, messageId: string, attachme
       if (attachmentDir && parsed.file_key) {
         const fileName = parsed.file_name as string | undefined;
         const savePath = join(attachmentDir, `${messageId}_${fileName ?? 'file'}`);
-        await client.im.v1.file.get({ path: { file_key: parsed.file_key } }).then((r) => r.writeFile(savePath));
+        await client.im.v1.messageResource.get({
+          path: { message_id: messageId, file_key: parsed.file_key },
+          params: { type: 'file' },
+        }).then((r) => r.writeFile(savePath));
         return `[文件 ${fileName ?? '未知文件'}，已保存到 ${savePath}]`;
       }
       return '[文件]';
@@ -147,7 +153,10 @@ async function fetchMessageText(client: Lark.Client, messageId: string, attachme
     if (msgType === 'audio') {
       if (attachmentDir && parsed.file_key) {
         const savePath = join(attachmentDir, `${messageId}.opus`);
-        await client.im.v1.file.get({ path: { file_key: parsed.file_key } }).then((r) => r.writeFile(savePath));
+        await client.im.v1.messageResource.get({
+          path: { message_id: messageId, file_key: parsed.file_key },
+          params: { type: 'file' },
+        }).then((r) => r.writeFile(savePath));
         return `[语音，已保存到 ${savePath}]`;
       }
       return '[语音]';
@@ -323,7 +332,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         processedMessageIds.delete(first);
       }
 
-      const msgType = ((message as Record<string, unknown>).msg_type as string) ?? 'text';
+      const msgType = ((message as Record<string, unknown>).message_type as string) ?? 'text';
       const mentions = (message as Record<string, unknown>).mentions as Mention[] | undefined;
       const parentId = (message as Record<string, unknown>).parent_id as string | undefined;
       const chatType = ((message as Record<string, unknown>).chat_type as string) === 'group' ? 'group' : 'p2p';
@@ -470,7 +479,10 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
             if (!imageKey) return;
             savePath = join(attachmentDir, `${message_id}.png`);
             await withRetry('downloadImage', () =>
-              client.im.v1.image.get({ path: { image_key: imageKey } }).then((r) => r.writeFile(savePath)),
+              client.im.v1.messageResource.get({
+                path: { message_id, file_key: imageKey },
+                params: { type: 'image' },
+              }).then((r) => r.writeFile(savePath)),
             );
             attachType = 'image';
             msg.text = `[用户发送了图片，已保存到 ${savePath}]`;
@@ -480,7 +492,10 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
             if (!fileKey) return;
             savePath = join(attachmentDir, `${message_id}_${fileName ?? 'file'}`);
             await withRetry('downloadFile', () =>
-              client.im.v1.file.get({ path: { file_key: fileKey } }).then((r) => r.writeFile(savePath)),
+              client.im.v1.messageResource.get({
+                path: { message_id, file_key: fileKey },
+                params: { type: 'file' },
+              }).then((r) => r.writeFile(savePath)),
             );
             attachType = 'file';
             msg.text = `[用户发送了文件 ${fileName ?? '未知文件'}，已保存到 ${savePath}]`;
@@ -490,7 +505,10 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
             if (!fileKey) return;
             savePath = join(attachmentDir, `${message_id}.opus`);
             await withRetry('downloadAudio', () =>
-              client.im.v1.file.get({ path: { file_key: fileKey } }).then((r) => r.writeFile(savePath)),
+              client.im.v1.messageResource.get({
+                path: { message_id, file_key: fileKey },
+                params: { type: 'file' },
+              }).then((r) => r.writeFile(savePath)),
             );
             attachType = 'audio';
             msg.text = `[用户发送了语音消息，已保存到 ${savePath}]`;
