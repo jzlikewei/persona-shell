@@ -77,6 +77,7 @@ export class CodexDirectorRuntime {
 
     let currentResponse = '';
     let sawTurnCompleted = false;
+    let lastErrorMessage: string | undefined;
     const rl = createInterface({ input: child.stdout });
 
     rl.on('line', (line) => {
@@ -85,9 +86,16 @@ export class CodexDirectorRuntime {
       try {
         const event = JSON.parse(line);
         if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
+          if (currentResponse && !currentResponse.endsWith('\n')) {
+            currentResponse += '\n';
+          }
           currentResponse += event.item.text;
         } else if (event.type === 'turn.completed') {
           sawTurnCompleted = true;
+        } else if (event.type === 'error' && typeof event.message === 'string') {
+          lastErrorMessage = event.message;
+        } else if (event.type === 'turn.failed' && typeof event.error?.message === 'string') {
+          lastErrorMessage = event.error.message;
         }
       } catch {
         // ignore malformed line
@@ -102,6 +110,7 @@ export class CodexDirectorRuntime {
         startedAt,
         currentResponse,
         sawTurnCompleted,
+        lastErrorMessage,
       });
       this.processNextTurn();
     });

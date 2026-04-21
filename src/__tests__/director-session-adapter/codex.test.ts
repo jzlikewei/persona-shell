@@ -67,7 +67,7 @@ function buildOptions(): DirectorSessionAdapterOptions {
 function getPrivateMethods(adapter: CodexSessionAdapter) {
   const a = adapter as unknown as {
     handleLine(line: string, sessionName: string): void;
-    handleClose(event: { code: number | null; startedAt: number; currentResponse: string; sawTurnCompleted: boolean }): void;
+    handleClose(event: { code: number | null; startedAt: number; currentResponse: string; sawTurnCompleted: boolean; lastErrorMessage?: string }): void;
   };
   return {
     handleLine: a.handleLine.bind(adapter),
@@ -249,6 +249,49 @@ describe('CodexSessionAdapter', () => {
 
       expect(failures).toHaveLength(1);
       expect(failures[0]).toContain('null');
+    });
+
+    test('includes lastErrorMessage in failure message when present', () => {
+      const { hooks, failures } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleClose } = getPrivateMethods(adapter);
+
+      handleClose({
+        code: 1,
+        startedAt: Date.now(),
+        currentResponse: '',
+        sawTurnCompleted: false,
+        lastErrorMessage: 'unexpected status 402 Payment Required: Insufficient credits',
+      });
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toBe('codex exited with code 1: unexpected status 402 Payment Required: Insufficient credits');
+    });
+
+    test('omits lastErrorMessage from failure message when absent', () => {
+      const { hooks, failures } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleClose } = getPrivateMethods(adapter);
+
+      handleClose({ code: 1, startedAt: Date.now(), currentResponse: '', sawTurnCompleted: false });
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toBe('codex exited with code 1');
+    });
+
+    test('separates multiple agent_message segments with newlines in response', () => {
+      const { hooks, turns } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleClose } = getPrivateMethods(adapter);
+
+      // Simulate what CodexDirectorRuntime would produce:
+      // multiple item.completed texts concatenated with \n separators
+      const response = 'First paragraph' + '\n' + 'Second paragraph' + '\n' + 'Third paragraph';
+
+      handleClose({ code: 0, startedAt: Date.now() - 500, currentResponse: response, sawTurnCompleted: true });
+
+      expect(turns).toHaveLength(1);
+      expect(turns[0].responseText).toContain('First paragraph\nSecond paragraph\nThird paragraph');
     });
   });
 });

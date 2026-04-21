@@ -112,7 +112,9 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
 
   private handleClose(event: CodexTurnCloseEvent): void {
     if (event.code !== 0 || !event.sawTurnCompleted) {
-      this.hooks.onTurnFailure(`codex exited with code ${event.code ?? 'null'}`);
+      const base = `codex exited with code ${event.code ?? 'null'}`;
+      const message = event.lastErrorMessage ? `${base}: ${event.lastErrorMessage}` : base;
+      this.hooks.onTurnFailure(message);
       return;
     }
     this.hooks.onTurnComplete({

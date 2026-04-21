@@ -12,6 +12,7 @@ export interface CodexTurnCloseEvent {
   startedAt: number;
   currentResponse: string;
   sawTurnCompleted: boolean;
+  lastErrorMessage?: string;
 }
 
 export interface CodexTurnRuntimeHooks {
