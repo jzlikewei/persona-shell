@@ -58,10 +58,39 @@ describe('persona-process', () => {
       // Should contain -c flags for MCP server config
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
 
-      expect(cFlags.some((f) => f.includes('mcp_servers.'))).toBe(true);
+      expect(cFlags).toContain('mcp_servers.persona-tasks.command="bun"');
+      expect(cFlags.some((f) => f.includes('mcp_servers."persona-tasks"'))).toBe(false);
       expect(cFlags.some((f) => f.includes('"bun"'))).toBe(true);
       expect(cFlags.some((f) => f.includes('"run"'))).toBe(true);
       expect(cFlags.some((f) => f.includes('SHELL_PORT'))).toBe(true);
+    });
+
+    test('merges DIRECTOR_LABEL into Codex MCP server env when provided', () => {
+      const mcpConfig = {
+        mcpServers: {
+          'persona-tasks': {
+            command: 'bun',
+            args: ['run', 'src/task-mcp-server.ts'],
+            env: { SHELL_PORT: '3000' },
+          },
+        },
+      };
+      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
+
+      const { child, args } = spawnPersona({
+        role: 'director',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        mode: 'background',
+        mcpConfigPath: MCP_CONFIG_PATH,
+        prompt: 'test',
+        env: { DIRECTOR_LABEL: 'cb1274a8' },
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
+      expect(cFlags.some((f) => f.includes('DIRECTOR_LABEL = "cb1274a8"'))).toBe(true);
     });
 
     test('skips MCP args when .mcp.json does not exist', () => {
@@ -140,6 +169,31 @@ describe('persona-process', () => {
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags.filter((f) => f.includes('mcp_servers.'))).toHaveLength(0);
+    });
+
+    test('skips server names that cannot be expressed as Codex dotted keys', () => {
+      const mcpConfig = {
+        mcpServers: {
+          'bad key': { command: 'bun', args: ['run', 'foo.ts'] },
+          valid_key: { command: 'node', args: ['bar.js'] },
+        },
+      };
+      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
+
+      const { child, args } = spawnPersona({
+        role: 'director',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        mode: 'background',
+        mcpConfigPath: MCP_CONFIG_PATH,
+        prompt: 'test',
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
+      expect(cFlags).toContain('mcp_servers.valid_key.command="node"');
+      expect(cFlags.some((f) => f.includes('bad key'))).toBe(false);
     });
   });
 

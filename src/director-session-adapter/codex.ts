@@ -2,6 +2,16 @@ import { CodexDirectorRuntime } from '../director-runtime/codex.js';
 import type { CodexTurnCloseEvent } from '../director-runtime/index.js';
 import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessionAdapterOptions } from './index.js';
 
+function getNumericField(record: Record<string, unknown>, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return 0;
+}
+
 function summarizeFailure(event: CodexTurnCloseEvent): string {
   const parts: string[] = [];
 
@@ -121,9 +131,35 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
       } else if (event.type === 'turn.completed') {
         const usage = event.usage;
         if (usage && typeof usage === 'object') {
-          const contextInput = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0;
-          if (contextInput > 0) {
-            this.hooks.onMetrics({ lastInputTokens: contextInput });
+          const usageRecord = usage as Record<string, unknown>;
+          const inputTokens = getNumericField(usageRecord, 'input_tokens', 'inputTokens');
+          const cachedInputTokens = getNumericField(
+            usageRecord,
+            'cached_input_tokens',
+            'cachedInputTokens',
+            'cache_read_input_tokens',
+            'cacheReadInputTokens',
+            'cache_creation_input_tokens',
+            'cacheCreationInputTokens',
+          );
+          const contextInput = inputTokens + cachedInputTokens;
+          const contextWindow = getNumericField(
+            usageRecord,
+            'model_context_window',
+            'context_window',
+            'contextWindow',
+          );
+
+          if (contextInput > 0 || contextWindow > 0) {
+            this.hooks.onMetrics({
+              ...(contextInput > 0
+                ? {
+                    lastInputTokens: contextInput,
+                    contextTokens: contextInput,
+                  }
+                : {}),
+              ...(contextWindow > 0 ? { contextWindow } : {}),
+            });
           }
         }
       }

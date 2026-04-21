@@ -111,6 +111,7 @@ export class TaskRunner extends EventEmitter {
       personaDir,
       agent,
       mode: 'background',
+      mcpConfigPath: join(personaDir, '.mcp.json'),
       prompt: fullPrompt,
       projectDir: input.projectDir,
       stderrPath: join(getLogDir(), `task-${input.taskId}.stderr.log`),

@@ -132,7 +132,8 @@ export function startConsole(
 
     // Context — use contextWindow from modelUsage as denominator (falls back to flushContextLimit)
     const contextLimit = ds.contextWindow > 0 ? ds.contextWindow : ds.flushContextLimit;
-    const tokenPercent = contextLimit > 0
+    const displayTokens = ds.contextMetricsLive ? ds.lastInputTokens : null;
+    const tokenPercent = contextLimit > 0 && displayTokens != null
       ? Math.round((ds.lastInputTokens / contextLimit) * 100)
       : 0;
 
@@ -181,9 +182,10 @@ export function startConsole(
         },
         activity,
         context: {
-          tokens: ds.lastInputTokens,
+          tokens: displayTokens,
           limit: contextLimit,
           percent: tokenPercent,
+          live: ds.contextMetricsLive,
           lastFlushAgoMs: now - ds.lastFlushAt,
         },
         metrics: {
@@ -212,8 +214,9 @@ export function startConsole(
           closed: entry.closed ?? false,
           closedAt: entry.closedAt ?? null,
           context: entry.directorStatus ? {
-            tokens: entry.directorStatus.lastInputTokens,
+            tokens: entry.directorStatus.contextMetricsLive ? entry.directorStatus.lastInputTokens : null,
             limit: entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit,
+            live: entry.directorStatus.contextMetricsLive,
             lastFlushAt: entry.directorStatus.lastFlushAt,
           } : null,
         })) : [],

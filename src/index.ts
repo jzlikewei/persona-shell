@@ -451,6 +451,7 @@ async function main() {
       personaDir: config.director.persona_dir,
       agent: resolveAgentProvider(config.agents, 'director'),
       mode: 'background',
+      mcpConfigPath: join(config.director.persona_dir, '.mcp.json'),
       prompt,
     });
 
@@ -749,9 +750,9 @@ async function main() {
       if (poolEntry) {
         const s = poolEntry.bridge.getStatus();
         const label = poolEntry.groupName;
-        const tokenLine = s.agentType === 'codex'
-          ? `📊 Turn input: ${s.lastInputTokens.toLocaleString()}`
-          : `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
+        const tokenLine = s.contextMetricsLive
+          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
+          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
         const lines = [
           `🟢 [${label}] Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
           tokenLine,
@@ -764,9 +765,9 @@ async function main() {
         const s = director.getStatus();
         const uptime = Math.floor((Date.now() - startTime) / 1000);
         const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
-        const tokenLine = s.agentType === 'codex'
-          ? `📊 Turn input: ${s.lastInputTokens.toLocaleString()}`
-          : `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
+        const tokenLine = s.contextMetricsLive
+          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
+          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
         const lines = [
           `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
           tokenLine,

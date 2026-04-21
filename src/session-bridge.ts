@@ -80,6 +80,7 @@ export class SessionBridge extends EventEmitter {
   private currentCountDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   private totalCostUsd = 0;
   private contextWindow = 0;
+  private contextMetricsLive = false;
   private restartTimestamps: number[] = [];
   private discardNextResponse = false;
   private personaRole: string = 'director';
@@ -388,6 +389,7 @@ export class SessionBridge extends EventEmitter {
     this.lastFlushAt = Date.now();
     this.lastInputTokens = 0;
     this.contextTokens = 0;
+    this.contextMetricsLive = false;
     this.flushing = false;
     this.discardNextResponse = false;
     this.persistState();
@@ -423,6 +425,7 @@ export class SessionBridge extends EventEmitter {
     lastFlushAt: number;
     flushContextLimit: number;
     contextWindow: number;
+    contextMetricsLive: boolean;
     activityState: 'idle' | 'processing' | 'flushing' | 'restarting';
     currentMessagePreview: string | null;
     currentMessageStartedAt: number | null;
@@ -459,6 +462,7 @@ export class SessionBridge extends EventEmitter {
       lastFlushAt: this.lastFlushAt,
       flushContextLimit: this.config.flush_context_limit,
       contextWindow: this.contextWindow,
+      contextMetricsLive: this.contextMetricsLive,
       activityState,
       currentMessagePreview: this.currentMessagePreview,
       currentMessageStartedAt: this.currentMessageStartedAt,
@@ -1098,6 +1102,9 @@ export class SessionBridge extends EventEmitter {
       this.contextWindow = update.contextWindow;
       shouldPersist = true;
     }
+    if (shouldPersist) {
+      this.contextMetricsLive = true;
+    }
     if (typeof update.costUsd === 'number') {
       this.totalCostUsd += update.costUsd;
     }
@@ -1283,6 +1290,10 @@ export class SessionBridge extends EventEmitter {
   private clearSession(): void {
     this.sessionId = null;
     this.sessionName = null;
+    this.lastInputTokens = 0;
+    this.contextTokens = 0;
+    this.contextMetricsLive = false;
+    this.persistState();
     try { unlinkSync(this.sessionFile); } catch { /* ok */ }
   }
 

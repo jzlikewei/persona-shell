@@ -164,28 +164,45 @@ describe('CodexSessionAdapter', () => {
       expect(persistedSessions[0]).toEqual({ id: 'thread-abc', name: 'my-session' });
     });
 
-    test('reports metrics on turn.completed event', () => {
+    test('reports context metrics on turn.completed event', () => {
       const { hooks, metrics } = buildCapturingHooks();
       const adapter = new CodexSessionAdapter(buildOptions(), hooks);
       const { handleLine } = getPrivateMethods(adapter);
 
       handleLine(JSON.stringify({
         type: 'turn.completed',
-        usage: { input_tokens: 5000 },
+        usage: { input_tokens: 5000, cached_input_tokens: 2000 },
       }), 'my-session');
 
       expect(metrics).toHaveLength(1);
-      expect(metrics[0].lastInputTokens).toBe(5000);
+      expect(metrics[0]).toEqual({
+        lastInputTokens: 7000,
+        contextTokens: 7000,
+      });
     });
 
-    test('skips metrics when input_tokens is 0', () => {
+    test('reports context window when present on usage', () => {
       const { hooks, metrics } = buildCapturingHooks();
       const adapter = new CodexSessionAdapter(buildOptions(), hooks);
       const { handleLine } = getPrivateMethods(adapter);
 
       handleLine(JSON.stringify({
         type: 'turn.completed',
-        usage: { input_tokens: 0 },
+        usage: { input_tokens: 0, cached_input_tokens: 0, model_context_window: 950000 },
+      }), 'my-session');
+
+      expect(metrics).toHaveLength(1);
+      expect(metrics[0]).toEqual({ contextWindow: 950000 });
+    });
+
+    test('skips metrics when usage has no token information', () => {
+      const { hooks, metrics } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleLine } = getPrivateMethods(adapter);
+
+      handleLine(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 0, cached_input_tokens: 0 },
       }), 'my-session');
 
       expect(metrics).toHaveLength(0);

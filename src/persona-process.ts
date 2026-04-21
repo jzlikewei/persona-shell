@@ -133,7 +133,11 @@ function tomlInlineTable(value: Record<string, string>): string {
   return `{ ${entries.map(([k, v]) => `${k} = ${tomlString(v)}`).join(', ')} }`;
 }
 
-function buildCodexMcpOverrideArgs(mcpConfigPath?: string): string[] {
+function tomlBareKey(value: string): string | null {
+  return /^[A-Za-z0-9_-]+$/.test(value) ? value : null;
+}
+
+function buildCodexMcpOverrideArgs(mcpConfigPath?: string, extraEnv?: Record<string, string>): string[] {
   if (!mcpConfigPath || !existsSync(mcpConfigPath)) return [];
 
   try {
@@ -152,7 +156,13 @@ function buildCodexMcpOverrideArgs(mcpConfigPath?: string): string[] {
       if (!server || typeof server !== 'object' || typeof server.command !== 'string' || !server.command.trim()) {
         continue;
       }
-      const base = `mcp_servers.${tomlString(name)}`;
+      const pathKey = tomlBareKey(name);
+      if (!pathKey) {
+        console.warn(`[persona-process] Skipping MCP server with unsupported Codex key: ${name}`);
+        continue;
+      }
+
+      const base = `mcp_servers.${pathKey}`;
       args.push('-c', `${base}.command=${tomlString(server.command.trim())}`);
 
       const serverArgs = Array.isArray(server.args)
@@ -166,8 +176,12 @@ function buildCodexMcpOverrideArgs(mcpConfigPath?: string): string[] {
         ? Object.entries(server.env as Record<string, unknown>)
             .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
         : [];
-      if (envEntries.length > 0) {
-        args.push('-c', `${base}.env=${tomlInlineTable(Object.fromEntries(envEntries))}`);
+      const mergedEnv = Object.fromEntries(envEntries);
+      if (extraEnv?.DIRECTOR_LABEL) {
+        mergedEnv.DIRECTOR_LABEL = extraEnv.DIRECTOR_LABEL;
+      }
+      if (Object.keys(mergedEnv).length > 0) {
+        args.push('-c', `${base}.env=${tomlInlineTable(mergedEnv)}`);
       }
     }
     return args;
@@ -201,7 +215,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.agent.search) {
       args.push('--search');
     }
-    args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath));
+    args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath, options.env));
     const codexCd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
       ? options.projectDir
       : options.personaDir;
