@@ -137,6 +137,7 @@
   // Streaming state
   var streamingChunks = {}; // director label → accumulated text
   var prevActivityState = 'idle'; // for detecting processing→idle transition
+  var prevPoolActivityStates = {}; // label → previous activity state
   var streamRenderTimer = null; // debounce markdown rendering
 
   var $ = function (id) { return document.getElementById(id); };
@@ -285,9 +286,16 @@
           var poolData = data.pool || [];
           for (var pi = 0; pi < poolData.length; pi++) {
             var pe = poolData[pi];
-            if (pe.activity !== 'processing' && streamingChunks[pe.label]) {
+            var prevPe = prevPoolActivityStates[pe.label] || 'idle';
+            var curPe = pe.activity || 'idle';
+            if (prevPe === 'processing' && curPe !== 'processing') {
+              // Pool director finished processing — clear streaming and reload messages
+              setTimeout(clearStreaming.bind(null, pe.label), 300);
+            } else if (curPe !== 'processing' && streamingChunks[pe.label]) {
+              // Fallback: streaming chunks exist but activity already idle
               setTimeout(clearStreaming.bind(null, pe.label), 300);
             }
+            prevPoolActivityStates[pe.label] = curPe;
           }
 
           renderSidebar();
