@@ -376,6 +376,9 @@ export class SessionBridge extends EventEmitter {
     this.adapter.terminate('SIGTERM');
     this.clearSession();
     await this.restart();
+    // Let stale close events from the old read stream drain
+    // while flushing is still true (so handleRuntimeClosed treats them as expected)
+    await new Promise<void>(r => setTimeout(r, 0));
     this.finishFlush();
     console.log(`[bridge:${this.label}] CLEAR: context discarded, fresh session started`);
     return true;
