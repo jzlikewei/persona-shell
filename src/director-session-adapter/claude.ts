@@ -68,6 +68,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
   }
 
   async restartTransport(): Promise<void> {
+    this.assistantTexts = []; // clear stale assistant text from previous turn
     await this.runtime.closeWriteHandle();
 
     if (this.runtime.isAlive()) {
