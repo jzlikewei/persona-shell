@@ -2,6 +2,28 @@ import { CodexDirectorRuntime } from '../director-runtime/codex.js';
 import type { CodexTurnCloseEvent } from '../director-runtime/index.js';
 import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessionAdapterOptions } from './index.js';
 
+function summarizeFailure(event: CodexTurnCloseEvent): string {
+  const parts: string[] = [];
+
+  if (event.lastErrorMessage) {
+    parts.push(event.lastErrorMessage);
+  }
+
+  if (event.stderrTail && event.stderrTail.length > 0) {
+    const stderrSummary = event.stderrTail.join(' | ');
+    if (!parts.includes(stderrSummary)) {
+      parts.push(`stderr: ${stderrSummary}`);
+    }
+  }
+
+  if (event.recentLines && event.recentLines.length > 0) {
+    const recentSummary = event.recentLines.join(' | ');
+    parts.push(`recent events: ${recentSummary}`);
+  }
+
+  return parts.join(' | ');
+}
+
 export class CodexSessionAdapter implements DirectorSessionAdapter {
   private runtime: CodexDirectorRuntime;
   private readonly label: string;
@@ -113,7 +135,8 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
   private handleClose(event: CodexTurnCloseEvent): void {
     if (event.code !== 0 || !event.sawTurnCompleted) {
       const base = `codex exited with code ${event.code ?? 'null'}`;
-      const message = event.lastErrorMessage ? `${base}: ${event.lastErrorMessage}` : base;
+      const summary = summarizeFailure(event);
+      const message = summary ? `${base}: ${summary}` : base;
       this.hooks.onTurnFailure(message);
       return;
     }

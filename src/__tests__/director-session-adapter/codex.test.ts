@@ -67,7 +67,15 @@ function buildOptions(): DirectorSessionAdapterOptions {
 function getPrivateMethods(adapter: CodexSessionAdapter) {
   const a = adapter as unknown as {
     handleLine(line: string, sessionName: string): void;
-    handleClose(event: { code: number | null; startedAt: number; currentResponse: string; sawTurnCompleted: boolean; lastErrorMessage?: string }): void;
+    handleClose(event: {
+      code: number | null;
+      startedAt: number;
+      currentResponse: string;
+      sawTurnCompleted: boolean;
+      lastErrorMessage?: string;
+      recentLines?: string[];
+      stderrTail?: string[];
+    }): void;
   };
   return {
     handleLine: a.handleLine.bind(adapter),
@@ -277,6 +285,45 @@ describe('CodexSessionAdapter', () => {
 
       expect(failures).toHaveLength(1);
       expect(failures[0]).toBe('codex exited with code 1');
+    });
+
+    test('includes stderr tail and recent events when available', () => {
+      const { hooks, failures } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleClose } = getPrivateMethods(adapter);
+
+      handleClose({
+        code: 0,
+        startedAt: Date.now(),
+        currentResponse: 'partial',
+        sawTurnCompleted: false,
+        stderrTail: ['Reading additional input from stdin...', 'tool call failed'],
+        recentLines: ['{"type":"item.completed"}', '{"type":"agent_reasoning"}'],
+      });
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('codex exited with code 0');
+      expect(failures[0]).toContain('stderr: Reading additional input from stdin... | tool call failed');
+      expect(failures[0]).toContain('recent events: {"type":"item.completed"} | {"type":"agent_reasoning"}');
+    });
+
+    test('keeps explicit lastErrorMessage ahead of captured context', () => {
+      const { hooks, failures } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleClose } = getPrivateMethods(adapter);
+
+      handleClose({
+        code: 1,
+        startedAt: Date.now(),
+        currentResponse: '',
+        sawTurnCompleted: false,
+        lastErrorMessage: 'unexpected status 500',
+        stderrTail: ['stderr line'],
+        recentLines: ['{"type":"turn.failed"}'],
+      });
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toBe('codex exited with code 1: unexpected status 500 | stderr: stderr line | recent events: {"type":"turn.failed"}');
     });
 
     test('separates multiple agent_message segments with newlines in response', () => {

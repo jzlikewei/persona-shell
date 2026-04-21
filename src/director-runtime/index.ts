@@ -13,6 +13,8 @@ export interface CodexTurnCloseEvent {
   currentResponse: string;
   sawTurnCompleted: boolean;
   lastErrorMessage?: string;
+  recentLines?: string[];
+  stderrTail?: string[];
 }
 
 export interface CodexTurnRuntimeHooks {
