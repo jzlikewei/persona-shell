@@ -1275,6 +1275,11 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
+  /** Drop the current session ID so the next turn creates a fresh session. */
+  resetSession(): void {
+    this.clearSession();
+  }
+
   private clearSession(): void {
     this.sessionId = null;
     this.sessionName = null;

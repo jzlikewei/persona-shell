@@ -720,6 +720,19 @@ async function main() {
       return;
     }
 
+    // /new-session — drop current session and start fresh (routes to correct Director)
+    if (text.trim() === '/new-session') {
+      if (!isMaster) return;
+      messaging.addReaction(messageId, 'Typing').catch(() => {});
+      const poolEntry = getTargetEntry();
+      const targetDirector = poolEntry?.bridge ?? director;
+      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
+      targetDirector.resetSession();
+      await messaging.reply(messageId, `${label} session 已重置，下次消息将创建新 session`).catch(() => {});
+      console.log(`[shell] /new-session: cleared session for ${label}`);
+      return;
+    }
+
     // /shell-restart | /restart-shell — detach pool Directors + shutdown main Director + exit Shell (launchd will respawn)
     if (text.trim() === '/shell-restart' || text.trim() === '/restart-shell') {
       if (!isMaster) return;
@@ -779,6 +792,7 @@ async function main() {
         '/clear — 清空上下文（不保存，直接重置）',
         '/esc — 取消队列中最早的消息',
         '/session-restart — 重启当前 Director（保留 session，加载新配置）',
+        '/new-session — 丢弃当前 session，下次消息创建全新 session',
         '/shell-restart — 重启整个 Shell 进程（代码更新生效）',
         '/help — 显示此帮助信息',
       ];
