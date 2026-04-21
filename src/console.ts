@@ -619,6 +619,22 @@ export function startConsole(
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
           }
+          // POST /api/webhook — receive external webhook and forward to main Director
+          if (url.pathname === '/api/webhook' && req.method === 'POST') {
+            const body = await req.json() as { message?: string };
+            if (!body.message) {
+              return Response.json({ ok: false, error: 'message is required' }, { status: 400 });
+            }
+            const preview = body.message.length > 50 ? body.message.slice(0, 50) + '...' : body.message;
+            console.log(`[webhook] received: ${preview}`);
+            try {
+              await director.sendSystemMessage(body.message);
+              return Response.json({ ok: true });
+            } catch (err) {
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+
           return new Response('Not found', { status: 404 });
         }
       }
