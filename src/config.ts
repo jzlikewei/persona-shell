@@ -22,9 +22,15 @@ export interface AgentProviderConfig {
   system_prompt_file?: string;
 }
 
+export interface RoleOverride {
+  agent?: string;
+  model?: string;
+}
+
 export interface AgentsConfig {
   defaults: Record<string, string>;
   providers: Record<string, AgentProviderConfig>;
+  roles?: Record<string, RoleOverride>;
 }
 
 export interface Config {
@@ -73,7 +79,7 @@ function expandHome(p: string): string {
 }
 
 export function getDefaultAgentName(agents: AgentsConfig, role: string): string {
-  return agents.defaults[role] ?? agents.defaults.default ?? 'claude';
+  return agents.roles?.[role]?.agent ?? agents.defaults[role] ?? agents.defaults.default ?? 'claude';
 }
 
 export function resolveAgentProvider(agents: AgentsConfig, role: string, agentName?: string): { name: string } & AgentProviderConfig {
@@ -82,11 +88,19 @@ export function resolveAgentProvider(agents: AgentsConfig, role: string, agentNa
   if (!provider) {
     throw new Error(`Unknown agent provider "${name}" for role "${role}"`);
   }
+  const roleModel = agents.roles?.[role]?.model;
+  if (roleModel && !agentName) {
+    return { name, ...provider, model: roleModel };
+  }
   return { name, ...provider };
 }
 
+export function defaultConfigPath(): string {
+  return resolve(homedir(), '.persona', 'config.yaml');
+}
+
 export function loadConfig(path?: string): Config {
-  const configPath = path ?? resolve(homedir(), '.persona', 'config.yaml');
+  const configPath = path ?? defaultConfigPath();
   const raw = readFileSync(configPath, 'utf-8');
   const yaml = load(raw) as Record<string, any>;
   const secretPath = resolve(dirname(configPath), 'im_secret.yaml');
@@ -184,10 +198,23 @@ export function loadConfig(path?: string): Config {
     defaults.default = 'claude';
   }
 
+  const rawRoles = yaml.agents?.roles as Record<string, { agent?: unknown; model?: unknown }> | undefined;
+  const roles: Record<string, RoleOverride> = {};
+  if (rawRoles && typeof rawRoles === 'object') {
+    for (const [role, override] of Object.entries(rawRoles)) {
+      if (!override || typeof override !== 'object') continue;
+      const entry: RoleOverride = {};
+      if (typeof override.agent === 'string' && override.agent.trim()) entry.agent = override.agent.trim();
+      if (typeof override.model === 'string' && override.model.trim()) entry.model = override.model.trim();
+      if (entry.agent || entry.model) roles[role] = entry;
+    }
+  }
+
   return {
     agents: {
       defaults,
       providers,
+      roles,
     },
     feishu,
     director: {

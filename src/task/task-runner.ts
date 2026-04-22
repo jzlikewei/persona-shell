@@ -4,11 +4,12 @@ import { mkdirSync, existsSync, appendFileSync, copyFileSync, rmSync } from 'fs'
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { spawnPersona } from '../persona-process.js';
-import { resolveAgentProvider, type Config } from '../config.js';
+import { resolveAgentProvider, loadConfig, type Config } from '../config.js';
 import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
 
 export interface TaskRunnerConfig {
+  configPath?: string;
   agents: Config['agents'];
   personaDir: string;
   defaultTimeoutMs: number;
@@ -73,7 +74,10 @@ export class TaskRunner extends EventEmitter {
 
     let agent: ReturnType<typeof resolveAgentProvider>;
     try {
-      agent = resolveAgentProvider(this.config.agents, input.role, input.agent);
+      const agents = this.config.configPath
+        ? loadConfig(this.config.configPath).agents
+        : this.config.agents;
+      agent = resolveAgentProvider(agents, input.role, input.agent);
     } catch (err) {
       const result: TaskResult = {
         taskId: input.taskId,

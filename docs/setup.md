@@ -60,10 +60,16 @@ agents:
   defaults:
     default: "claude"
     director: "claude"
-    explorer: "claude"
-    executor: "claude"
-    critic: "claude"
-    introspector: "claude"
+  roles:                              # 按角色指定 agent 和 model（可选）
+    explorer:
+      agent: "claude"
+      model: "sonnet"                 # 覆盖 provider 默认 model
+    executor:
+      agent: "claude"
+    critic:
+      agent: "claude"
+    book-researcher:
+      agent: "codex"
   providers:
     claude:
       type: "claude"
@@ -100,6 +106,12 @@ pool:
   small_group_threshold: 5      # 大群/小群人数分界
   parallel_chat_ids: []         # 免 @mention 白名单（chat_id 列表）
 ```
+
+**Agent 解析优先级**：`roles[role].agent` → `defaults[role]` → `defaults.default` → `"claude"`
+
+**Model 解析优先级**：`roles[role].model` → `providers[agent].model` → 不传（用 CLI 默认）
+
+**热加载**：修改 `roles` / `providers` 后，新派发的子角色任务和新创建的群聊 Director 会自动使用新配置，无需重启 Shell。主 Director 需要 `/session-restart` 才会生效。
 
 `~/.persona/im_secret.yaml`（飞书凭据放在一起维护）：
 

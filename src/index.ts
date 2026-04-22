@@ -1,4 +1,4 @@
-import { loadConfig, resolveAgentProvider } from './config.js';
+import { loadConfig, resolveAgentProvider, defaultConfigPath, type Config } from './config.js';
 import { SessionBridge } from './session-bridge.js';
 import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './messaging/feishu.js';
@@ -25,7 +25,8 @@ for (const method of ['log', 'warn', 'error'] as const) {
 }
 
 async function main() {
-  const config = loadConfig();
+  const configPath = defaultConfigPath();
+  const config = loadConfig(configPath);
   setLogLevel(config.logging.level);
   initLogDir(config.director.persona_dir);
   initTaskStore(config.director.persona_dir);
@@ -115,7 +116,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging);
+  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, undefined, configPath);
 
   // Restore pool entries from previous Shell session + clean up orphans
   await pool.restoreEntries();
@@ -123,6 +124,7 @@ async function main() {
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
+    configPath,
     agents: config.agents,
     personaDir: config.director.persona_dir,
     defaultTimeoutMs: config.task.default_timeout_ms,

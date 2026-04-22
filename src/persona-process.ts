@@ -237,6 +237,9 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.agent.effort) {
       args.push('--effort', options.agent.effort);
     }
+    if (options.agent.model) {
+      args.push('--model', options.agent.model);
+    }
     args.push(...buildClaudeInjectionArgs(options.personaDir));
     args.push(...buildAgentPromptArgs(options.agent, options.personaDir));
     args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
@@ -254,6 +257,9 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       }
       if (options.agent.bare !== false) {
         args.push('--bare');
+      }
+      if (options.agent.model) {
+        args.push('--model', options.agent.model);
       }
       args.push(...buildClaudeInjectionArgs(options.personaDir));
       args.push(...buildAgentPromptArgs(options.agent, options.personaDir));

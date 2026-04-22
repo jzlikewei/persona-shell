@@ -58,6 +58,7 @@ sh -c 'claude [args] < /tmp/persona/director-in > /tmp/persona/director-out'
 | `--append-system-prompt-file soul.md` | 灵魂层 |
 | `--append-system-prompt-file meta.md` | 运维指令 |
 | `--append-system-prompt-file personas/{role}.md` | 角色人格 |
+| `--model {model}` | 指定模型（来自 roles 或 provider 配置） |
 
 **Director（前台）专用**：
 

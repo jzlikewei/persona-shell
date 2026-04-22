@@ -5,7 +5,7 @@ import { join } from 'path';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import { ClaudeProcess } from './claude-process.js';
-import type { Config } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import type { MessagingClient } from './messaging/messaging.js';
 import { getState, setState } from './task/task-store.js';
 import type { AttachmentBuffer } from './console.js';
@@ -63,6 +63,7 @@ export class DirectorPool extends EventEmitter {
   private messaging: MessagingClient;
   private attachmentBuffer?: AttachmentBuffer;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
+  private configPath?: string;
 
   constructor(
     mainBridge: SessionBridge,
@@ -71,6 +72,7 @@ export class DirectorPool extends EventEmitter {
     directorConfig: Config['director'],
     messaging: MessagingClient,
     attachmentBuffer?: AttachmentBuffer,
+    configPath?: string,
   ) {
     super();
     this.mainBridge = mainBridge;
@@ -79,6 +81,7 @@ export class DirectorPool extends EventEmitter {
     this.directorConfig = directorConfig;
     this.messaging = messaging;
     this.attachmentBuffer = attachmentBuffer;
+    this.configPath = configPath;
 
     // Restore closed entries from SQLite
     const savedClosed = getState<ClosedPoolEntry[]>('pool:closed');
@@ -162,7 +165,7 @@ export class DirectorPool extends EventEmitter {
     console.log(`[pool] Creating session bridge for group "${name}" (label=${label})`);
 
     const bridge = new SessionBridge({
-      agents: this.agentsConfig,
+      agents: this.getFreshAgentsConfig(),
       config: this.directorConfig,
       directorAgentName: opts.directorAgentName,
       label,
@@ -399,6 +402,15 @@ export class DirectorPool extends EventEmitter {
     setState('pool:closed', [...this.closedEntries.values()]);
   }
 
+  private getFreshAgentsConfig(): Config['agents'] {
+    if (!this.configPath) return this.agentsConfig;
+    try {
+      return loadConfig(this.configPath).agents;
+    } catch {
+      return this.agentsConfig;
+    }
+  }
+
   /** Persist pool entries to SQLite for crash recovery */
   private persistEntries(): void {
     const data: PersistedPoolEntry[] = [...this.entries.values()].map(e => ({
@@ -425,7 +437,7 @@ export class DirectorPool extends EventEmitter {
 
     for (const item of saved) {
       const bridge = new SessionBridge({
-        agents: this.agentsConfig,
+        agents: this.getFreshAgentsConfig(),
         config: this.directorConfig,
         directorAgentName: item.directorAgentName,
         label: item.label,
