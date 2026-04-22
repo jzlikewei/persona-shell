@@ -8,6 +8,7 @@ const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
 const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
 const ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? '';
+const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
 /** Scan personas/ directory and return available role names */
@@ -218,7 +219,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'send_attachment':
       return callShell('POST', '/api/send-attachment', { path: args.path, source_director: DIRECTOR_LABEL });
     case 'list_models': {
-      const res = await fetch('https://api.anthropic.com/v1/models', {
+      const res = await fetch(`${ANTHROPIC_BASE_URL}/v1/models`, {
         headers: {
           'Authorization': `Bearer ${ANTHROPIC_AUTH_TOKEN}`,
           'anthropic-version': '2023-06-01',
