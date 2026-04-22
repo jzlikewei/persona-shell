@@ -132,7 +132,7 @@ const TOOLS = [
   },
   {
     name: 'send_attachment',
-    description: '发送文件或图片给用户。Shell 自动处理上传和投递，Director 不需要关心投递渠道。当前仅支持图片格式（.png, .jpg, .jpeg, .gif, .webp）。文件大小限制 10MB。',
+    description: '发送文件或图片给用户。Shell 自动处理上传和投递,Director 不需要关心投递渠道。支持图片(.png, .jpg, .jpeg, .gif, .webp)和任意文件格式。文件大小限制 10MB。',
     inputSchema: {
       type: 'object' as const,
       properties: {
