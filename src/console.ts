@@ -6,7 +6,7 @@ import type { IncomingMessage, MessagingClient } from './messaging/messaging.js'
 import type { DirectorPool } from './director-pool.js';
 import { parseConversationLog, parseSessions, parseTaskLog } from './log-parser.js';
 
-import type { SessionBridge } from './session-bridge.js';
+import { type SessionBridge, getMainStateFileName } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
@@ -360,7 +360,7 @@ export function startConsole(
             const personaDir = config.director.persona_dir;
             let state = '';
             let todo = '';
-            try { state = readFileSync(join(personaDir, 'daily', 'state.md'), 'utf-8'); } catch { /* ok */ }
+            try { state = readFileSync(join(personaDir, 'daily', getMainStateFileName()), 'utf-8'); } catch { /* ok */ }
             try { todo = readFileSync(join(personaDir, 'TODO.md'), 'utf-8'); } catch { /* ok */ }
             return Response.json({ state, todo });
           }
