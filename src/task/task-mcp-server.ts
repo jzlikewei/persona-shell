@@ -8,7 +8,7 @@ const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
 const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
 const ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? '';
-const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? 'https://api.anthropic.com';
+const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? '';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
 /** Scan personas/ directory and return available role names */
