@@ -1,6 +1,5 @@
 import { EventEmitter } from 'events';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
-import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
@@ -18,22 +17,6 @@ import type {
 } from './director-session-adapter/index.js';
 import { getState, setState, listTasks } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
-
-let _localHostName: string | null = null;
-function getLocalHostName(): string {
-  if (_localHostName !== null) return _localHostName;
-  try {
-    _localHostName = execSync('scutil --get LocalHostName', { encoding: 'utf-8' }).trim();
-  } catch {
-    _localHostName = '';
-  }
-  return _localHostName;
-}
-
-export function getMainStateFileName(): string {
-  const host = getLocalHostName();
-  return host ? `state-${host}.md` : 'state.md';
-}
 
 
 interface BridgePersistedState {
@@ -335,10 +318,8 @@ export class SessionBridge extends EventEmitter {
       this.flushCheckpointResolve = resolve;
     });
     this.enqueuePendingTurn({ type: 'flush-checkpoint' });
-    const mainCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-main', {
-      main_state_path: `daily/${getMainStateFileName()}`,
-    })
-      ?? `[FLUSH] 系统即将进行上下文刷新。请将当前工作状态保存到 daily/${getMainStateFileName()}，包括：进行中的任务、待处理的事项、需要保留的上下文。保存完成后回复"已保存"。`;
+    const mainCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-main')
+      ?? '[FLUSH] 系统即将进行上下文刷新。请将当前工作状态保存到 daily/state.md，包括：进行中的任务、待处理的事项、需要保留的上下文。保存完成后回复"已保存"。';
     await this.writeRaw(mainCheckpointMsg);
 
     const checkpointOk = await Promise.race([
@@ -364,10 +345,8 @@ export class SessionBridge extends EventEmitter {
       this.flushBootstrapResolve = resolve;
     });
     this.enqueuePendingTurn({ type: 'flush-bootstrap' });
-    const flushBootstrapMsg = loadPrompt(this.config.persona_dir, 'flush-bootstrap-main', {
-      main_state_path: `daily/${getMainStateFileName()}`,
-    })
-      ?? `[FLUSH] 你刚经历了上下文刷新。请读取 daily/${getMainStateFileName()} 恢复工作上下文。`;
+    const flushBootstrapMsg = loadPrompt(this.config.persona_dir, 'flush-bootstrap-main')
+      ?? '[FLUSH] 你刚经历了上下文刷新。请读取 daily/state.md 恢复工作上下文。';
     await this.writeRaw(flushBootstrapMsg);
 
     const bootstrapOk = await Promise.race([
@@ -1020,12 +999,12 @@ export class SessionBridge extends EventEmitter {
   }
 
   private getSessionStatePromptPath(): string {
-    return this.isMain ? `daily/${getMainStateFileName()}` : this.getSessionStateFilePath();
+    return this.isMain ? 'daily/state.md' : this.getSessionStateFilePath();
   }
 
   private getAgentSwitchBootstrapSource(freshStart: boolean): string | undefined {
     if (!freshStart) return undefined;
-    return this.isMain ? `daily/${getMainStateFileName()}` : this.getSessionStateFilePath();
+    return this.isMain ? 'daily/state.md' : this.getSessionStateFilePath();
   }
 
   private buildAgentSwitchCheckpointPrompt(targetAgentName: string): string {
@@ -1061,7 +1040,7 @@ export class SessionBridge extends EventEmitter {
 
   private getPersonaSwitchBootstrapSource(freshStart: boolean): string | undefined {
     if (!freshStart) return undefined;
-    return this.isMain ? `daily/${getMainStateFileName()}` : this.getSessionStateFilePath();
+    return this.isMain ? 'daily/state.md' : this.getSessionStateFilePath();
   }
 
   private buildBootstrapMessage(sourcePath?: string): string {
@@ -1071,7 +1050,7 @@ export class SessionBridge extends EventEmitter {
     let msg: string;
 
     if (this.isMain) {
-      const statePath = sourcePath ?? `daily/${getMainStateFileName()}`;
+      const statePath = sourcePath ?? 'daily/state.md';
       msg = loadPrompt(this.config.persona_dir, 'bootstrap-main', {
         state_path: statePath,
         shared_note: sharedNote,
@@ -1081,18 +1060,16 @@ export class SessionBridge extends EventEmitter {
         group_name: groupName,
         state_path: sourcePath,
         shared_note: sharedNote,
-        main_state_path: `daily/${getMainStateFileName()}`,
-      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/${getMainStateFileName()}（只读）。${sharedNote}`;
+      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote}`;
     } else {
       msg = loadPrompt(this.config.persona_dir, 'bootstrap-pool-fresh', {
         group_name: groupName,
         shared_note: sharedNote,
-        main_state_path: `daily/${getMainStateFileName()}`,
-      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请读取 daily/${getMainStateFileName()} 了解全局状态（只读）。${sharedNote}`;
+      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
     }
 
     if (this.personaRole !== 'director') {
-      const effectiveStatePath = sourcePath ?? (this.isMain ? `daily/${getMainStateFileName()}` : this.getSessionStateFilePath());
+      const effectiveStatePath = sourcePath ?? (this.isMain ? 'daily/state.md' : this.getSessionStateFilePath());
       const personaVars = {
         role: this.personaRole,
         state_path: effectiveStatePath,
