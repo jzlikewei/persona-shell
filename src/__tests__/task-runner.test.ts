@@ -64,7 +64,7 @@ printf '{"type":"turn.completed"}\n'
     expect(result.success).toBe(true);
     expect(result.resultFile).toBeDefined();
     expect(readFileSync(result.resultFile!, 'utf-8')).toBe('# outbox test\n\nwritten by codex task\n');
-    expect(readFileSync(join(PERSONA_DIR, 'outbox', new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }), 'T-TEST-001_codex outbox test.md'), 'utf-8')).toContain('written by codex task');
+    expect(readFileSync(join(PERSONA_DIR, 'outbox', new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }), 'T-TEST-001.md'), 'utf-8')).toContain('written by codex task');
     expect(() => readFileSync('/tmp/persona-task-results/T-TEST-001.md', 'utf-8')).toThrow();
   });
 });
