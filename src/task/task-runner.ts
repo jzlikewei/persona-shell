@@ -19,6 +19,7 @@ export interface RunTaskInput {
   taskId: string;
   role: string;
   agent?: string;
+  model?: string;
   prompt: string;
   description?: string;
   projectDir?: string;
@@ -78,6 +79,7 @@ export class TaskRunner extends EventEmitter {
         ? loadConfig(this.config.configPath).agents
         : this.config.agents;
       agent = resolveAgentProvider(agents, input.role, input.agent);
+      if (input.model) agent = { ...agent, model: input.model };
     } catch (err) {
       const result: TaskResult = {
         taskId: input.taskId,

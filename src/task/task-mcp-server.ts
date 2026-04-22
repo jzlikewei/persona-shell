@@ -41,6 +41,7 @@ const TOOLS = [
       properties: {
         role: { type: 'string', description: buildRoleDescription() },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
+        model: { type: 'string', description: '可选 model 名称；不传则使用角色或 provider 的默认 model' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt' },
         project_dir: { type: 'string', description: '可选，子任务的工作目录（项目路径）；不传则默认在 persona 根目录下执行' },
@@ -92,6 +93,7 @@ const TOOLS = [
         name: { type: 'string', description: 'Job 名称' },
         role: { type: 'string', description: `${buildRoleDescription()}，action_type=director_msg 时可填 "system"` },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
+        model: { type: 'string', description: '可选 model 名称；不传则使用角色或 provider 的默认 model' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt（action_type=spawn_role 时使用）' },
         schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00"' },
@@ -179,6 +181,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         type: 'role',
         role: args.role,
         agent: args.agent,
+        model: args.model,
         description: args.description,
         prompt: args.prompt,
         max_retry: args.max_retry,
