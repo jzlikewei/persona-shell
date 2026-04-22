@@ -7,6 +7,7 @@ const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
 const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
 const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
+const ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? '';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
 /** Scan personas/ directory and return available role names */
@@ -144,6 +145,14 @@ const TOOLS = [
       required: ['path'],
     },
   },
+  {
+    name: 'list_models',
+    description: '列出当前可用的 Anthropic 模型',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
 ];
 
 async function callShell(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -208,6 +217,19 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return callShell('POST', `/api/cron-jobs/${args.id}/toggle`);
     case 'send_attachment':
       return callShell('POST', '/api/send-attachment', { path: args.path, source_director: DIRECTOR_LABEL });
+    case 'list_models': {
+      const res = await fetch('https://api.anthropic.com/v1/models', {
+        headers: {
+          'Authorization': `Bearer ${ANTHROPIC_AUTH_TOKEN}`,
+          'anthropic-version': '2023-06-01',
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Anthropic API returned ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
