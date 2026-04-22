@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
@@ -17,6 +18,17 @@ import type {
 } from './director-session-adapter/index.js';
 import { getState, setState, listTasks } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
+
+let _localHostName: string | null = null;
+function getLocalHostName(): string {
+  if (_localHostName !== null) return _localHostName;
+  try {
+    _localHostName = execSync('scutil --get LocalHostName', { encoding: 'utf-8' }).trim() || 'unknown';
+  } catch {
+    _localHostName = 'unknown';
+  }
+  return _localHostName;
+}
 
 
 interface BridgePersistedState {
@@ -1044,7 +1056,8 @@ export class SessionBridge extends EventEmitter {
   }
 
   private buildBootstrapMessage(sourcePath?: string): string {
-    const sharedNote = '注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。';
+    const hostname = getLocalHostName();
+    const sharedNote = `当前机器: ${hostname}。state 文件请使用 daily/state-${hostname}.md（按机器隔离，不要用 daily/state.md）。注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。`;
     const groupName = this.groupName ?? this.label;
 
     let msg: string;
