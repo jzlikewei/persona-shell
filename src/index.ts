@@ -38,6 +38,7 @@ async function main() {
   const director = new SessionBridge({ agents: config.agents, config: config.director, label: 'main', isMain: true });
   const feishu = createFeishuClient(config.feishu, {
     skipMentionChatIds: config.pool.parallel_chat_ids,
+    mentionOnlyChatIds: config.pool.mention_only_chat_ids,
     attachmentDir: join(config.director.persona_dir, 'attachments'),
   });
   const messaging = new MessagingRouter(feishu);
