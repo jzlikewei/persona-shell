@@ -42,18 +42,23 @@ interface RunningTask {
   timedOut: boolean;
   outputPath: string;
   resultFile: string;
+  costUsd?: number;
 }
 
 const GRACEFUL_KILL_DELAY = 5_000;
+const WATCHDOG_INTERVAL_MS = 30_000;
 const CODEX_RESULT_STAGING_DIR = '/tmp/persona-task-results';
 
 export class TaskRunner extends EventEmitter {
   private config: TaskRunnerConfig;
   private running = new Map<string, RunningTask>();
+  private watchdogTimer: NodeJS.Timeout;
 
   constructor(config: TaskRunnerConfig) {
     super();
     this.config = config;
+    this.watchdogTimer = setInterval(() => this.checkProcessLiveness(), WATCHDOG_INTERVAL_MS);
+    this.watchdogTimer.unref();
   }
 
   runTask(input: RunTaskInput): void {
@@ -142,7 +147,6 @@ export class TaskRunner extends EventEmitter {
     this.running.set(input.taskId, { pid: child.pid, timer, child, startedAt, timedOut: false, outputPath, resultFile });
 
     // Parse stream-json stdout and log to file
-    let costUsd: number | undefined;
     const stdoutLogPath = join(getLogDir(), `task-${input.taskId}.stdout.log`);
 
     const rl = createInterface({ input: child.stdout! });
@@ -152,8 +156,11 @@ export class TaskRunner extends EventEmitter {
       try {
         const event = JSON.parse(line);
         if (event.type === 'result') {
-          if (event.cost_usd != null) costUsd = event.cost_usd;
-          if (event.total_cost_usd != null) costUsd = event.total_cost_usd;
+          const entry = this.running.get(input.taskId);
+          if (entry) {
+            if (event.cost_usd != null) entry.costUsd = event.cost_usd;
+            if (event.total_cost_usd != null) entry.costUsd = event.total_cost_usd;
+          }
         }
       } catch {
         // non-JSON line, ignore
@@ -175,7 +182,7 @@ export class TaskRunner extends EventEmitter {
           success: false,
           error: 'timeout',
           durationMs,
-          costUsd,
+          costUsd: entry.costUsd,
         };
         console.log(`[task-runner] Task ${input.taskId} killed after timeout (duration=${durationMs}ms)`);
         this.emit('task-failed', result);
@@ -201,7 +208,7 @@ export class TaskRunner extends EventEmitter {
         taskId: input.taskId,
         success,
         durationMs,
-        costUsd,
+        costUsd: entry.costUsd,
         ...(success ? { resultFile: finalResultFile } : { error }),
       };
 
@@ -266,6 +273,35 @@ export class TaskRunner extends EventEmitter {
       process.kill(-pid, signal);
     } catch {
       // process already dead
+    }
+  }
+
+  private checkProcessLiveness(): void {
+    if (this.running.size === 0) return;
+
+    for (const [taskId, entry] of this.running) {
+      try {
+        process.kill(entry.pid, 0);
+      } catch {
+        console.log(`[task-runner] Task ${taskId} pid ${entry.pid} is dead but close event was not received, cleaning up`);
+        clearTimeout(entry.timer);
+        this.running.delete(taskId);
+
+        const durationMs = Date.now() - entry.startedAt;
+        let resultFile: string | undefined;
+        const moved = this.materializeResultFile(entry.outputPath, entry.resultFile);
+        if (moved.ok) resultFile = entry.resultFile;
+
+        const result: TaskResult = {
+          taskId,
+          success: false,
+          error: `process disappeared (pid ${entry.pid})`,
+          durationMs,
+          costUsd: entry.costUsd,
+          ...(resultFile ? { resultFile } : {}),
+        };
+        this.emit('task-failed', result);
+      }
     }
   }
 
