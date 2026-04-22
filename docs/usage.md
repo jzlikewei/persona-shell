@@ -2,31 +2,31 @@
 
 ## 功能矩阵
 
-| 能力 | Claude Code | Codex | 说明 |
-|------|:-----------:|:-----:|------|
-| **IM 接入** | | | |
-| 飞书私聊 | ✅ | — | 主 Director 长驻 daemon |
-| 飞书群聊（小群） | ✅ | ✅ | DirectorPool 按群分配，`/start-with-*` 切换 |
-| 飞书群聊（大群） | ✅ | — | One-shot 无状态响应 |
-| Web 控制台 | ✅ | — | localhost:3000，浏览器直接对话 |
-| **会话管理** | | | |
-| 流式响应 | ✅ | ❌ | Claude 实时 chunk 推送，Codex 整段返回 |
-| 上下文保持 | ✅ daemon | ✅ resume | Claude 常驻进程；Codex 按 turn spawn + session resume |
-| FLUSH（上下文刷新） | ✅ | ✅ | checkpoint → kill → bootstrap |
-| /esc（取消请求） | ✅ | ✅ | SIGINT 中断当前处理 |
-| **多角色系统** | | | |
-| 后台任务（create_task） | ✅ | ✅ | Director 派发，子角色独立执行，MCP 驱动 |
-| Cron 定时任务 | ✅ | ✅ | spawn_role / director_msg / shell_action |
-| 人格定义（personas/） | ✅ | ✅ | Claude Code agent frontmatter 格式 |
-| 技能插件（skills/） | ✅ | — | Claude Code plugin 体系 |
-| **记忆与持久化** | | | |
-| 身份仓库（~/.persona） | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
-| 日报自动生成 | ✅ | — | 主 Director 写入 daily/YYYY-MM-DD.md |
-| 工作记忆（state.md） | ✅ | ✅ | FLUSH checkpoint + bootstrap 恢复 |
-| Pool 状态持久化 | ✅ | ✅ | SQLite，重启后自动恢复 |
-| **附件** | | | |
-| 接收图片/文件/语音 | ✅ | ✅ | 通讯层下载，路径传给 Director |
-| 发送图片/文件 | ✅ | ✅ | MCP send_attachment |
+| 能力 | Claude Code | Codex | Kimi | 说明 |
+|------|:-----------:|:-----:|:----:|------|
+| **IM 接入** | | | | |
+| 飞书私聊 | ✅ | — | ✅ | 主 Director 长驻 daemon |
+| 飞书群聊（小群） | ✅ | ✅ | ✅ | DirectorPool 按群分配，`/start-with-*` 切换 |
+| 飞书群聊（大群） | ✅ | — | ✅ | One-shot 无状态响应 |
+| Web 控制台 | ✅ | — | ✅ | localhost:3000，浏览器直接对话 |
+| **会话管理** | | | | |
+| 流式响应 | ✅ | ❌ | ⚠️ | Claude 实时 chunk 推送；Kimi 整段 JSON 行 |
+| 上下文保持 | ✅ daemon | ✅ resume | ✅ daemon | Claude/Kimi 常驻进程；Codex 按 turn spawn |
+| FLUSH（上下文刷新） | ✅ | ✅ | ✅ | checkpoint → kill → bootstrap |
+| /esc（取消请求） | ✅ | ✅ | ✅ | SIGINT 中断当前处理 |
+| **多角色系统** | | | | |
+| 后台任务（create_task） | ✅ | ✅ | ✅ | Director 派发，子角色独立执行，MCP 驱动 |
+| Cron 定时任务 | ✅ | ✅ | ✅ | spawn_role / director_msg / shell_action |
+| 人格定义（personas/） | ✅ | ✅ | ✅ | Claude Code agent frontmatter 格式 |
+| 技能插件（skills/） | ✅ | — | ✅ | Claude Code plugin 体系；Kimi `--skills-dir` |
+| **记忆与持久化** | | | | |
+| 身份仓库（~/.persona） | ✅ | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
+| 日报自动生成 | ✅ | — | — | 主 Director 写入 daily/YYYY-MM-DD.md |
+| 工作记忆（state.md） | ✅ | ✅ | ✅ | FLUSH checkpoint + bootstrap 恢复 |
+| Pool 状态持久化 | ✅ | ✅ | ✅ | SQLite，重启后自动恢复 |
+| **附件** | | | | |
+| 接收图片/文件/语音 | ✅ | ✅ | ✅ | 通讯层下载，路径传给 Director |
+| 发送图片/文件 | ✅ | ✅ | ✅ | MCP send_attachment |
 
 ## 基本对话
 
@@ -156,16 +156,17 @@ agents:
 
 在任意当前会话里发 `/switch-agent <agent>`，可把该会话切到指定 Director agent。切换前会先 flush，让旧 agent 把上下文写入状态文件；切换后新 agent 会自动读取并恢复。这个选择会按会话持久化，不会只跟随全局默认值。
 
-快捷命令：`/start-with-codex` 等价于 `/switch-agent codex`，`/start-with-claude` 等价于 `/switch-agent claude`。
+快捷命令：`/start-with-codex` 等价于 `/switch-agent codex`，`/start-with-claude` 等价于 `/switch-agent claude`，`/start-with-kimi` 等价于 `/switch-agent kimi`。
 
-### Claude vs Codex 的区别
+### Claude vs Codex vs Kimi 的区别
 
-| | Claude Code | Codex |
-|---|---|---|
-| 进程模型 | 常驻 daemon（FIFO pipe） | 按 turn spawn（每轮一次） |
-| 流式响应 | ✅ 实时推送 chunk | ❌ 整段返回 |
-| 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 |
-| 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、不需要实时反馈的场景 |
+| | Claude Code | Codex | Kimi |
+|---|---|---|---|
+| 进程模型 | 常驻 daemon（FIFO pipe） | 按 turn spawn（每轮一次） | 常驻 daemon（stdin/stdout pipe） |
+| 流式响应 | ✅ 实时推送 chunk | ❌ 整段返回 | ⚠️ 整段 JSON 行返回 |
+| 身份注入 | `--append-system-prompt-file` `--plugin-dir` | Prompt 拼接 | `--agent-file` `--skills-dir` |
+| 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 | Kimi 原生工具 + skills |
+| 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、不需要实时反馈的场景 | 需要 Skills 或 Kimi 模型能力的场景 |
 
 ## 人格自定义
 
@@ -311,6 +312,7 @@ curl localhost:3000/api/sessions
 | `/switch-agent <agent>` | 当前会话 | 切换当前会话的 Director agent，并持久化恢复上下文 |
 | `/start-with-codex` | 当前会话 | 快捷切到 Codex 后端 |
 | `/start-with-claude` | 当前会话 | 快捷切回 Claude 后端 |
+| `/start-with-kimi` | 当前会话 | 快捷切到 Kimi 后端 |
 | `/status` | 当前会话 | 查看状态摘要 |
 | `/help` | 全局 | 显示命令列表 |
 
@@ -323,7 +325,8 @@ curl localhost:3000/api/sessions
 | Shell stdout | `logs/shell.stdout.log` | Shell 运行日志、消息路由 |
 | Shell stderr | `logs/shell.stderr.log` | 未捕获异常 |
 | 消息队列 | `logs/queue.log` | 消息排队、处理、丢弃记录 |
-| Director stderr | `/tmp/persona/director-stderr.log` | Claude Code CLI 的错误输出 |
+| Director stderr (Claude) | `/tmp/persona/director-stderr.log` | Claude Code CLI 的错误输出 |
+| Director stderr (Kimi) | `logs/{label}-kimi-stderr.log` | Kimi Code CLI 的错误输出 |
 | 会话输入 | `logs/{label}/input-{date}.log` | 发给 Director 的原始消息 |
 | 会话输出 | `logs/{label}/output-{date}.log` | Director 的完整 stream-json 输出 |
 

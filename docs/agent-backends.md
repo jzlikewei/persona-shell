@@ -193,14 +193,113 @@ codex exec \
 
 转换逻辑在 `persona-process.ts` 的 `buildCodexMcpOverrideArgs()` 中实现。
 
-### 与 Claude Code 的差异总结
+---
 
-| 维度 | Claude Code | Codex |
-|------|------------|-------|
-| 运行模式 | 长驻 daemon | 按 turn spawn |
-| 通信方式 | FIFO named pipe | stdout pipe |
-| 流式输出 | ✅ stream_event | ❌ 整段返回 |
-| 身份注入 | CLI 参数（plugin-dir 等） | Prompt 拼接 + --cd |
-| MCP 注入 | --mcp-config 文件 | -c TOML 覆盖 |
-| 会话恢复 | --resume session_id | exec resume thread_id |
-| Skills/Plugins | ✅ 原生支持 | ❌ 不支持 |
+## Kimi
+
+> 长驻 daemon 后端，基于 `kimi --print` 的 stream-json stdin/stdout 通信。支持 `--agent-file` 身份注入和 `--skills-dir` 技能加载。
+
+### 身份注入
+
+Kimi 的 print 模式通过 `--agent-file` 加载 agent 规范文件（YAML），其中可指定 `system_prompt_path`：
+
+```yaml
+# ~/.persona/kimi-agent.yaml
+version: 1
+agent:
+  name: "Persona"
+  system_prompt_path: ./soul.md
+  tools: ["kimi_cli.tools.shell:Shell", ...]
+```
+
+同时支持 `--skills-dir` 加载外部 skills 目录：
+
+```bash
+kimi --print --agent-file ~/.persona/kimi-agent.yaml --skills-dir ~/.persona/skills
+```
+
+### 进程启动
+
+```bash
+kimi --print \
+  --input-format stream-json \
+  --output-format stream-json \
+  --work-dir ~/.persona \
+  --agent-file ~/.persona/kimi-agent.yaml \
+  --skills-dir ~/.persona/skills \
+  --mcp-config-file ~/.persona/.mcp.json
+```
+
+- **stdin** ← stream-json user messages（Shell 写入）
+- **stdout** → stream-json assistant messages（Shell 读取）
+- **stderr** → `kimi-stderr.log`
+- `detached: true`，PID 直接追踪子进程
+
+### CLI 参数
+
+**公共参数**：
+
+| 参数 | 说明 |
+|------|------|
+| `--print` | 非交互式 print 模式（隐式 `--yolo`） |
+| `--work-dir` | 工作目录 |
+| `--agent-file` | Agent 规范 YAML |
+| `--skills-dir` | Skills 目录 |
+| `--mcp-config-file` | MCP 配置文件 |
+| `--model` | 指定模型 |
+| `--session` | 恢复已有 session |
+
+**Director（前台）专用**：
+
+| 参数 | 说明 |
+|------|------|
+| `--input-format stream-json` | 接受 JSON 持续输入 |
+| `--output-format stream-json` | JSON 行输出 |
+
+**子角色（后台）专用**：
+
+| 参数 | 说明 |
+|------|------|
+| `--prompt` | 一次性 prompt |
+
+### stream-json 协议
+
+Shell 与 Kimi 通过 stdin/stdout 交换 JSON 行。
+
+**写入**（Shell → Kimi）：
+
+```json
+{"role":"user","content":"消息内容"}
+```
+
+**读取**（Kimi → Shell）：
+
+```json
+{"role":"assistant","content":[{"type":"think","think":"..."},{"type":"text","text":"..."}]}
+```
+
+| 消息类型 | 说明 | 用途 |
+|----------|------|------|
+| `assistant` (无 tool_calls) | 最终回复 | 构建回复文本，触发 onTurnComplete |
+| `assistant` (含 tool_calls) | 中间步骤 | 忽略（内部工具调用） |
+| Resume hint | 纯文本 | 捕获 session ID 用于恢复 |
+
+### 会话恢复
+
+| 场景 | 行为 |
+|------|------|
+| 首次启动 | 新 session |
+| 重启/崩溃 | 从 resume hint 捕获 session ID → `--session` 恢复 |
+| FLUSH | 不恢复 session，全新启动 |
+
+### 与 Claude Code / Codex 的差异总结
+
+| 维度 | Claude Code | Codex | Kimi |
+|------|------------|-------|------|
+| 运行模式 | 长驻 daemon | 按 turn spawn | 长驻 daemon |
+| 通信方式 | FIFO named pipe | stdout pipe | stdin/stdout pipe |
+| 流式输出 | ✅ stream_event | ❌ 整段返回 | ⚠️ 整段 JSON 行（非 token 级） |
+| 身份注入 | CLI 参数（plugin-dir 等） | Prompt 拼接 + --cd | `--agent-file` + `--skills-dir` |
+| MCP 注入 | --mcp-config 文件 | -c TOML 覆盖 | `--mcp-config-file` |
+| 会话恢复 | --resume session_id | exec resume thread_id | `--session` |
+| Skills/Plugins | ✅ 原生支持 | ❌ 不支持 | ✅ `--skills-dir` |

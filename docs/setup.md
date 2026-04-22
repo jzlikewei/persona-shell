@@ -6,6 +6,7 @@
 - [Bun](https://bun.sh/) 运行时
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（必需）
 - [Codex CLI](https://github.com/openai/codex)（可选，用于多后端支持）
+- [Kimi Code CLI](https://moonshotai.github.io/kimi-cli/)（可选，用于多后端支持）
 
 ## 快速开始
 
@@ -83,6 +84,12 @@ agents:
       sandbox: "danger-full-access"
       approval: "never"
       search: false
+    kimi:
+      type: "kimi"
+      command: "kimi"
+      # agent_file: "kimi-agent.yaml"       # Kimi agent 规范文件（相对 persona_dir）
+      # skills_dir: "skills"                # Skills 目录（相对 persona_dir）
+      # mcp_config_file: ".mcp.json"        # MCP 配置文件（相对 persona_dir）
 
 feishu:
   master_id: "ou_xxxx"                       # 本体的飞书 open_id（可选）
@@ -171,15 +178,25 @@ launchctl start com.persona.shell
 └── config.yaml                  # 运行配置
 ```
 
-这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`）。详见 [`claude-code-startup.md`](claude-code-startup.md)。
+这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`）。Kimi 则通过 `--agent-file` 加载 agent 规范来注入身份。详见 [`agent-backends.md`](agent-backends.md)。
 
 ### Agent Provider 配置说明
+
+**Claude Code**：
 
 | 参数 | 说明 |
 |------|------|
 | `bare` | `true` 时加 `--bare` 参数，去掉默认系统提示并限制工具集为 Bash/Edit/Read；`false` 时不加，保留完整工具集（约 30 个），包括 Agent（spawn sub-agent）等高级工具。**推荐 `false`**，以获得完整能力。 |
 | `dangerously_skip_permissions` | 跳过工具执行确认 |
 | `effort` | 推理力度：`min` / `low` / `medium` / `high` / `max` |
+
+**Kimi**：
+
+| 参数 | 说明 |
+|------|------|
+| `agent_file` | Agent 规范 YAML 文件路径（相对 `persona_dir`），指定 `system_prompt_path` 等 |
+| `skills_dir` | Skills 目录路径（相对 `persona_dir`），Kimi 通过 `--skills-dir` 加载 |
+| `mcp_config_file` | MCP 配置文件路径（相对 `persona_dir`），通过 `--mcp-config-file` 传入 |
 
 > **环境变量**：子角色进程启动时会自动清除继承的 `CLAUDE_CODE_SIMPLE` 环境变量，不再受父进程的工具集限制。无需手动处理。
 

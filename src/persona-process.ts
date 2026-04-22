@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync, mkdtempSync } from 'fs';
 import { join, dirname } from 'path';
 import { getLogDir } from './logger.js';
 import type { AgentProviderConfig } from './config.js';
@@ -181,6 +181,39 @@ function buildCodexMcpOverrideArgs(mcpConfigPath?: string, mcpEnvOverrides?: Rec
 }
 
 /**
+ * 为 Kimi 构建注入 DIRECTOR_LABEL 的临时 MCP 配置文件。
+ * Kimi CLI 通过 --mcp-config-file 读取 JSON，没有 Codex 的 -c override 机制，
+ * 因此需要在启动前把 DIRECTOR_LABEL 写进配置文件的 env 中。
+ * 返回临时配置文件路径（放在系统 tmp 目录）。
+ */
+function buildKimiMcpConfigWithEnv(mcpConfigPath: string, directorLabel: string): string {
+  try {
+    const raw = JSON.parse(readFileSync(mcpConfigPath, 'utf-8')) as {
+      mcpServers?: Record<string, {
+        command?: unknown;
+        args?: unknown;
+        env?: Record<string, string>;
+      }>;
+    };
+    const servers = raw.mcpServers;
+    if (!servers || typeof servers !== 'object') return mcpConfigPath;
+
+    for (const server of Object.values(servers)) {
+      if (server && typeof server === 'object') {
+        server.env = { ...(server.env ?? {}), DIRECTOR_LABEL: directorLabel };
+      }
+    }
+
+    const tmpDir = mkdtempSync(join('/tmp', 'persona-mcp-'));
+    const tmpPath = join(tmpDir, '.mcp.json');
+    writeFileSync(tmpPath, JSON.stringify(raw, null, 2));
+    return tmpPath;
+  } catch {
+    return mcpConfigPath;
+  }
+}
+
+/**
  * 统一 spawn agent 进程。
  * - foreground 模式：当前仅支持 Claude，通过 sh -c 做 FIFO 管道重定向 (Director)
  * - background 模式：stdout pipe 用于读取 JSON/stream-json 输出 (子角色)
@@ -216,11 +249,47 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     args.push('--cd', codexCd);
   }
 
-  // foreground (Director) 专用参数
-  if (options.mode === 'foreground') {
-    if (options.agent.type !== 'claude') {
-      throw new Error(`Foreground mode is not supported for agent provider "${options.agent.name}"`);
+  if (options.agent.type === 'kimi') {
+    // Kimi print mode implies --yolo; no need to pass it explicitly.
+    const workDir = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
+      ? options.projectDir
+      : options.personaDir;
+    args.push('--print', '--work-dir', workDir);
+    if (options.agent.model) {
+      args.push('--model', options.agent.model);
     }
+    if (options.agent.agent_file) {
+      const agentFile = join(options.personaDir, options.agent.agent_file);
+      if (existsSync(agentFile)) {
+        args.push('--agent-file', agentFile);
+      }
+    }
+    if (options.agent.skills_dir) {
+      const skillsDir = join(options.personaDir, options.agent.skills_dir);
+      if (existsSync(skillsDir)) {
+        args.push('--skills-dir', skillsDir);
+      }
+    }
+      if (options.mcpConfigPath && existsSync(options.mcpConfigPath)) {
+      // Kimi 没有 Codex 的 -c TOML override 机制，需要动态注入 DIRECTOR_LABEL
+      const mcpPath = (options.env?.DIRECTOR_LABEL)
+        ? buildKimiMcpConfigWithEnv(options.mcpConfigPath, options.env.DIRECTOR_LABEL)
+        : options.mcpConfigPath;
+      args.push('--mcp-config-file', mcpPath);
+    }
+    if (options.mode === 'foreground') {
+      args.push('--input-format', 'stream-json', '--output-format', 'stream-json');
+      if (options.sessionId) args.push('--session', options.sessionId);
+    }
+    if (options.mode === 'background') {
+      args.push('--output-format', 'stream-json');
+      if (options.resumeSessionId) args.push('--session', options.resumeSessionId);
+      if (options.prompt) args.push('--prompt', options.prompt);
+    }
+  }
+
+  // foreground (Director) 专用参数（仅 Claude）
+  if (options.mode === 'foreground' && options.agent.type === 'claude') {
     args.push(
       '--print',
       '--output-format', 'stream-json',
@@ -246,6 +315,10 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.mcpConfigPath) args.push('--mcp-config', options.mcpConfigPath);
     if (options.sessionId) args.push('--resume', options.sessionId);
     if (options.sessionName) args.push('--name', options.sessionName);
+  }
+
+  if (options.mode === 'foreground' && options.agent.type !== 'claude' && options.agent.type !== 'kimi') {
+    throw new Error(`Foreground mode is not supported for agent provider "${options.agent.name}"`);
   }
 
   // background (子角色) 专用参数
@@ -306,8 +379,16 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
 
   let child: ChildProcess;
 
-  if (options.mode === 'foreground' && options.pipeIn && options.pipeOut) {
-    // FIFO 管道：通过 sh -c 重定向 stdin/stdout
+  if (options.mode === 'foreground' && options.agent.type === 'kimi') {
+    // Kimi print mode: direct stdin/stdout pipe (no FIFO)
+    child = spawn(options.agent.command, args, {
+      detached: true,
+      stdio: ['pipe', 'pipe', stderrFd],
+      cwd,
+      env: childEnv,
+    });
+  } else if (options.mode === 'foreground' && options.pipeIn && options.pipeOut) {
+    // FIFO 管道：通过 sh -c 重定向 stdin/stdout (Claude)
     const cmd = argsToShellCmd(options.agent.command, args);
     child = spawn('sh', ['-c', `${cmd} < "${options.pipeIn}" > "${options.pipeOut}"`], {
       detached: true,

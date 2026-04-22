@@ -6,8 +6,10 @@ import { resolveAgentProvider, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
 import { loadPrompt } from './prompt-loader.js';
 import { ClaudeDirectorRuntime } from './director-runtime/claude.js';
+import { KimiDirectorRuntime } from './director-runtime/kimi.js';
 import { CodexSessionAdapter } from './director-session-adapter/codex.js';
 import { ClaudeSessionAdapter } from './director-session-adapter/claude.js';
+import { KimiSessionAdapter } from './director-session-adapter/kimi.js';
 import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
@@ -130,11 +132,16 @@ export class SessionBridge extends EventEmitter {
         directorAgent,
         personaRole: this.personaRole,
       };
-      return options.directorFactory
-        ? options.directorFactory(resolvedOptions, hooks)
-        : directorAgent.type === 'claude'
-          ? new ClaudeSessionAdapter(new ClaudeDirectorRuntime({ pipeDir, pidFile, label: this.label }), resolvedOptions, hooks)
-          : new CodexSessionAdapter(resolvedOptions, hooks);
+      if (options.directorFactory) {
+        return options.directorFactory(resolvedOptions, hooks);
+      }
+      if (directorAgent.type === 'claude') {
+        return new ClaudeSessionAdapter(new ClaudeDirectorRuntime({ pipeDir, pidFile, label: this.label }), resolvedOptions, hooks);
+      }
+      if (directorAgent.type === 'kimi') {
+        return new KimiSessionAdapter(new KimiDirectorRuntime(), resolvedOptions, hooks);
+      }
+      return new CodexSessionAdapter(resolvedOptions, hooks);
     };
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
@@ -1319,7 +1326,9 @@ export class SessionBridge extends EventEmitter {
       hour: '2-digit',
       minute: '2-digit',
     }).replace(':', '');
-    const prefix = this.directorAgent.type === 'codex' ? 'codex-director' : 'director';
+    const prefix = this.directorAgent.type === 'codex' ? 'codex-director'
+      : this.directorAgent.type === 'kimi' ? 'kimi-director'
+      : 'director';
     const nameParts = [prefix, this.label, `${dateStr}T${timeStr}`];
     if (this.groupName) nameParts.push(this.groupName);
     return nameParts.join('-');
