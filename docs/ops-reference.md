@@ -33,7 +33,8 @@ launchctl stop  com.persona.shell                                # 停止
 |------|------|
 | Shell stdout/stderr | `logs/shell.stdout.log` / `logs/shell.stderr.log` |
 | 消息队列 | `logs/queue.log` |
-| Director stderr | `/tmp/persona/director-stderr.log` |
+| Director stderr (Claude) | `/tmp/persona/director-stderr.log` |
+| Director stderr (Kimi) | `logs/{label}-kimi-stderr.log` |
 | 会话输入记录 | `logs/{label}/input-{YYYYMMDD}.log` |
 | 会话输出记录 | `logs/{label}/output-{YYYYMMDD}.log` |
 
@@ -46,6 +47,7 @@ launchctl stop  com.persona.shell                                # 停止
 | FIFO 管道 | `/tmp/persona/director-in`, `director-out` |
 | Pool Director（Claude） | `/tmp/persona/{label}/`（群聊 Director，含 session / PID / FIFO） |
 | Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`，但无常驻 PID/FIFO |
+| Pool Director（Kimi） | `logs/{label}-kimi-stderr.log`；stdin/stdout pipe，无 FIFO |
 
 当前 Codex pool Director 是 turn-based transport：群会话常驻，但底层 `codex` 进程不会常驻；每次处理消息时会短暂拉起一次。
 

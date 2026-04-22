@@ -607,7 +607,9 @@ async function main() {
       ? 'codex'
       : text.trim() === '/start-with-claude'
         ? 'claude'
-        : switchAgentMatch?.[1]?.trim();
+        : text.trim() === '/start-with-kimi'
+          ? 'kimi'
+          : switchAgentMatch?.[1]?.trim();
     if (slashTargetAgent) {
       if (!isMaster) return;
       if (routingKey && chatType === 'group' && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
@@ -792,6 +794,7 @@ async function main() {
         '/persona <name> — 切换人格角色（如 philosopher, critic 等）',
         '/start-with-codex — 将当前会话切到 Codex Director 模式',
         '/start-with-claude — 将当前会话切回 Claude Director 模式',
+        '/start-with-kimi — 将当前会话切到 Kimi Director 模式',
         '/flush — 保存上下文后刷新（checkpoint → 新 session）',
         '/clear — 清空上下文（不保存，直接重置）',
         '/esc — 取消队列中最早的消息',

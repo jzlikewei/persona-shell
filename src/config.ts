@@ -3,7 +3,7 @@ import { load } from 'js-yaml';
 import { dirname, resolve } from 'path';
 import { homedir } from 'os';
 
-export type AgentProviderType = 'claude' | 'codex';
+export type AgentProviderType = 'claude' | 'codex' | 'kimi';
 export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApproval = 'untrusted' | 'on-request' | 'never';
@@ -20,6 +20,12 @@ export interface AgentProviderConfig {
   model?: string;
   /** Per-agent system prompt file, relative to persona_dir (e.g. "prompts/gemini.md") */
   system_prompt_file?: string;
+  /** Kimi: custom agent specification file (e.g. "kimi-agent.yaml") */
+  agent_file?: string;
+  /** Kimi: custom skills directories */
+  skills_dir?: string;
+  /** Kimi: MCP config file path */
+  mcp_config_file?: string;
 }
 
 export interface RoleOverride {
@@ -130,6 +136,9 @@ export function loadConfig(path?: string): Config {
     search?: unknown;
     model?: unknown;
     system_prompt_file?: unknown;
+    agent_file?: unknown;
+    skills_dir?: unknown;
+    mcp_config_file?: unknown;
   }> | undefined;
   const providerEntries = Object.entries(rawProviders ?? {});
   const providers: Record<string, AgentProviderConfig> = {};
@@ -137,7 +146,7 @@ export function loadConfig(path?: string): Config {
   for (const [name, provider] of providerEntries) {
     const type = provider?.type;
     const command = provider?.command;
-    if ((type === 'claude' || type === 'codex') && typeof command === 'string' && command.trim()) {
+    if ((type === 'claude' || type === 'codex' || type === 'kimi') && typeof command === 'string' && command.trim()) {
       providers[name] = {
         type,
         command: command.trim(),
@@ -158,6 +167,15 @@ export function loadConfig(path?: string): Config {
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
         ...(typeof provider?.system_prompt_file === 'string' && provider.system_prompt_file.trim()
           ? { system_prompt_file: provider.system_prompt_file.trim() }
+          : {}),
+        ...(typeof provider?.agent_file === 'string' && provider.agent_file.trim()
+          ? { agent_file: provider.agent_file.trim() }
+          : {}),
+        ...(typeof provider?.skills_dir === 'string' && provider.skills_dir.trim()
+          ? { skills_dir: provider.skills_dir.trim() }
+          : {}),
+        ...(typeof provider?.mcp_config_file === 'string' && provider.mcp_config_file.trim()
+          ? { mcp_config_file: provider.mcp_config_file.trim() }
           : {}),
       };
     }
@@ -180,6 +198,13 @@ export function loadConfig(path?: string): Config {
       sandbox: 'danger-full-access',
       approval: 'never',
       search: false,
+    };
+  }
+
+  if (!providers.kimi) {
+    providers.kimi = {
+      type: 'kimi',
+      command: 'kimi',
     };
   }
 
