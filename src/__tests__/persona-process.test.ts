@@ -93,6 +93,35 @@ describe('persona-process', () => {
       expect(cFlags.some((f) => f.includes('DIRECTOR_LABEL = "cb1274a8"'))).toBe(true);
     });
 
+    test('merges multiple env overrides into Codex MCP server env', () => {
+      const mcpConfig = {
+        mcpServers: {
+          'persona-tasks': {
+            command: 'bun',
+            args: ['run', 'src/task-mcp-server.ts'],
+            env: { SHELL_PORT: '3000' },
+          },
+        },
+      };
+      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
+
+      const { child, args } = spawnPersona({
+        role: 'director',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        mode: 'background',
+        mcpConfigPath: MCP_CONFIG_PATH,
+        prompt: 'test',
+        env: { DIRECTOR_LABEL: 'abc123' },
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
+      expect(cFlags.some((f) => f.includes('DIRECTOR_LABEL = "abc123"'))).toBe(true);
+      expect(cFlags.some((f) => f.includes('SHELL_PORT = "3000"'))).toBe(true);
+    });
+
     test('skips MCP args when .mcp.json does not exist', () => {
       const { child, args } = spawnPersona({
         role: 'director',
@@ -595,22 +624,5 @@ describe('persona-process', () => {
       expect(args).toContain(join(TEST_DIR, 'meta.md'));
     });
 
-    test('includes skills subdirectories as plugin-dir', () => {
-      mkdirSync(join(TEST_DIR, 'skills', 'web-browse'), { recursive: true });
-      mkdirSync(join(TEST_DIR, 'skills', 'coding'), { recursive: true });
-
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'claude', command: 'echo', name: 'claude' },
-        mode: 'background',
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).toContain(join(TEST_DIR, 'skills', 'web-browse'));
-      expect(args).toContain(join(TEST_DIR, 'skills', 'coding'));
-    });
-  });
+});
 });

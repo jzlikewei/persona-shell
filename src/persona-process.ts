@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import { existsSync, readdirSync, mkdirSync, openSync, closeSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, openSync, closeSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { getLogDir } from './logger.js';
 import type { AgentProviderConfig } from './config.js';
@@ -59,7 +59,6 @@ export interface SpawnResult {
 
 function buildClaudeInjectionArgs(personaDir: string): string[] {
   const personasDir = join(personaDir, 'personas');
-  const skillsDir = join(personaDir, 'skills');
 
   const args = ['--add-dir', personaDir, '--plugin-dir', personasDir];
 
@@ -68,15 +67,6 @@ function buildClaudeInjectionArgs(personaDir: string): string[] {
   const metaFile = join(personaDir, 'meta.md');
   if (existsSync(soulFile)) args.push('--append-system-prompt-file', soulFile);
   if (existsSync(metaFile)) args.push('--append-system-prompt-file', metaFile);
-
-  // skills/ 子目录作为 plugin-dir
-  try {
-    for (const d of readdirSync(skillsDir, { withFileTypes: true })) {
-      if (d.isDirectory()) {
-        args.push('--plugin-dir', join(skillsDir, d.name));
-      }
-    }
-  } catch { /* skills 目录可能不存在 */ }
 
   return args;
 }
@@ -137,7 +127,7 @@ function tomlBareKey(value: string): string | null {
   return /^[A-Za-z0-9_-]+$/.test(value) ? value : null;
 }
 
-function buildCodexMcpOverrideArgs(mcpConfigPath?: string, extraEnv?: Record<string, string>): string[] {
+function buildCodexMcpOverrideArgs(mcpConfigPath?: string, mcpEnvOverrides?: Record<string, string>): string[] {
   if (!mcpConfigPath || !existsSync(mcpConfigPath)) return [];
 
   try {
@@ -177,8 +167,8 @@ function buildCodexMcpOverrideArgs(mcpConfigPath?: string, extraEnv?: Record<str
             .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
         : [];
       const mergedEnv = Object.fromEntries(envEntries);
-      if (extraEnv?.DIRECTOR_LABEL) {
-        mergedEnv.DIRECTOR_LABEL = extraEnv.DIRECTOR_LABEL;
+      if (mcpEnvOverrides) {
+        Object.assign(mergedEnv, mcpEnvOverrides);
       }
       if (Object.keys(mergedEnv).length > 0) {
         args.push('-c', `${base}.env=${tomlInlineTable(mergedEnv)}`);
@@ -215,7 +205,11 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.agent.search) {
       args.push('--search');
     }
-    args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath, options.env));
+    const mcpEnvOverrides: Record<string, string> = {};
+    if (options.env?.DIRECTOR_LABEL) {
+      mcpEnvOverrides.DIRECTOR_LABEL = options.env.DIRECTOR_LABEL;
+    }
+    args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath, mcpEnvOverrides));
     const codexCd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
       ? options.projectDir
       : options.personaDir;

@@ -186,3 +186,14 @@ launchctl start com.persona.shell
 ### 飞书 WebSocket 断连
 
 Shell 内置了 watchdog 机制，断连超过 2 分钟且飞书 API 可达时会自动重启进程。如果使用 launchd 服务化部署，进程退出后会自动拉起。持续断连通常是网络问题，检查代理配置（飞书域名应在 `no_proxy` 列表中）。
+
+### 自定义 Skills 未被 Claude Code 加载
+
+`skills/` 目录下的自定义 Skill（如 abstract-dog-style、code-review、browser-harness 等）没有被 Claude Code 发现和加载。这是因为 Claude Code 只会自动扫描 `--add-dir` 指定目录下的 `.claude/` 子目录来发现 plugins/skills。
+
+**解决方法**：确保身份仓库中存在软链接 `~/.persona/.claude/skills` → `~/.persona/skills`。`bun run init` 会自动创建此软链接。如果是已有身份仓库缺少此链接，手动执行：
+
+```bash
+mkdir -p ~/.persona/.claude
+ln -sf ../skills ~/.persona/.claude/skills
+```
