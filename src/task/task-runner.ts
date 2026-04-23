@@ -40,6 +40,7 @@ interface RunningTask {
   pid: number;
   timer: NodeJS.Timeout;
   child: ChildProcess;
+  rl?: ReturnType<typeof import('readline').createInterface>;
   startedAt: number;
   timedOut: boolean;
   outputPath: string;
@@ -150,12 +151,14 @@ export class TaskRunner extends EventEmitter {
       this.killWithEscalation(input.taskId, child.pid!);
     }, timeoutMs);
 
-    this.running.set(input.taskId, { pid: child.pid, timer, child, startedAt, timedOut: false, outputPath, resultFile });
+    const entry: RunningTask = { pid: child.pid, timer, child, startedAt, timedOut: false, outputPath, resultFile };
+    this.running.set(input.taskId, entry);
 
     // Parse stream-json stdout and log to file
     const stdoutLogPath = join(getLogDir(), `task-${input.taskId}.stdout.log`);
 
     const rl = createInterface({ input: child.stdout! });
+    entry.rl = rl;
     rl.on('line', (line) => {
       if (!line.trim()) return;
       try { appendFileSync(stdoutLogPath, line + '\n'); } catch { /* best-effort */ }
@@ -233,6 +236,7 @@ export class TaskRunner extends EventEmitter {
     if (!entry) return false;
 
     console.log(`[task-runner] Cancelling task ${taskId} (pid=${entry.pid})`);
+    entry.rl?.close();
     clearTimeout(entry.timer);
     this.running.delete(taskId);
 
@@ -291,6 +295,7 @@ export class TaskRunner extends EventEmitter {
         process.kill(entry.pid, 0);
       } catch {
         console.log(`[task-runner] Task ${taskId} pid ${entry.pid} is dead but close event was not received, cleaning up`);
+        entry.rl?.close();
         clearTimeout(entry.timer);
         this.running.delete(taskId);
 
