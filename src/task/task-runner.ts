@@ -173,7 +173,8 @@ export class TaskRunner extends EventEmitter {
       }
     });
 
-    child.on('close', (code) => {
+    child.on('exit', (code) => {
+      rl.close();
       const entry = this.running.get(input.taskId);
       if (!entry) return; // already cleaned up (e.g. by cancel)
 
@@ -298,15 +299,15 @@ export class TaskRunner extends EventEmitter {
         const moved = this.materializeResultFile(entry.outputPath, entry.resultFile);
         if (moved.ok) resultFile = entry.resultFile;
 
+        const success = !!resultFile;
         const result: TaskResult = {
           taskId,
-          success: false,
-          error: `process disappeared (pid ${entry.pid})`,
+          success,
           durationMs,
           costUsd: entry.costUsd,
-          ...(resultFile ? { resultFile } : {}),
+          ...(success ? { resultFile } : { error: `process disappeared (pid ${entry.pid})` }),
         };
-        this.emit('task-failed', result);
+        this.emit(success ? 'task-completed' : 'task-failed', result);
       }
     }
   }
