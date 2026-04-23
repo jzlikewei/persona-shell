@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync, mkdtempSync } from 'fs';
+import { existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { getLogDir } from './logger.js';
 import type { AgentProviderConfig } from './config.js';
@@ -204,8 +204,9 @@ function buildKimiMcpConfigWithEnv(mcpConfigPath: string, directorLabel: string)
       }
     }
 
-    const tmpDir = mkdtempSync(join('/tmp', 'persona-mcp-'));
-    const tmpPath = join(tmpDir, '.mcp.json');
+    const tmpDir = join('/tmp', 'persona-mcp');
+    mkdirSync(tmpDir, { recursive: true });
+    const tmpPath = join(tmpDir, `${directorLabel}.mcp.json`);
     writeFileSync(tmpPath, JSON.stringify(raw, null, 2));
     return tmpPath;
   } catch {
