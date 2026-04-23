@@ -270,7 +270,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
         args.push('--skills-dir', skillsDir);
       }
     }
-      if (options.mcpConfigPath && existsSync(options.mcpConfigPath)) {
+    if (options.mcpConfigPath && existsSync(options.mcpConfigPath)) {
       // Kimi 没有 Codex 的 -c TOML override 机制，需要动态注入 DIRECTOR_LABEL
       const mcpPath = (options.env?.DIRECTOR_LABEL)
         ? buildKimiMcpConfigWithEnv(options.mcpConfigPath, options.env.DIRECTOR_LABEL)
@@ -284,7 +284,10 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.mode === 'background') {
       args.push('--output-format', 'stream-json');
       if (options.resumeSessionId) args.push('--session', options.resumeSessionId);
-      if (options.prompt) args.push('--prompt', options.prompt);
+      if (options.prompt) {
+        const fullPrompt = buildInjectedPrompt(options.role, options.personaDir, options.prompt);
+        args.push('--prompt', fullPrompt);
+      }
     }
   }
 
@@ -346,7 +349,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       args.push('--json', '--skip-git-repo-check');
       const prompt = options.resumeSessionId
         ? (options.prompt ?? '')
-        : buildCodexPrompt(options.role, options.personaDir, options.prompt ?? '');
+        : buildInjectedPrompt(options.role, options.personaDir, options.prompt ?? '');
       if (prompt) args.push(prompt);
     }
   }
@@ -413,7 +416,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   return { child, args };
 }
 
-function buildCodexPrompt(role: string, personaDir: string, taskPrompt: string): string {
+function buildInjectedPrompt(role: string, personaDir: string, taskPrompt: string): string {
   const sections: string[] = [];
   const promptFiles = [
     { label: 'soul', path: join(personaDir, 'soul.md') },

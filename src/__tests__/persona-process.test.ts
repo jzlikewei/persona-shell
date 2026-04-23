@@ -478,7 +478,7 @@ describe('persona-process', () => {
     });
   });
 
-  describe('codex background prompt building (buildCodexPrompt)', () => {
+  describe('codex background prompt building (buildInjectedPrompt)', () => {
     test('codex background args end without prompt section when no prompt given', () => {
       const { child, args } = spawnPersona({
         role: 'explorer',
@@ -490,7 +490,7 @@ describe('persona-process', () => {
       });
       child.kill();
 
-      // With empty prompt and no soul/meta/persona files, buildCodexPrompt returns ''
+      // With empty prompt and no soul/meta/persona files, buildInjectedPrompt returns ''
       // so args should not contain a trailing prompt string
       const afterSkipIdx = args.indexOf('--skip-git-repo-check');
       expect(afterSkipIdx).toBeGreaterThan(-1);
@@ -540,7 +540,7 @@ describe('persona-process', () => {
       expect(builtPrompt).toContain('## Injected persona:explorer');
     });
 
-    test('codex background with resumeSessionId uses raw prompt, not buildCodexPrompt', () => {
+    test('codex background with resumeSessionId uses raw prompt, not buildInjectedPrompt', () => {
       writeFileSync(join(TEST_DIR, 'soul.md'), 'soul content');
 
       const { child, args } = spawnPersona({
@@ -554,7 +554,7 @@ describe('persona-process', () => {
       });
       child.kill();
 
-      // When resuming, prompt is passed as-is without buildCodexPrompt injection
+      // When resuming, prompt is passed as-is without buildInjectedPrompt injection
       expect(args).toContain('resume');
       expect(args).toContain('thread-resume-456');
       const lastArg = args[args.length - 1];
