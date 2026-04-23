@@ -222,6 +222,9 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'send_attachment':
       return callShell('POST', '/api/send-attachment', { path: args.path, source_director: DIRECTOR_LABEL });
     case 'list_models': {
+      if (!ANTHROPIC_BASE_URL) {
+        throw new Error('ANTHROPIC_BASE_URL is not set');
+      }
       const res = await fetch(`${ANTHROPIC_BASE_URL}/v1/models`, {
         headers: {
           'Authorization': `Bearer ${ANTHROPIC_AUTH_TOKEN}`,
