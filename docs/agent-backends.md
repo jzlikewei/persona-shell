@@ -130,7 +130,7 @@ Shell 与 Claude Code 通过 FIFO 管道交换 JSON 行。
 Codex 不支持 Claude Code 的 `--plugin-dir` / `--append-system-prompt-file` 参数。身份注入通过以下方式：
 
 - `--cd ~/.persona`：设置工作目录，Codex 会自动读取 CLAUDE.md
-- **Prompt 拼接**（后台任务）：`buildCodexPrompt()` 将 `soul.md`、`meta.md`、`personas/{role}.md` 的内容拼接到 prompt 前部
+- **Prompt 拼接**（后台任务）：`buildInjectedPrompt()` 将 `soul.md`、`meta.md`、`personas/{role}.md` 的内容拼接到 prompt 前部
 - **MCP 工具**：通过 `-c mcp_servers.*` TOML 覆盖参数注入（从 `.mcp.json` 转换）
 
 ### 进程启动
