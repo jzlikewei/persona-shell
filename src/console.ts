@@ -631,10 +631,11 @@ export function startConsole(
               const chatId = messaging?.getLastChatId();
               if (chatId && messaging) {
                 await messaging.sendMessage(chatId, body.message);
+                return Response.json({ ok: true });
               } else {
                 console.warn('[webhook] no messaging channel available, message dropped');
+                return Response.json({ ok: false, error: 'no messaging channel available' }, { status: 503 });
               }
-              return Response.json({ ok: true });
             } catch (err) {
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
