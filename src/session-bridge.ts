@@ -1090,7 +1090,7 @@ export class SessionBridge extends EventEmitter {
         group_name: groupName,
         state_path: sourcePath,
         shared_note: sharedNote,
-      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote}`;
+      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote} 该 workspace 文件是你的工作记忆，重要状态变更时主动更新，不要只等 flush。`;
     } else {
       msg = loadPrompt(this.config.persona_dir, 'bootstrap-pool-fresh', {
         group_name: groupName,
