@@ -182,6 +182,7 @@ const RETRY_DELAYS = [1000, 3000];
 // Chat info cache (name + member count + chat mode) for group chats
 const chatInfoCache = new Map<string, { name: string; memberCount: number; chatMode: 'group' | 'topic'; fetchedAt: number }>();
 const CHAT_INFO_CACHE_TTL = 30 * 60_000; // 30 minutes
+const userNameCache = new Map<string, { name: string; fetchedAt: number }>();
 
 /** 带重试的异步调用，失败后按 delays 间隔重试 */
 async function withRetry<T>(
@@ -288,6 +289,24 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     return false;
   }
 
+  async function getUserName(openId: string): Promise<string | undefined> {
+    const cached = userNameCache.get(openId);
+    if (cached && Date.now() - cached.fetchedAt < CHAT_INFO_CACHE_TTL) {
+      return cached.name;
+    }
+    try {
+      const res = await client.contact.v3.user.get({ path: { user_id: openId }, params: { user_id_type: 'open_id' } });
+      const name = (res?.data?.user as Record<string, unknown> | undefined)?.name as string | undefined;
+      if (name) {
+        userNameCache.set(openId, { name, fetchedAt: Date.now() });
+      }
+      return name;
+    } catch (err) {
+      console.warn(`[feishu] Failed to get user name for ${openId}:`, err);
+      return undefined;
+    }
+  }
+
   /** Get chat name + member count + chat mode for a group, with caching. */
   async function getChatInfo(chatId: string): Promise<{ name: string; memberCount: number; chatMode: 'group' | 'topic' } | null> {
     const cached = chatInfoCache.get(chatId);
@@ -377,6 +396,9 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         if (info) {
           msg.memberCount = info.memberCount;
           msg.groupName = info.name;
+        }
+        if (senderOpenId) {
+          msg.senderName = await getUserName(senderOpenId);
         }
       }
 

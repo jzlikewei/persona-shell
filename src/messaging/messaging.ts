@@ -15,6 +15,7 @@ export interface IncomingMessage {
   threadId?: string;      // 子对话（飞书话题、Slack thread、Telegram topic）
   quotedText?: string;    // 引用回复的原文
   senderOpenId?: string;  // 发送者的飞书 open_id（用于本体识别）
+  senderName?: string;
   attachments?: Attachment[];
 }
 
