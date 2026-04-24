@@ -337,10 +337,8 @@ async function main() {
             console.log('[scheduler] shell_action: check_flush (reserved)');
             break;
           case 'flush_restart':
-            console.log('[scheduler] shell_action: flush_restart — shutting down pool + flushing main Director');
+            console.log('[scheduler] shell_action: flush_restart — flushing main Director');
             try {
-              await pool.shutdownAll();
-              console.log('[scheduler] flush_restart: pool Directors shut down, flushing main Director');
               await director.flush();
               console.log('[scheduler] flush_restart completed');
             } catch (err) {
@@ -419,7 +417,7 @@ async function main() {
       role: 'system',
       description: '每日 flush+restart main Director',
       prompt: '',
-      schedule: 'weekday 11:00',
+      schedule: 'daily 11:00',
       action_type: 'shell_action',
       action_name: 'flush_restart',
     });

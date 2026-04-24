@@ -159,10 +159,9 @@ export class Scheduler {
  * Determine whether a job should run now, based on its schedule string and last run time.
  *
  * Supported formats:
- *   "every Nm"      — run if >= N minutes since last run (or first run)
- *   "every Nh"      — run if >= N hours since last run (or first run)
- *   "daily HH:MM"   — run once per day at or after HH:MM (Asia/Shanghai)
- *   "weekday HH:MM" — run once per weekday (Mon-Fri) at or after HH:MM (Asia/Shanghai)
+ *   "every Nm"    — run if >= N minutes since last run (or first run)
+ *   "every Nh"    — run if >= N hours since last run (or first run)
+ *   "daily HH:MM" — run once per day at or after HH:MM (Asia/Shanghai)
  */
 export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
   const now = new Date();
@@ -178,25 +177,17 @@ export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
     return elapsed >= intervalMs;
   }
 
-  // "daily HH:MM" or "weekday HH:MM"
-  const dailyMatch = schedule.match(/^(daily|weekday)\s+(\d{2}):(\d{2})$/);
+  // "daily HH:MM"
+  const dailyMatch = schedule.match(/^daily\s+(\d{2}):(\d{2})$/);
   if (dailyMatch) {
-    const mode = dailyMatch[1];
-    const targetHour = parseInt(dailyMatch[2], 10);
-    const targetMinute = parseInt(dailyMatch[3], 10);
+    const targetHour = parseInt(dailyMatch[1], 10);
+    const targetMinute = parseInt(dailyMatch[2], 10);
 
-    // Get current time in Asia/Shanghai
+    // Get current time in Asia/Shanghai (用 Intl.DateTimeFormat 安全提取，避免 re-parse toLocaleString)
     const hourFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', hour: 'numeric', hour12: false });
     const minuteFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', minute: 'numeric' });
-    const dayFmt = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', weekday: 'short' });
     const currentHour = parseInt(hourFmt.format(now), 10);
     const currentMinute = parseInt(minuteFmt.format(now), 10);
-
-    // Weekday check: skip Sat/Sun
-    if (mode === 'weekday') {
-      const dayName = dayFmt.format(now);
-      if (dayName === 'Sat' || dayName === 'Sun') return false;
-    }
 
     // Haven't reached target time yet today
     if (currentHour < targetHour || (currentHour === targetHour && currentMinute < targetMinute)) {
@@ -209,7 +200,7 @@ export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
     // Build today's target timestamp in Asia/Shanghai
     const todayStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
     // +08:00 is safe here — China does not observe DST, so Asia/Shanghai is always UTC+8.
-    const todayTarget = new Date(`${todayStr}T${dailyMatch[2]}:${dailyMatch[3]}:00+08:00`);
+    const todayTarget = new Date(`${todayStr}T${dailyMatch[1]}:${dailyMatch[2]}:00+08:00`);
     return new Date(lastRunAt).getTime() < todayTarget.getTime();
   }
 
@@ -217,7 +208,7 @@ export function shouldRun(schedule: string, lastRunAt: string | null): boolean {
   return false;
 }
 
-/** Check if a schedule string is a daily schedule (e.g. "daily 03:00", "weekday 11:00") */
+/** Check if a schedule string is a daily schedule (e.g. "daily 03:00") */
 export function isDailySchedule(schedule: string): boolean {
-  return /^(daily|weekday)\s+\d{2}:\d{2}$/.test(schedule);
+  return /^daily\s+\d{2}:\d{2}$/.test(schedule);
 }

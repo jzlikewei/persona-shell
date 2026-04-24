@@ -96,7 +96,7 @@ const TOOLS = [
         model: { type: 'string', description: '可选 model 名称；不传则使用角色或 provider 的默认 model' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt（action_type=spawn_role 时使用）' },
-        schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00", "weekday 11:00"' },
+        schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00"' },
         action_type: { type: 'string', description: '动作类型: "spawn_role"(默认) | "director_msg" | "shell_action"', enum: ['spawn_role', 'director_msg', 'shell_action'] },
         message: { type: 'string', description: 'action_type=director_msg 时的消息内容，支持 {today} {yesterday} 模板变量' },
         action_name: { type: 'string', description: 'action_type=shell_action 时的动作名，如 "check_feishu"' },
