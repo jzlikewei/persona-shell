@@ -26,6 +26,8 @@ launchctl stop  com.persona.shell                                # 停止
 | `/start-with-codex` | 当前会话 | 快捷切换到 Codex Director 模式（等价于 `/switch-agent codex`） |
 | `/start-with-claude` | 当前会话 | 快捷切回 Claude Director 模式（等价于 `/switch-agent claude`） |
 | `/help` | 全局 | 列出所有可用命令 |
+| `/persona <name>` | 当前会话 | 切换人格角色（如 philosopher, critic 等） |
+| `/new-session` | 当前会话 | 丢弃当前 session，下次消息创建全新 session（进程保留，不 checkpoint）🔒 |
 
 ### 重启级别速查
 
@@ -63,3 +65,16 @@ launchctl stop  com.persona.shell                                # 停止
 ## Web 控制台
 
 `http://localhost:3000` — 状态面板 / 会话查看 / 流式响应 / 任务管理
+
+## 生命周期操作对比
+
+| 操作 | 进程 | Session | 保存上下文 | 重新加载配置 | 适用场景 |
+|------|------|---------|-----------|-------------|---------|
+| `flush` (`/flush`) | kill → 重启 | **清除** → 全新 | ✅ checkpoint | ✅ | 定期刷新、加载新配置 |
+| `clear` (`/clear`) | kill → 重启 | **清除** → 全新 | ❌ 直接丢弃 | ✅ | 上下文损坏、硬重置 |
+| `restart` (`/session-restart`) | kill → 重启 | **保留** → resume | ❌ | ✅（进程重启副作用） | 中断卡住的 turn |
+| `new-session` (`/new-session`) | **保留** | **清除** | ❌ | ❌ | 轻量切换 session |
+| `shutdown` | kill | **保留** | ❌ | ❌ | Pool 回收、应用退出 |
+| `detach` | **保留** | **保留** | ❌ | ❌ | Shell 重启前保活 |
+
+**"加载新配置" = flush**：如果目的是让 Director 读取最新的 skills / CLAUDE.md / personas，必须用 flush（清 session + 新进程 + bootstrap），而非 shutdown（resume 旧上下文）或 restart（resume 保留旧 session）。
