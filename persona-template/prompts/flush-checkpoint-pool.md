@@ -4,7 +4,7 @@
 
 模板变量：
 - {group_name} — 群名称
-- {state_path} — workspace 文件路径（workspaces/{label}.md）
+- {state_path} — workspace 文件路径（workspaces/{label}-{群名}/context.md）
 
 ---
 

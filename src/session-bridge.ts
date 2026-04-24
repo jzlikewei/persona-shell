@@ -1011,15 +1011,20 @@ export class SessionBridge extends EventEmitter {
   }
 
   private getSessionStateFilePath(): string {
-    const dir = join(this.config.persona_dir, 'workspaces');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const root = join(this.config.persona_dir, 'workspaces');
+    if (!existsSync(root)) mkdirSync(root, { recursive: true });
     const suffix = this.groupName ? `-${this.groupName.replace(/[\/\\:*?"<>|]/g, '_')}` : '';
-    const file = join(dir, `${this.label}${suffix}.md`);
+    const wsDir = join(root, `${this.label}${suffix}`);
+    if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
+    const file = join(wsDir, 'context.md');
     if (!existsSync(file)) {
-      // migrate from old name without group suffix
-      const legacy = join(dir, `${this.label}.md`);
-      if (existsSync(legacy)) {
-        renameSync(legacy, file);
+      // migrate from legacy flat file (workspaces/{label}-{group}.md)
+      const legacyFlat = join(root, `${this.label}${suffix}.md`);
+      const legacyBare = join(root, `${this.label}.md`);
+      if (existsSync(legacyFlat)) {
+        renameSync(legacyFlat, file);
+      } else if (existsSync(legacyBare)) {
+        renameSync(legacyBare, file);
       } else {
         writeFileSync(file, '');
       }
