@@ -96,6 +96,7 @@ export class SessionBridge extends EventEmitter {
   private contextWindow = 0;
   private contextMetricsLive = false;
   private restartTimestamps: number[] = [];
+  private expectedStaleCloses = 0;
   private discardNextResponse = false;
   private personaRole: string = 'director';
 
@@ -277,6 +278,7 @@ export class SessionBridge extends EventEmitter {
         console.log(`[bridge:${this.label}] FLUSH: checkpoint done (non-main)`);
       }
 
+      this.expectedStaleCloses++;
       this.adapter.terminate('SIGTERM');
       this.clearSession();
       await this.restart();
@@ -356,6 +358,7 @@ export class SessionBridge extends EventEmitter {
       console.log(`[bridge:${this.label}] FLUSH: checkpoint done`);
     }
 
+    this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
     await this.restart();
@@ -393,12 +396,10 @@ export class SessionBridge extends EventEmitter {
       return false;
     }
     this.flushing = true;
+    this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
     await this.restart();
-    // Let stale close events from the old read stream drain
-    // while flushing is still true (so handleRuntimeClosed treats them as expected)
-    await new Promise<void>(r => setTimeout(r, 0));
     this.finishFlush();
     console.log(`[bridge:${this.label}] CLEAR: context discarded, fresh session started`);
     return true;
@@ -1226,6 +1227,13 @@ export class SessionBridge extends EventEmitter {
   }
 
   private async handleRuntimeClosed(): Promise<void> {
+    if (this.expectedStaleCloses > 0) {
+      this.expectedStaleCloses--;
+      this.runtimeCloseResolve?.();
+      this.runtimeCloseResolve = null;
+      console.log(`[bridge:${this.label}] Ignoring stale close event from previous runtime`);
+      return;
+    }
     this.runtimeCloseResolve?.();
     this.runtimeCloseResolve = null;
     // Don't clear pendingTurns during flush — the flush flow manages its own
