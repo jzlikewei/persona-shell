@@ -4,8 +4,19 @@
 
 模板变量：
 - {group_name} — 群名称
-- {state_path} — 状态文件路径（state/sessions/{label}.md）
+- {state_path} — workspace 文件路径（workspaces/{label}.md）
 
 ---
 
-[FLUSH] 系统即将进行上下文刷新。请将群「{group_name}」当前会话的工作状态保存到 {state_path}，包括：当前讨论焦点、关键决策、未完成事项。只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。
+[FLUSH] 系统即将进行上下文刷新。请将群「{group_name}」的 workspace 更新到 {state_path}，按以下三层结构组织，只保留仍有效的信息，控制在 5KB 以内：
+
+## Context
+目的、目标、技术栈、项目路径、关键约束（低频变化的背景信息）
+
+## Knowledge
+已做的决策及理由、关键发现、已完成的里程碑（累积的知识）
+
+## State
+当前任务、待办事项、进行中的讨论（高频变化的运行时状态）
+
+保存完成后回复"已保存"。

@@ -260,7 +260,7 @@ export class SessionBridge extends EventEmitter {
       const poolCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-pool', {
         group_name: this.groupName ?? this.label,
         state_path: statePath,
-      }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」当前会话的工作状态保存到 ${statePath}，包括：当前讨论焦点、关键决策、未完成事项。只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
+      }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${statePath}，按 Context（背景目标约束）/ Knowledge（决策发现里程碑）/ State（当前任务待办）三层结构组织，只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
       await this.writeRaw(poolCheckpointMsg);
 
       const checkpointOk = await Promise.race([
@@ -1011,7 +1011,7 @@ export class SessionBridge extends EventEmitter {
   }
 
   private getSessionStateFilePath(): string {
-    const dir = join(this.config.persona_dir, 'state', 'sessions');
+    const dir = join(this.config.persona_dir, 'workspaces');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const file = join(dir, `${this.label}.md`);
     if (!existsSync(file)) writeFileSync(file, '');
@@ -1042,7 +1042,7 @@ export class SessionBridge extends EventEmitter {
     }
 
     return loadPrompt(this.config.persona_dir, 'agent-switch-checkpoint-pool', vars)
-      ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请把群「${this.groupName ?? this.label}」当前会话的上下文保存到 ${sessionStatePath}，包括：讨论目标、当前结论、未完成事项、后续动作。该文件只服务于这个会话。保存完成后回复"已保存"。`;
+      ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${sessionStatePath}，按 Context / Knowledge / State 三层结构组织。保存完成后回复"已保存"。`;
   }
 
   private buildPersonaSwitchCheckpointPrompt(targetRole: string): string {
@@ -1055,7 +1055,7 @@ export class SessionBridge extends EventEmitter {
     };
 
     return loadPrompt(this.config.persona_dir, 'persona-switch-checkpoint', vars)
-      ?? `[FLUSH] 当前人格即将从「${this.personaRole}」切换到「${targetRole}」。请把当前会话的上下文保存到 ${sessionStatePath}，包括：讨论焦点、关键结论、未完成事项。保存完成后回复"已保存"。`;
+      ?? `[FLUSH] 当前人格即将从「${this.personaRole}」切换到「${targetRole}」。请将当前 workspace 更新到 ${sessionStatePath}，按 Context / Knowledge / State 三层结构组织。保存完成后回复"已保存"。`;
   }
 
   private getPersonaSwitchBootstrapSource(freshStart: boolean): string | undefined {
