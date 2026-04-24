@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, type Config } from './config.js';
@@ -1013,8 +1013,17 @@ export class SessionBridge extends EventEmitter {
   private getSessionStateFilePath(): string {
     const dir = join(this.config.persona_dir, 'workspaces');
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const file = join(dir, `${this.label}.md`);
-    if (!existsSync(file)) writeFileSync(file, '');
+    const suffix = this.groupName ? `-${this.groupName.replace(/[\/\\:*?"<>|]/g, '_')}` : '';
+    const file = join(dir, `${this.label}${suffix}.md`);
+    if (!existsSync(file)) {
+      // migrate from old name without group suffix
+      const legacy = join(dir, `${this.label}.md`);
+      if (existsSync(legacy)) {
+        renameSync(legacy, file);
+      } else {
+        writeFileSync(file, '');
+      }
+    }
     return file;
   }
 
