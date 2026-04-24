@@ -19,13 +19,22 @@ launchctl stop  com.persona.shell                                # 停止
 | `/esc` | 当前会话 | 取消队列中最早的消息 |
 | `/flush` | 当前会话 | 保存上下文后刷新（checkpoint → 新 session → bootstrap） |
 | `/clear` | 当前会话 | 清空上下文（不保存，直接重置） |
-| `/session-restart` `/restart` | 当前会话 | 重启当前 Director（保留 session，加载新配置） |
-| `/shell-restart` `/restart-shell` | 全局 | 重启整个 Shell 进程（代码更新生效） |
+| `/session-restart` `/restart` | 当前会话 | 重启当前 Director 进程（CLAUDE.md、prompts 等会重新加载；config.yaml 不受影响） |
+| `/shell-restart` `/restart-shell` | 全局 | 重启整个 Shell 进程（config.yaml、源代码等 Shell 启动时加载的内容重新生效） |
 | `/status` | 当前会话 | 查看 Director 状态摘要（PID、token、队列等） |
 | `/switch-agent <agent>` | 当前会话 | 切换当前会话的 Director agent；切换前先 flush 保存上下文，切换后自动恢复，并持久化该会话的 agent 选择 |
 | `/start-with-codex` | 当前会话 | 快捷切换到 Codex Director 模式（等价于 `/switch-agent codex`） |
 | `/start-with-claude` | 当前会话 | 快捷切回 Claude Director 模式（等价于 `/switch-agent claude`） |
 | `/help` | 全局 | 列出所有可用命令 |
+
+### 重启级别速查
+
+| 改动类型 | 所需重启 | 原因 |
+|----------|----------|------|
+| CLAUDE.md / prompts/*.md | `/flush` 或 `/restart` | Director 启动时读取 |
+| config.yaml | `/shell-restart` | Shell 启动时加载，运行期间不热更新 |
+| service.env | 重启服务（launchctl stop/start） | 环境变量在进程启动时注入 |
+| 源代码（src/） | `/shell-restart` | Shell 进程需要重启加载新代码 |
 
 ## 日志
 
