@@ -180,6 +180,41 @@ describe('SessionBridge', () => {
     expect(bridge.getStatus().contextMetricsLive).toBe(false);
   });
 
+  test('clearContext ignores stale close event from old runtime', async () => {
+    const bridge = createBridge();
+    const oldAdapter = FakeAdapter.instances[0]!;
+    await bridge.start();
+
+    const success = await bridge.clearContext();
+    expect(success).toBe(true);
+
+    const onEmit = spyOn(bridge, 'emit');
+    // Simulate delayed close from the old runtime — should be ignored
+    await oldAdapter.closeRuntime();
+
+    expect(onEmit.mock.calls.some((call) => call[0] === 'alert')).toBe(false);
+    expect(onEmit.mock.calls.some((call) => call[0] === 'stream-abort')).toBe(false);
+    expect(bridge.isFlushing).toBe(false);
+  });
+
+  test('clearContext consumes stale close but real unexpected close still triggers recovery', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    await bridge.start();
+
+    const success = await bridge.clearContext();
+    expect(success).toBe(true);
+
+    // Stale close from old runtime — should be ignored
+    await adapter.closeRuntime();
+
+    // Second close on same adapter simulates new runtime unexpected exit
+    const onEmit = spyOn(bridge, 'emit');
+    await adapter.closeRuntime();
+
+    expect(onEmit.mock.calls.some((call) => call[0] === 'stream-abort')).toBe(true);
+  });
+
   test('sendSystemMessage enqueues system-absorbed turn and absorbs response', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances[0]!;

@@ -565,10 +565,13 @@ async function main() {
     if (text.trim() === '/flush') {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
-      const poolEntry = getTargetEntry();
+      let poolEntry = getTargetEntry();
       if (routingKey && !poolEntry) {
-        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 flush').catch(() => {});
-        return;
+        // Director not active — spin it up first so we can flush
+        const groupName = msg.groupName ?? chatId.slice(0, 8);
+        const directorAgentName = pool.getDirectorAgentName(routingKey)
+          ?? config.agents.defaults.director ?? 'claude';
+        poolEntry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
       }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
