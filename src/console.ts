@@ -619,6 +619,28 @@ export function startConsole(
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
           }
+          // POST /api/webhook — receive external notification and forward to user via messaging
+          if (url.pathname === '/api/webhook' && req.method === 'POST') {
+            const body = await req.json() as { message?: string };
+            if (!body.message) {
+              return Response.json({ ok: false, error: 'message is required' }, { status: 400 });
+            }
+            const preview = body.message.length > 50 ? body.message.slice(0, 50) + '...' : body.message;
+            console.log(`[webhook] received: ${preview}`);
+            try {
+              const chatId = messaging?.getLastChatId();
+              if (chatId && messaging) {
+                await messaging.sendMessage(chatId, body.message);
+                return Response.json({ ok: true });
+              } else {
+                console.warn('[webhook] no messaging channel available, message dropped');
+                return Response.json({ ok: false, error: 'no messaging channel available' }, { status: 503 });
+              }
+            } catch (err) {
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+
           return new Response('Not found', { status: 404 });
         }
       }

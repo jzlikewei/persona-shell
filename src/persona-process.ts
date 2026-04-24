@@ -274,10 +274,16 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   if (!existsSync(stderrDir)) mkdirSync(stderrDir, { recursive: true });
   const stderrFd = openSync(stderrPath, 'a');
 
-  // Merge extra env vars (e.g. DIRECTOR_LABEL) into process env for child
-  const childEnv = options.env
-    ? { ...process.env, ...options.env }
-    : undefined;  // undefined = inherit parent env as-is
+  // Merge extra env vars (e.g. DIRECTOR_LABEL) into process env for child.
+  // Always build an explicit env object so we can strip inherited vars
+  // that restrict Claude Code's tool set (e.g. CLAUDE_CODE_SIMPLE).
+  const childEnv = (() => {
+    const base = { ...process.env };
+    // Remove inherited env vars that restrict Claude Code's tool set
+    delete base.CLAUDE_CODE_SIMPLE;
+    if (options.env) Object.assign(base, options.env);
+    return base;
+  })();
 
   // Resolve working directory: projectDir overrides personaDir for background tasks
   const cwd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))

@@ -10,7 +10,7 @@ agents:
     claude:
       type: "claude"
       command: "claude"
-      bare: true
+      bare: false                          # false = 保留完整工具集（含 Agent 等高级工具）; true = --bare 模式，工具限制为 Bash/Edit/Read
       dangerously_skip_permissions: true
       effort: "max"
     codex:

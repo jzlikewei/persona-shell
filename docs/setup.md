@@ -68,7 +68,7 @@ agents:
     claude:
       type: "claude"
       command: "claude"
-      bare: true
+      bare: false                 # false = 完整工具集（含 Agent）; true = --bare（仅 Bash/Edit/Read）
       dangerously_skip_permissions: true
       effort: "max"
     codex:
@@ -159,7 +159,17 @@ launchctl start com.persona.shell
 └── config.yaml                  # 运行配置
 ```
 
-这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`），通过 bare 模式忽略系统 CC 的配置。详见 [`claude-code-startup.md`](claude-code-startup.md)。
+这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`）。详见 [`claude-code-startup.md`](claude-code-startup.md)。
+
+### Agent Provider 配置说明
+
+| 参数 | 说明 |
+|------|------|
+| `bare` | `true` 时加 `--bare` 参数，去掉默认系统提示并限制工具集为 Bash/Edit/Read；`false` 时不加，保留完整工具集（约 30 个），包括 Agent（spawn sub-agent）等高级工具。**推荐 `false`**，以获得完整能力。 |
+| `dangerously_skip_permissions` | 跳过工具执行确认 |
+| `effort` | 推理力度：`min` / `low` / `medium` / `high` / `max` |
+
+> **环境变量**：子角色进程启动时会自动清除继承的 `CLAUDE_CODE_SIMPLE` 环境变量，不再受父进程的工具集限制。无需手动处理。
 
 ## 常见问题（FAQ）
 
