@@ -69,6 +69,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
 
   async restartTransport(): Promise<void> {
     this.assistantTexts = []; // clear stale assistant text from previous turn
+    const restartStart = Date.now();
     await this.runtime.closeWriteHandle();
 
     if (this.runtime.isAlive()) {
@@ -82,10 +83,13 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
         this.runtime.kill('SIGKILL');
         await new Promise((r) => setTimeout(r, 200));
       }
+      console.log(`[bridge:${this.options.label}] Process terminated in ${Date.now() - start}ms`);
     }
 
     this.runtime.cleanPipes();
+    const spawnStart = Date.now();
     await this.start();
+    console.log(`[bridge:${this.options.label}] Pipes reconnected in ${Date.now() - spawnStart}ms (total restart: ${Date.now() - restartStart}ms)`);
   }
 
   describeSessionReady(label: string, _sessionId: string | null, _sessionName: string | null): string {

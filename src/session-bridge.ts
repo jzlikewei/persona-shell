@@ -101,8 +101,9 @@ export class SessionBridge extends EventEmitter {
   private personaRole: string = 'director';
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
-  private static readonly FLUSH_STEP_TIMEOUT = 5 * 60_000;
-  private static readonly BOOTSTRAP_TIMEOUT = 3 * 60_000;
+  private static readonly FLUSH_STEP_TIMEOUT = 90_000;
+  private static readonly FLUSH_DRAIN_TIMEOUT = 30_000;
+  private static readonly BOOTSTRAP_TIMEOUT = 90_000;
 
   constructor(options: SessionBridgeOptions) {
     super();
@@ -249,9 +250,23 @@ export class SessionBridge extends EventEmitter {
 
     if (!this.isMain) {
       this.flushing = true;
+      const flushStart = Date.now();
+
+      if (this.pendingCount > 0) {
+        console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages (non-main)...`);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
+        if (!drained) {
+          console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms (non-main), proceeding`);
+          this.discardNextResponse = true;
+          this.pendingTurns = [];
+        } else {
+          console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms (non-main)`);
+        }
+      }
 
       // Checkpoint: ask Director to save group context before termination
       const statePath = this.getSessionStateFilePath();
+      const checkpointStart = Date.now();
       console.log(`[bridge:${this.label}] FLUSH: starting checkpoint (non-main) → ${statePath}`);
       const checkpointDone = new Promise<void>((resolve) => {
         this.flushCheckpointResolve = resolve;
@@ -268,22 +283,24 @@ export class SessionBridge extends EventEmitter {
         this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
       ]);
       if (!checkpointOk) {
-        console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout (non-main), forcing reset`);
+        console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms (non-main), forcing reset`);
         this.flushCheckpointResolve = null;
         this.discardNextResponse = true;
-        // 清除过期的 checkpoint pending turn
         const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
         if (idx >= 0) this.pendingTurns.splice(idx, 1);
       } else {
-        console.log(`[bridge:${this.label}] FLUSH: checkpoint done (non-main)`);
+        console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms (non-main)`);
       }
 
+      const restartStart = Date.now();
       this.expectedStaleCloses++;
       this.adapter.terminate('SIGTERM');
       this.clearSession();
       await this.restart();
+      console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms (non-main)`);
 
       // Bootstrap with saved state
+      const bootstrapStart = Date.now();
       const bootstrapDone = new Promise<void>((resolve) => {
         this.flushBootstrapResolve = resolve;
       });
@@ -295,16 +312,17 @@ export class SessionBridge extends EventEmitter {
         this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
       ]);
       if (!bootstrapOk) {
-        console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout (non-main) — forcing flush finish`);
+        console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms (non-main) — forcing flush finish`);
         this.flushBootstrapResolve = null;
         this.discardNextResponse = true;
-        // 清除过期的 bootstrap pending turn
         const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
         if (idx >= 0) this.pendingTurns.splice(idx, 1);
+      } else {
+        console.log(`[bridge:${this.label}] FLUSH: bootstrap done in ${Date.now() - bootstrapStart}ms (non-main)`);
       }
 
       this.finishFlush();
-      console.log(`[bridge:${this.label}] FLUSH: complete (non-main)`);
+      console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms (non-main)`);
       return true;
     }
 
@@ -321,19 +339,22 @@ export class SessionBridge extends EventEmitter {
     }
 
     this.flushing = true;
+    const flushStart = Date.now();
 
     if (this.pendingCount > 0) {
       console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
-      const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+      const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
       if (!drained) {
-        console.warn(`[bridge:${this.label}] FLUSH: drain timeout, aborting flush`);
+        console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms, aborting flush`);
         this.flushing = false;
         return false;
       }
+      console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms`);
     }
 
     this.emit('flush-drain-complete');
 
+    const checkpointStart = Date.now();
     console.log(`[bridge:${this.label}] FLUSH: starting checkpoint...`);
     const checkpointDone = new Promise<void>((resolve) => {
       this.flushCheckpointResolve = resolve;
@@ -348,21 +369,23 @@ export class SessionBridge extends EventEmitter {
       this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!checkpointOk) {
-      console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset`);
+      console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms, forcing reset`);
       this.flushCheckpointResolve = null;
       this.discardNextResponse = true;
-      // 清除过期的 checkpoint pending turn
       const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
       if (idx >= 0) this.pendingTurns.splice(idx, 1);
     } else {
-      console.log(`[bridge:${this.label}] FLUSH: checkpoint done`);
+      console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms`);
     }
 
+    const restartStart = Date.now();
     this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
     await this.restart();
+    console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms`);
 
+    const bootstrapStart = Date.now();
     const bootstrapDone = new Promise<void>((resolve) => {
       this.flushBootstrapResolve = resolve;
     });
@@ -376,16 +399,15 @@ export class SessionBridge extends EventEmitter {
       this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!bootstrapOk) {
-      console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout — forcing flush finish`);
+      console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms — forcing flush finish`);
       this.flushBootstrapResolve = null;
       this.discardNextResponse = true;
-      // 清除过期的 bootstrap pending turn
       const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
       if (idx >= 0) this.pendingTurns.splice(idx, 1);
       this.finishFlush();
     } else {
       this.finishFlush();
-      console.log(`[bridge:${this.label}] FLUSH: complete`);
+      console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms`);
     }
     return true;
   }
@@ -534,7 +556,7 @@ export class SessionBridge extends EventEmitter {
     try {
       if (this.pendingCount > 0) {
         console.log(`[bridge:${this.label}] Agent switch: draining ${this.pendingCount} in-flight messages...`);
-        const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
         if (!drained) {
           console.warn(`[bridge:${this.label}] Agent switch: drain timeout, aborting`);
           return false;
@@ -619,7 +641,7 @@ export class SessionBridge extends EventEmitter {
     try {
       if (this.pendingCount > 0) {
         console.log(`[bridge:${this.label}] Persona switch: draining ${this.pendingCount} in-flight messages...`);
-        const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
         if (!drained) {
           console.warn(`[bridge:${this.label}] Persona switch: drain timeout, aborting`);
           return false;
