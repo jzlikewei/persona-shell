@@ -336,6 +336,15 @@ async function main() {
           case 'check_flush':
             console.log('[scheduler] shell_action: check_flush (reserved)');
             break;
+          case 'flush_restart':
+            console.log('[scheduler] shell_action: flush_restart — flushing main Director');
+            try {
+              await director.flush();
+              console.log('[scheduler] flush_restart completed');
+            } catch (err) {
+              console.error('[scheduler] flush_restart failed:', err);
+            }
+            break;
           default:
             console.warn(`[scheduler] Unknown shell_action: ${job.action_name}`);
         }
@@ -398,6 +407,21 @@ async function main() {
       message: '@prompts/daily-report.md',
     });
     console.log('[shell] Seeded built-in cron job: daily-report');
+  }
+
+  // 内置 cron job：每日 flush+restart
+  const existingFlushRestart = listCronJobs().find((j) => j.name === 'daily-flush-restart');
+  if (!existingFlushRestart) {
+    createCronJob({
+      name: 'daily-flush-restart',
+      role: 'system',
+      description: '每日 flush+restart main Director',
+      prompt: '',
+      schedule: 'daily 11:00',
+      action_type: 'shell_action',
+      action_name: 'flush_restart',
+    });
+    console.log('[shell] Seeded built-in cron job: daily-flush-restart');
   }
 
   // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
