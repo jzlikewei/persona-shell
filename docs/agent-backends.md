@@ -1,6 +1,11 @@
 # Agent 后端
 
-Persona Shell 不直接调用 LLM API，而是将 CLI agent 作为子进程运行。当前支持两个后端，通过统一的三层架构（SessionBridge → Adapter → Runtime）接入。
+Persona Shell 不直接调用 LLM API，而是将 CLI agent 作为子进程运行。当前支持三个后端，通过统一的三层架构（SessionBridge → Adapter → Runtime）接入。
+
+> **维护说明**：新增或下线 agent 后端时，需同步更新以下位置：
+> 1. 本文档（添加/移除后端章节）
+> 2. `~/.persona/meta.md` 的"可用 Agent 后端"表（Director 运行时参考）
+> 3. `~/.persona/config.yaml` 的 `agents.providers` 和 `agents.roles`
 
 ---
 
