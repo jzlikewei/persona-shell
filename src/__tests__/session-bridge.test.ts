@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test, spyOn } from 'bun:test';
 import { existsSync, readFileSync } from 'fs';
 import { SessionBridge } from '../session-bridge.js';
-import { initTaskStore } from '../task/task-store.js';
+import { initTaskStore, setState } from '../task/task-store.js';
 import { initLogDir } from '../logger.js';
 import type {
   DirectorSessionAdapter,
@@ -168,6 +168,7 @@ describe('SessionBridge', () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances[0]!;
     await bridge.start();
+    adapter.hooks.onMetrics({ lastInputTokens: 5000, contextTokens: 5000 });
 
     const success = await bridge.clearContext();
 
@@ -176,6 +177,42 @@ describe('SessionBridge', () => {
     expect(adapter.restartCalls).toBe(1);
     expect(adapter.sent).toHaveLength(0);
     expect(bridge.isFlushing).toBe(false);
+    expect(bridge.getStatus().contextMetricsLive).toBe(false);
+  });
+
+  test('clearContext ignores stale close event from old runtime', async () => {
+    const bridge = createBridge();
+    const oldAdapter = FakeAdapter.instances[0]!;
+    await bridge.start();
+
+    const success = await bridge.clearContext();
+    expect(success).toBe(true);
+
+    const onEmit = spyOn(bridge, 'emit');
+    // Simulate delayed close from the old runtime — should be ignored
+    await oldAdapter.closeRuntime();
+
+    expect(onEmit.mock.calls.some((call) => call[0] === 'alert')).toBe(false);
+    expect(onEmit.mock.calls.some((call) => call[0] === 'stream-abort')).toBe(false);
+    expect(bridge.isFlushing).toBe(false);
+  });
+
+  test('clearContext consumes stale close but real unexpected close still triggers recovery', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    await bridge.start();
+
+    const success = await bridge.clearContext();
+    expect(success).toBe(true);
+
+    // Stale close from old runtime — should be ignored
+    await adapter.closeRuntime();
+
+    // Second close on same adapter simulates new runtime unexpected exit
+    const onEmit = spyOn(bridge, 'emit');
+    await adapter.closeRuntime();
+
+    expect(onEmit.mock.calls.some((call) => call[0] === 'stream-abort')).toBe(true);
   });
 
   test('sendSystemMessage enqueues system-absorbed turn and absorbs response', async () => {
@@ -462,15 +499,34 @@ describe('SessionBridge', () => {
 
   // ---- 4. handleMetricsUpdate ----
 
-  test('handleMetricsUpdate updates tokens, context window and cost', async () => {
+  test('handleMetricsUpdate updates tokens, context tokens, context window and cost', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
     await bridge.start();
-    adapter.hooks.onMetrics({ lastInputTokens: 5000, contextWindow: 128000, costUsd: 0.05 });
+    adapter.hooks.onMetrics({ lastInputTokens: 5000, contextTokens: 6000, contextWindow: 128000, costUsd: 0.05 });
     const s = bridge.getStatus();
     expect(s.lastInputTokens).toBe(5000);
+    expect(s.contextTokens).toBe(6000);
     expect(s.contextWindow).toBe(128000);
+    expect(s.contextMetricsLive).toBe(true);
     expect(s.totalCostUsd).toBe(0.05);
+  });
+
+  test('restoreState keeps restored context metrics marked as stale until a live turn updates them', () => {
+    setState('director:main', {
+      lastFlushAt: Date.now() - 1_000,
+      lastInputTokens: 138000,
+      contextTokens: 138000,
+      contextWindow: 950000,
+    });
+
+    const bridge = createBridgeWithOptions({ isMain: true, label: 'main' });
+    bridge.restoreState();
+
+    const status = bridge.getStatus();
+    expect(status.lastInputTokens).toBe(138000);
+    expect(status.contextTokens).toBe(138000);
+    expect(status.contextMetricsLive).toBe(false);
   });
 
   test('handleMetricsUpdate accumulates cost across calls', async () => {

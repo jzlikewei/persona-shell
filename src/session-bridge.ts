@@ -1,12 +1,15 @@
 import { EventEmitter } from 'events';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
+import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
 import { loadPrompt } from './prompt-loader.js';
 import { ClaudeDirectorRuntime } from './director-runtime/claude.js';
+import { KimiDirectorRuntime } from './director-runtime/kimi.js';
 import { CodexSessionAdapter } from './director-session-adapter/codex.js';
 import { ClaudeSessionAdapter } from './director-session-adapter/claude.js';
+import { KimiSessionAdapter } from './director-session-adapter/kimi.js';
 import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
@@ -17,6 +20,17 @@ import type {
 } from './director-session-adapter/index.js';
 import { getState, setState, listTasks } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
+
+let _localHostName: string | null = null;
+function getLocalHostName(): string {
+  if (_localHostName !== null) return _localHostName;
+  try {
+    _localHostName = execSync('scutil --get LocalHostName', { encoding: 'utf-8' }).trim() || 'unknown';
+  } catch {
+    _localHostName = 'unknown';
+  }
+  return _localHostName;
+}
 
 
 interface BridgePersistedState {
@@ -80,7 +94,9 @@ export class SessionBridge extends EventEmitter {
   private currentCountDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   private totalCostUsd = 0;
   private contextWindow = 0;
+  private contextMetricsLive = false;
   private restartTimestamps: number[] = [];
+  private expectedStaleCloses = 0;
   private discardNextResponse = false;
   private personaRole: string = 'director';
 
@@ -117,11 +133,16 @@ export class SessionBridge extends EventEmitter {
         directorAgent,
         personaRole: this.personaRole,
       };
-      return options.directorFactory
-        ? options.directorFactory(resolvedOptions, hooks)
-        : directorAgent.type === 'claude'
-          ? new ClaudeSessionAdapter(new ClaudeDirectorRuntime({ pipeDir, pidFile, label: this.label }), resolvedOptions, hooks)
-          : new CodexSessionAdapter(resolvedOptions, hooks);
+      if (options.directorFactory) {
+        return options.directorFactory(resolvedOptions, hooks);
+      }
+      if (directorAgent.type === 'claude') {
+        return new ClaudeSessionAdapter(new ClaudeDirectorRuntime({ pipeDir, pidFile, label: this.label }), resolvedOptions, hooks);
+      }
+      if (directorAgent.type === 'kimi') {
+        return new KimiSessionAdapter(new KimiDirectorRuntime(), resolvedOptions, hooks);
+      }
+      return new CodexSessionAdapter(resolvedOptions, hooks);
     };
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
@@ -257,6 +278,7 @@ export class SessionBridge extends EventEmitter {
         console.log(`[bridge:${this.label}] FLUSH: checkpoint done (non-main)`);
       }
 
+      this.expectedStaleCloses++;
       this.adapter.terminate('SIGTERM');
       this.clearSession();
       await this.restart();
@@ -336,6 +358,7 @@ export class SessionBridge extends EventEmitter {
       console.log(`[bridge:${this.label}] FLUSH: checkpoint done`);
     }
 
+    this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
     await this.restart();
@@ -373,12 +396,10 @@ export class SessionBridge extends EventEmitter {
       return false;
     }
     this.flushing = true;
+    this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
     await this.restart();
-    // Let stale close events from the old read stream drain
-    // while flushing is still true (so handleRuntimeClosed treats them as expected)
-    await new Promise<void>(r => setTimeout(r, 0));
     this.finishFlush();
     console.log(`[bridge:${this.label}] CLEAR: context discarded, fresh session started`);
     return true;
@@ -388,6 +409,7 @@ export class SessionBridge extends EventEmitter {
     this.lastFlushAt = Date.now();
     this.lastInputTokens = 0;
     this.contextTokens = 0;
+    this.contextMetricsLive = false;
     this.flushing = false;
     this.discardNextResponse = false;
     this.persistState();
@@ -423,6 +445,7 @@ export class SessionBridge extends EventEmitter {
     lastFlushAt: number;
     flushContextLimit: number;
     contextWindow: number;
+    contextMetricsLive: boolean;
     activityState: 'idle' | 'processing' | 'flushing' | 'restarting';
     currentMessagePreview: string | null;
     currentMessageStartedAt: number | null;
@@ -459,6 +482,7 @@ export class SessionBridge extends EventEmitter {
       lastFlushAt: this.lastFlushAt,
       flushContextLimit: this.config.flush_context_limit,
       contextWindow: this.contextWindow,
+      contextMetricsLive: this.contextMetricsLive,
       activityState,
       currentMessagePreview: this.currentMessagePreview,
       currentMessageStartedAt: this.currentMessageStartedAt,
@@ -1040,7 +1064,8 @@ export class SessionBridge extends EventEmitter {
   }
 
   private buildBootstrapMessage(sourcePath?: string): string {
-    const sharedNote = '注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。';
+    const hostname = getLocalHostName();
+    const sharedNote = `当前机器: ${hostname}。state 文件请使用 daily/state-${hostname}.md（按机器隔离，不要用 daily/state.md）。注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。`;
     const groupName = this.groupName ?? this.label;
 
     let msg: string;
@@ -1097,6 +1122,9 @@ export class SessionBridge extends EventEmitter {
     if (typeof update.contextWindow === 'number' && update.contextWindow > 0) {
       this.contextWindow = update.contextWindow;
       shouldPersist = true;
+    }
+    if (shouldPersist) {
+      this.contextMetricsLive = true;
     }
     if (typeof update.costUsd === 'number') {
       this.totalCostUsd += update.costUsd;
@@ -1199,6 +1227,13 @@ export class SessionBridge extends EventEmitter {
   }
 
   private async handleRuntimeClosed(): Promise<void> {
+    if (this.expectedStaleCloses > 0) {
+      this.expectedStaleCloses--;
+      this.runtimeCloseResolve?.();
+      this.runtimeCloseResolve = null;
+      console.log(`[bridge:${this.label}] Ignoring stale close event from previous runtime`);
+      return;
+    }
     this.runtimeCloseResolve?.();
     this.runtimeCloseResolve = null;
     // Don't clear pendingTurns during flush — the flush flow manages its own
@@ -1283,6 +1318,10 @@ export class SessionBridge extends EventEmitter {
   private clearSession(): void {
     this.sessionId = null;
     this.sessionName = null;
+    this.lastInputTokens = 0;
+    this.contextTokens = 0;
+    this.contextMetricsLive = false;
+    this.persistState();
     try { unlinkSync(this.sessionFile); } catch { /* ok */ }
   }
 
@@ -1295,7 +1334,9 @@ export class SessionBridge extends EventEmitter {
       hour: '2-digit',
       minute: '2-digit',
     }).replace(':', '');
-    const prefix = this.directorAgent.type === 'codex' ? 'codex-director' : 'director';
+    const prefix = this.directorAgent.type === 'codex' ? 'codex-director'
+      : this.directorAgent.type === 'kimi' ? 'kimi-director'
+      : 'director';
     const nameParts = [prefix, this.label, `${dateStr}T${timeStr}`];
     if (this.groupName) nameParts.push(this.groupName);
     return nameParts.join('-');

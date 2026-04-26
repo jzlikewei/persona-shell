@@ -64,7 +64,60 @@ printf '{"type":"turn.completed"}\n'
     expect(result.success).toBe(true);
     expect(result.resultFile).toBeDefined();
     expect(readFileSync(result.resultFile!, 'utf-8')).toBe('# outbox test\n\nwritten by codex task\n');
-    expect(readFileSync(join(PERSONA_DIR, 'outbox', new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }), 'T-TEST-001_codex outbox test.md'), 'utf-8')).toContain('written by codex task');
+    expect(readFileSync(join(PERSONA_DIR, 'outbox', new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }), 'T-TEST-001.md'), 'utf-8')).toContain('written by codex task');
     expect(() => readFileSync('/tmp/persona-task-results/T-TEST-001.md', 'utf-8')).toThrow();
+  });
+
+  test('completes when async process writes stdout over time then exits', async () => {
+    const asyncScript = join(BIN_DIR, 'async-codex.sh');
+    writeFileSync(
+      asyncScript,
+      String.raw`#!/bin/sh
+path="/tmp/persona-task-results/T-TEST-002.md"
+mkdir -p "$(dirname "$path")"
+printf '# async test\n' > "$path"
+# Simulate a long-running process that writes stdout asynchronously
+echo '{"type":"status","message":"working"}'
+sleep 0.1
+echo '{"type":"status","message":"still working"}'
+sleep 0.1
+echo '{"type":"result","cost_usd":0.05}'
+sleep 0.1
+echo '{"type":"turn.completed"}'
+# Exit — readline should not block completion
+`,
+      { mode: 0o755 },
+    );
+
+    const runner = new TaskRunner({
+      agents: {
+        defaults: { default: 'codex', executor: 'codex' },
+        providers: {
+          codex: { type: 'codex', command: asyncScript },
+        },
+      },
+      personaDir: PERSONA_DIR,
+      defaultTimeoutMs: 5000,
+    });
+
+    const result = await new Promise<{
+      success: boolean;
+      resultFile?: string;
+      error?: string;
+    }>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('task completion timed out — exit event likely blocked')), 3000);
+      runner.once('task-completed', (r) => { clearTimeout(timeout); resolve(r); });
+      runner.once('task-failed', (r) => { clearTimeout(timeout); resolve(r); });
+      runner.runTask({
+        taskId: 'T-TEST-002',
+        role: 'executor',
+        agent: 'codex',
+        prompt: 'async test',
+        description: 'async stdout test',
+      });
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.resultFile).toBeDefined();
   });
 });

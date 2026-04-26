@@ -239,7 +239,7 @@ async function isFeishuReachable(client: Lark.Client): Promise<boolean> {
   }
 }
 
-export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[]; attachmentDir?: string }) {
+export function createFeishuClient(config: Config['feishu'], options?: { skipMentionChatIds?: string[]; mentionOnlyChatIds?: string[]; attachmentDir?: string }) {
   // 飞书是国内服务，不走代理（Lark SDK multipart 上传经代理会 ECONNRESET）
   const feishuDomains = 'open.feishu.cn,*.feishu.cn,*.larkoffice.com';
   const existing = process.env.no_proxy ?? '';
@@ -249,6 +249,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
   }
 
   const skipMentionSet = new Set(options?.skipMentionChatIds ?? []);
+  const mentionOnlySet = new Set(options?.mentionOnlyChatIds ?? []);
   const attachmentDir = options?.attachmentDir;
   if (attachmentDir) mkdirSync(attachmentDir, { recursive: true });
   const client = new Lark.Client({
@@ -348,18 +349,23 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       if (mentions?.length) log.debug(`[feishu] mentions: ${JSON.stringify(mentions)}`);
 
       // Group chat @mention filter: skip messages that don't mention the bot
-      // Exceptions:
-      //   1. chats in skipMentionSet (configured parallel groups)
-      //   2. small groups (≤2 members, i.e. 1 user + bot) — treat like p2p
-      //   3. getChatInfo fails — be lenient, don't require @mention
-      if (chatType === 'group' && !skipMentionSet.has(chat_id)) {
-        const info = await getChatInfo(chat_id);
-        const isSmallGroup = !info || info.memberCount <= 2;
-        if (!isSmallGroup) {
+      // Priority: mentionOnlySet (always require @bot) > skipMentionSet (never require) > small group (≤2) > default (require)
+      if (chatType === 'group') {
+        if (mentionOnlySet.has(chat_id)) {
           const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
           if (!hasBotMention) {
-            log.debug(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
+            log.debug(`[feishu] mention_only group without @bot, skipped (chat_id=${chat_id})`);
             return;
+          }
+        } else if (!skipMentionSet.has(chat_id)) {
+          const info = await getChatInfo(chat_id);
+          const isSmallGroup = !info || info.memberCount <= 2;
+          if (!isSmallGroup) {
+            const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
+            if (!hasBotMention) {
+              log.debug(`[feishu] Group message without @bot, skipped (chat_id=${chat_id})`);
+              return;
+            }
           }
         }
       }

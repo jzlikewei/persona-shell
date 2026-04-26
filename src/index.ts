@@ -1,4 +1,4 @@
-import { loadConfig, resolveAgentProvider } from './config.js';
+import { loadConfig, resolveAgentProvider, defaultConfigPath, type Config } from './config.js';
 import { SessionBridge } from './session-bridge.js';
 import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './messaging/feishu.js';
@@ -25,7 +25,8 @@ for (const method of ['log', 'warn', 'error'] as const) {
 }
 
 async function main() {
-  const config = loadConfig();
+  const configPath = defaultConfigPath();
+  const config = loadConfig(configPath);
   setLogLevel(config.logging.level);
   initLogDir(config.director.persona_dir);
   initTaskStore(config.director.persona_dir);
@@ -38,6 +39,7 @@ async function main() {
   const director = new SessionBridge({ agents: config.agents, config: config.director, label: 'main', isMain: true });
   const feishu = createFeishuClient(config.feishu, {
     skipMentionChatIds: config.pool.parallel_chat_ids,
+    mentionOnlyChatIds: config.pool.mention_only_chat_ids,
     attachmentDir: join(config.director.persona_dir, 'attachments'),
   });
   const messaging = new MessagingRouter(feishu);
@@ -114,7 +116,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging);
+  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, undefined, configPath);
 
   // Restore pool entries from previous Shell session + clean up orphans
   await pool.restoreEntries();
@@ -122,6 +124,7 @@ async function main() {
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
+    configPath,
     agents: config.agents,
     personaDir: config.director.persona_dir,
     defaultTimeoutMs: config.task.default_timeout_ms,
@@ -214,7 +217,7 @@ async function main() {
     if (task && task.retry_count < task.max_retry && result.error !== 'cancelled') {
       updateTask(result.taskId, { retry_count: task.retry_count + 1, status: 'dispatched' });
       console.log(`[shell] Retrying task ${result.taskId} (attempt ${task.retry_count + 1}/${task.max_retry})`);
-      taskRunner.runTask({ taskId: result.taskId, role: task.role, agent: task.agent ?? undefined, prompt: task.prompt, description: task.description, projectDir: (task.extra as Record<string, unknown>)?.project_dir as string | undefined });
+      taskRunner.runTask({ taskId: result.taskId, role: task.role, agent: task.agent ?? undefined, model: (task.extra as Record<string, unknown>)?.model as string | undefined, prompt: task.prompt, description: task.description, projectDir: (task.extra as Record<string, unknown>)?.project_dir as string | undefined });
       return;
     }
 
@@ -292,7 +295,7 @@ async function main() {
           extra: { cronJobId: job.id },
           source_director: job.source_director ?? undefined,
         });
-        taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, prompt: task.prompt, description: task.description });
+        taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, model: (task.extra as Record<string, unknown>)?.model as string | undefined, prompt: task.prompt, description: task.description });
         return task.id;
       },
       isOverlapping: (jobId, _role) => {
@@ -451,6 +454,7 @@ async function main() {
       personaDir: config.director.persona_dir,
       agent: resolveAgentProvider(config.agents, 'director'),
       mode: 'background',
+      mcpConfigPath: join(config.director.persona_dir, '.mcp.json'),
       prompt,
     });
 
@@ -561,10 +565,13 @@ async function main() {
     if (text.trim() === '/flush') {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
-      const poolEntry = getTargetEntry();
+      let poolEntry = getTargetEntry();
       if (routingKey && !poolEntry) {
-        await messaging.reply(messageId, '该群 Director 当前不活跃，无需 flush').catch(() => {});
-        return;
+        // Director not active — spin it up first so we can flush
+        const groupName = msg.groupName ?? chatId.slice(0, 8);
+        const directorAgentName = pool.getDirectorAgentName(routingKey)
+          ?? config.agents.defaults.director ?? 'claude';
+        poolEntry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
       }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
@@ -603,7 +610,9 @@ async function main() {
       ? 'codex'
       : text.trim() === '/start-with-claude'
         ? 'claude'
-        : switchAgentMatch?.[1]?.trim();
+        : text.trim() === '/start-with-kimi'
+          ? 'kimi'
+          : switchAgentMatch?.[1]?.trim();
     if (slashTargetAgent) {
       if (!isMaster) return;
       if (routingKey && chatType === 'group' && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
@@ -749,9 +758,9 @@ async function main() {
       if (poolEntry) {
         const s = poolEntry.bridge.getStatus();
         const label = poolEntry.groupName;
-        const tokenLine = s.agentType === 'codex'
-          ? `📊 Turn input: ${s.lastInputTokens.toLocaleString()}`
-          : `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
+        const tokenLine = s.contextMetricsLive
+          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
+          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
         const lines = [
           `🟢 [${label}] Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
           tokenLine,
@@ -764,9 +773,9 @@ async function main() {
         const s = director.getStatus();
         const uptime = Math.floor((Date.now() - startTime) / 1000);
         const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
-        const tokenLine = s.agentType === 'codex'
-          ? `📊 Turn input: ${s.lastInputTokens.toLocaleString()}`
-          : `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
+        const tokenLine = s.contextMetricsLive
+          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
+          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
         const lines = [
           `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
           tokenLine,
@@ -788,6 +797,7 @@ async function main() {
         '/persona <name> — 切换人格角色（如 philosopher, critic 等）',
         '/start-with-codex — 将当前会话切到 Codex Director 模式',
         '/start-with-claude — 将当前会话切回 Claude Director 模式',
+        '/start-with-kimi — 将当前会话切到 Kimi Director 模式',
         '/flush — 保存上下文后刷新（checkpoint → 新 session）',
         '/clear — 清空上下文（不保存，直接重置）',
         '/esc — 取消队列中最早的消息',

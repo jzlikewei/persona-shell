@@ -21,6 +21,7 @@ export interface CreateTaskInput {
   type: 'role' | 'cron';
   role: string;
   agent?: string;
+  model?: string;
   description: string;
   prompt: string;
   max_retry?: number;
@@ -215,6 +216,7 @@ export function createTask(input: CreateTaskInput): Task {
   const now = localNow();
   const extraObj = { ...input.extra };
   if (input.project_dir) extraObj.project_dir = input.project_dir;
+  if (input.model) extraObj.model = input.model;
   const extra = Object.keys(extraObj).length > 0 ? JSON.stringify(extraObj) : null;
   const sourceDirector = input.source_director ?? null;
   const agent = input.agent?.trim() || null;

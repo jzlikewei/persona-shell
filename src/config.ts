@@ -3,7 +3,7 @@ import { load } from 'js-yaml';
 import { dirname, resolve } from 'path';
 import { homedir } from 'os';
 
-export type AgentProviderType = 'claude' | 'codex';
+export type AgentProviderType = 'claude' | 'codex' | 'kimi';
 export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApproval = 'untrusted' | 'on-request' | 'never';
@@ -20,11 +20,23 @@ export interface AgentProviderConfig {
   model?: string;
   /** Per-agent system prompt file, relative to persona_dir (e.g. "prompts/gemini.md") */
   system_prompt_file?: string;
+  /** Kimi: custom agent specification file (e.g. "kimi-agent.yaml") */
+  agent_file?: string;
+  /** Kimi: custom skills directories */
+  skills_dir?: string;
+  /** Kimi: MCP config file path */
+  mcp_config_file?: string;
+}
+
+export interface RoleOverride {
+  agent?: string;
+  model?: string;
 }
 
 export interface AgentsConfig {
   defaults: Record<string, string>;
   providers: Record<string, AgentProviderConfig>;
+  roles?: Record<string, RoleOverride>;
 }
 
 export interface Config {
@@ -60,6 +72,7 @@ export interface Config {
     idle_timeout_minutes: number;
     small_group_threshold: number;
     parallel_chat_ids: string[];  // 配置为"并行模式"的群 chat_id，始终走 DirectorPool
+    mention_only_chat_ids: string[];  // 这些群必须 @bot 才响应，无论群人数
   };
   logging: {
     level: string;
@@ -72,7 +85,7 @@ function expandHome(p: string): string {
 }
 
 export function getDefaultAgentName(agents: AgentsConfig, role: string): string {
-  return agents.defaults[role] ?? agents.defaults.default ?? 'claude';
+  return agents.roles?.[role]?.agent ?? agents.defaults[role] ?? agents.defaults.default ?? 'claude';
 }
 
 export function resolveAgentProvider(agents: AgentsConfig, role: string, agentName?: string): { name: string } & AgentProviderConfig {
@@ -81,11 +94,19 @@ export function resolveAgentProvider(agents: AgentsConfig, role: string, agentNa
   if (!provider) {
     throw new Error(`Unknown agent provider "${name}" for role "${role}"`);
   }
+  const roleModel = agents.roles?.[role]?.model;
+  if (roleModel && !agentName) {
+    return { name, ...provider, model: roleModel };
+  }
   return { name, ...provider };
 }
 
+export function defaultConfigPath(): string {
+  return resolve(homedir(), '.persona', 'config.yaml');
+}
+
 export function loadConfig(path?: string): Config {
-  const configPath = path ?? resolve(homedir(), '.persona', 'config.yaml');
+  const configPath = path ?? defaultConfigPath();
   const raw = readFileSync(configPath, 'utf-8');
   const yaml = load(raw) as Record<string, any>;
   const secretPath = resolve(dirname(configPath), 'im_secret.yaml');
@@ -115,6 +136,9 @@ export function loadConfig(path?: string): Config {
     search?: unknown;
     model?: unknown;
     system_prompt_file?: unknown;
+    agent_file?: unknown;
+    skills_dir?: unknown;
+    mcp_config_file?: unknown;
   }> | undefined;
   const providerEntries = Object.entries(rawProviders ?? {});
   const providers: Record<string, AgentProviderConfig> = {};
@@ -122,7 +146,7 @@ export function loadConfig(path?: string): Config {
   for (const [name, provider] of providerEntries) {
     const type = provider?.type;
     const command = provider?.command;
-    if ((type === 'claude' || type === 'codex') && typeof command === 'string' && command.trim()) {
+    if ((type === 'claude' || type === 'codex' || type === 'kimi') && typeof command === 'string' && command.trim()) {
       providers[name] = {
         type,
         command: command.trim(),
@@ -143,6 +167,15 @@ export function loadConfig(path?: string): Config {
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
         ...(typeof provider?.system_prompt_file === 'string' && provider.system_prompt_file.trim()
           ? { system_prompt_file: provider.system_prompt_file.trim() }
+          : {}),
+        ...(typeof provider?.agent_file === 'string' && provider.agent_file.trim()
+          ? { agent_file: provider.agent_file.trim() }
+          : {}),
+        ...(typeof provider?.skills_dir === 'string' && provider.skills_dir.trim()
+          ? { skills_dir: provider.skills_dir.trim() }
+          : {}),
+        ...(typeof provider?.mcp_config_file === 'string' && provider.mcp_config_file.trim()
+          ? { mcp_config_file: provider.mcp_config_file.trim() }
           : {}),
       };
     }
@@ -168,6 +201,13 @@ export function loadConfig(path?: string): Config {
     };
   }
 
+  if (!providers.kimi) {
+    providers.kimi = {
+      type: 'kimi',
+      command: 'kimi',
+    };
+  }
+
   const defaults: Record<string, string> = yaml.agents?.defaults && typeof yaml.agents.defaults === 'object'
     ? Object.fromEntries(
       Object.entries(yaml.agents.defaults as Record<string, unknown>)
@@ -183,10 +223,23 @@ export function loadConfig(path?: string): Config {
     defaults.default = 'claude';
   }
 
+  const rawRoles = yaml.agents?.roles as Record<string, { agent?: unknown; model?: unknown }> | undefined;
+  const roles: Record<string, RoleOverride> = {};
+  if (rawRoles && typeof rawRoles === 'object') {
+    for (const [role, override] of Object.entries(rawRoles)) {
+      if (!override || typeof override !== 'object') continue;
+      const entry: RoleOverride = {};
+      if (typeof override.agent === 'string' && override.agent.trim()) entry.agent = override.agent.trim();
+      if (typeof override.model === 'string' && override.model.trim()) entry.model = override.model.trim();
+      if (entry.agent || entry.model) roles[role] = entry;
+    }
+  }
+
   return {
     agents: {
       defaults,
       providers,
+      roles,
     },
     feishu,
     director: {
@@ -219,6 +272,7 @@ export function loadConfig(path?: string): Config {
       idle_timeout_minutes: Number(yaml.pool?.idle_timeout_minutes ?? 30),
       small_group_threshold: Number(yaml.pool?.small_group_threshold ?? 5),
       parallel_chat_ids: Array.isArray(yaml.pool?.parallel_chat_ids) ? yaml.pool.parallel_chat_ids : [],
+      mention_only_chat_ids: Array.isArray(yaml.pool?.mention_only_chat_ids) ? yaml.pool.mention_only_chat_ids : [],
     },
     logging: {
       level: yaml.logging?.level ?? 'info',

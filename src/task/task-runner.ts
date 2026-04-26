@@ -4,11 +4,12 @@ import { mkdirSync, existsSync, appendFileSync, copyFileSync, rmSync } from 'fs'
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { spawnPersona } from '../persona-process.js';
-import { resolveAgentProvider, type Config } from '../config.js';
+import { resolveAgentProvider, loadConfig, type Config } from '../config.js';
 import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
 
 export interface TaskRunnerConfig {
+  configPath?: string;
   agents: Config['agents'];
   personaDir: string;
   defaultTimeoutMs: number;
@@ -18,6 +19,7 @@ export interface RunTaskInput {
   taskId: string;
   role: string;
   agent?: string;
+  model?: string;
   prompt: string;
   description?: string;
   projectDir?: string;
@@ -38,22 +40,28 @@ interface RunningTask {
   pid: number;
   timer: NodeJS.Timeout;
   child: ChildProcess;
+  rl?: ReturnType<typeof import('readline').createInterface>;
   startedAt: number;
   timedOut: boolean;
   outputPath: string;
   resultFile: string;
+  costUsd?: number;
 }
 
 const GRACEFUL_KILL_DELAY = 5_000;
+const WATCHDOG_INTERVAL_MS = 30_000;
 const CODEX_RESULT_STAGING_DIR = '/tmp/persona-task-results';
 
 export class TaskRunner extends EventEmitter {
   private config: TaskRunnerConfig;
   private running = new Map<string, RunningTask>();
+  private watchdogTimer: NodeJS.Timeout;
 
   constructor(config: TaskRunnerConfig) {
     super();
     this.config = config;
+    this.watchdogTimer = setInterval(() => this.checkProcessLiveness(), WATCHDOG_INTERVAL_MS);
+    this.watchdogTimer.unref();
   }
 
   runTask(input: RunTaskInput): void {
@@ -68,7 +76,11 @@ export class TaskRunner extends EventEmitter {
 
     let agent: ReturnType<typeof resolveAgentProvider>;
     try {
-      agent = resolveAgentProvider(this.config.agents, input.role, input.agent);
+      const agents = this.config.configPath
+        ? loadConfig(this.config.configPath).agents
+        : this.config.agents;
+      agent = resolveAgentProvider(agents, input.role, input.agent);
+      if (input.model) agent = { ...agent, model: input.model };
     } catch (err) {
       const result: TaskResult = {
         taskId: input.taskId,
@@ -111,6 +123,7 @@ export class TaskRunner extends EventEmitter {
       personaDir,
       agent,
       mode: 'background',
+      mcpConfigPath: join(personaDir, '.mcp.json'),
       prompt: fullPrompt,
       projectDir: input.projectDir,
       stderrPath: join(getLogDir(), `task-${input.taskId}.stderr.log`),
@@ -138,28 +151,33 @@ export class TaskRunner extends EventEmitter {
       this.killWithEscalation(input.taskId, child.pid!);
     }, timeoutMs);
 
-    this.running.set(input.taskId, { pid: child.pid, timer, child, startedAt, timedOut: false, outputPath, resultFile });
+    const entry: RunningTask = { pid: child.pid, timer, child, startedAt, timedOut: false, outputPath, resultFile };
+    this.running.set(input.taskId, entry);
 
     // Parse stream-json stdout and log to file
-    let costUsd: number | undefined;
     const stdoutLogPath = join(getLogDir(), `task-${input.taskId}.stdout.log`);
 
     const rl = createInterface({ input: child.stdout! });
+    entry.rl = rl;
     rl.on('line', (line) => {
       if (!line.trim()) return;
       try { appendFileSync(stdoutLogPath, line + '\n'); } catch { /* best-effort */ }
       try {
         const event = JSON.parse(line);
         if (event.type === 'result') {
-          if (event.cost_usd != null) costUsd = event.cost_usd;
-          if (event.total_cost_usd != null) costUsd = event.total_cost_usd;
+          const entry = this.running.get(input.taskId);
+          if (entry) {
+            if (event.cost_usd != null) entry.costUsd = event.cost_usd;
+            if (event.total_cost_usd != null) entry.costUsd = event.total_cost_usd;
+          }
         }
       } catch {
         // non-JSON line, ignore
       }
     });
 
-    child.on('close', (code) => {
+    child.on('exit', (code) => {
+      rl.close();
       const entry = this.running.get(input.taskId);
       if (!entry) return; // already cleaned up (e.g. by cancel)
 
@@ -174,7 +192,7 @@ export class TaskRunner extends EventEmitter {
           success: false,
           error: 'timeout',
           durationMs,
-          costUsd,
+          costUsd: entry.costUsd,
         };
         console.log(`[task-runner] Task ${input.taskId} killed after timeout (duration=${durationMs}ms)`);
         this.emit('task-failed', result);
@@ -200,7 +218,7 @@ export class TaskRunner extends EventEmitter {
         taskId: input.taskId,
         success,
         durationMs,
-        costUsd,
+        costUsd: entry.costUsd,
         ...(success ? { resultFile: finalResultFile } : { error }),
       };
 
@@ -218,6 +236,7 @@ export class TaskRunner extends EventEmitter {
     if (!entry) return false;
 
     console.log(`[task-runner] Cancelling task ${taskId} (pid=${entry.pid})`);
+    entry.rl?.close();
     clearTimeout(entry.timer);
     this.running.delete(taskId);
 
@@ -265,6 +284,36 @@ export class TaskRunner extends EventEmitter {
       process.kill(-pid, signal);
     } catch {
       // process already dead
+    }
+  }
+
+  private checkProcessLiveness(): void {
+    if (this.running.size === 0) return;
+
+    for (const [taskId, entry] of this.running) {
+      try {
+        process.kill(entry.pid, 0);
+      } catch {
+        console.log(`[task-runner] Task ${taskId} pid ${entry.pid} is dead but close event was not received, cleaning up`);
+        entry.rl?.close();
+        clearTimeout(entry.timer);
+        this.running.delete(taskId);
+
+        const durationMs = Date.now() - entry.startedAt;
+        let resultFile: string | undefined;
+        const moved = this.materializeResultFile(entry.outputPath, entry.resultFile);
+        if (moved.ok) resultFile = entry.resultFile;
+
+        const success = !!resultFile;
+        const result: TaskResult = {
+          taskId,
+          success,
+          durationMs,
+          costUsd: entry.costUsd,
+          ...(success ? { resultFile } : { error: `process disappeared (pid ${entry.pid})` }),
+        };
+        this.emit(success ? 'task-completed' : 'task-failed', result);
+      }
     }
   }
 

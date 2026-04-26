@@ -20,6 +20,13 @@ agents:
       approval: "never"
       search: false
     # system_prompt_file: "prompts/codex.md"  # Per-agent system prompt (relative to persona_dir)
+    kimi:
+      type: "kimi"
+      command: "kimi"
+      # agent_file: "kimi-agent.yaml"           # Kimi agent spec (relative to persona_dir)
+      # skills_dir: "skills"                    # Kimi skills directory (relative to persona_dir)
+      # mcp_config_file: ".mcp.json"            # MCP config file (relative to persona_dir)
+      # model: "kimi-k2"                        # Model alias
 
 # 配置模板 — 复制到 config.yaml 并填入实际值
 # 飞书凭据（app_id + app_secret）放 im_secret.yaml，不在此文件中

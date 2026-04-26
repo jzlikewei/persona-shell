@@ -6,6 +6,7 @@
 - [Bun](https://bun.sh/) 运行时
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（必需）
 - [Codex CLI](https://github.com/openai/codex)（可选，用于多后端支持）
+- [Kimi Code CLI](https://moonshotai.github.io/kimi-cli/)（可选，用于多后端支持）
 
 ## 快速开始
 
@@ -60,10 +61,16 @@ agents:
   defaults:
     default: "claude"
     director: "claude"
-    explorer: "claude"
-    executor: "claude"
-    critic: "claude"
-    introspector: "claude"
+  roles:                              # 按角色指定 agent 和 model（可选）
+    explorer:
+      agent: "claude"
+      model: "sonnet"                 # 覆盖 provider 默认 model
+    executor:
+      agent: "claude"
+    critic:
+      agent: "claude"
+    book-researcher:
+      agent: "codex"
   providers:
     claude:
       type: "claude"
@@ -77,6 +84,12 @@ agents:
       sandbox: "danger-full-access"
       approval: "never"
       search: false
+    kimi:
+      type: "kimi"
+      command: "kimi"
+      # agent_file: "kimi-agent.yaml"       # Kimi agent 规范文件（相对 persona_dir）
+      # skills_dir: "skills"                # Skills 目录（相对 persona_dir）
+      # mcp_config_file: ".mcp.json"        # MCP 配置文件（相对 persona_dir）
 
 feishu:
   master_id: "ou_xxxx"                       # 本体的飞书 open_id（可选）
@@ -100,6 +113,12 @@ pool:
   small_group_threshold: 5      # 大群/小群人数分界
   parallel_chat_ids: []         # 免 @mention 白名单（chat_id 列表）
 ```
+
+**Agent 解析优先级**：`roles[role].agent` → `defaults[role]` → `defaults.default` → `"claude"`
+
+**Model 解析优先级**：`roles[role].model` → `providers[agent].model` → 不传（用 CLI 默认）
+
+**热加载**：修改 `roles` / `providers` 后，新派发的子角色任务和新创建的群聊 Director 会自动使用新配置，无需重启 Shell。主 Director 需要 `/session-restart` 才会生效。
 
 `~/.persona/im_secret.yaml`（飞书凭据放在一起维护）：
 
@@ -159,15 +178,25 @@ launchctl start com.persona.shell
 └── config.yaml                  # 运行配置
 ```
 
-这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`）。详见 [`claude-code-startup.md`](claude-code-startup.md)。
+这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`）。Kimi 则通过 `--agent-file` 加载 agent 规范来注入身份。详见 [`agent-backends.md`](agent-backends.md)。
 
 ### Agent Provider 配置说明
+
+**Claude Code**：
 
 | 参数 | 说明 |
 |------|------|
 | `bare` | `true` 时加 `--bare` 参数，去掉默认系统提示并限制工具集为 Bash/Edit/Read；`false` 时不加，保留完整工具集（约 30 个），包括 Agent（spawn sub-agent）等高级工具。**推荐 `false`**，以获得完整能力。 |
 | `dangerously_skip_permissions` | 跳过工具执行确认 |
 | `effort` | 推理力度：`min` / `low` / `medium` / `high` / `max` |
+
+**Kimi**：
+
+| 参数 | 说明 |
+|------|------|
+| `agent_file` | Agent 规范 YAML 文件路径（相对 `persona_dir`），指定 `system_prompt_path` 等 |
+| `skills_dir` | Skills 目录路径（相对 `persona_dir`），Kimi 通过 `--skills-dir` 加载 |
+| `mcp_config_file` | MCP 配置文件路径（相对 `persona_dir`），通过 `--mcp-config-file` 传入 |
 
 > **环境变量**：子角色进程启动时会自动清除继承的 `CLAUDE_CODE_SIMPLE` 环境变量，不再受父进程的工具集限制。无需手动处理。
 
@@ -186,3 +215,14 @@ launchctl start com.persona.shell
 ### 飞书 WebSocket 断连
 
 Shell 内置了 watchdog 机制，断连超过 2 分钟且飞书 API 可达时会自动重启进程。如果使用 launchd 服务化部署，进程退出后会自动拉起。持续断连通常是网络问题，检查代理配置（飞书域名应在 `no_proxy` 列表中）。
+
+### 自定义 Skills 未被 Claude Code 加载
+
+`skills/` 目录下的自定义 Skill（如 abstract-dog-style、code-review、browser-harness 等）没有被 Claude Code 发现和加载。这是因为 Claude Code 只会自动扫描 `--add-dir` 指定目录下的 `.claude/` 子目录来发现 plugins/skills。
+
+**解决方法**：确保身份仓库中存在软链接 `~/.persona/.claude/skills` → `~/.persona/skills`。`bun run init` 会自动创建此软链接。如果是已有身份仓库缺少此链接，手动执行：
+
+```bash
+mkdir -p ~/.persona/.claude
+ln -sf ../skills ~/.persona/.claude/skills
+```

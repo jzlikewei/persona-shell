@@ -58,10 +58,68 @@ describe('persona-process', () => {
       // Should contain -c flags for MCP server config
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
 
-      expect(cFlags.some((f) => f.includes('mcp_servers.'))).toBe(true);
+      expect(cFlags).toContain('mcp_servers.persona-tasks.command="bun"');
+      expect(cFlags.some((f) => f.includes('mcp_servers."persona-tasks"'))).toBe(false);
       expect(cFlags.some((f) => f.includes('"bun"'))).toBe(true);
       expect(cFlags.some((f) => f.includes('"run"'))).toBe(true);
       expect(cFlags.some((f) => f.includes('SHELL_PORT'))).toBe(true);
+    });
+
+    test('merges DIRECTOR_LABEL into Codex MCP server env when provided', () => {
+      const mcpConfig = {
+        mcpServers: {
+          'persona-tasks': {
+            command: 'bun',
+            args: ['run', 'src/task-mcp-server.ts'],
+            env: { SHELL_PORT: '3000' },
+          },
+        },
+      };
+      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
+
+      const { child, args } = spawnPersona({
+        role: 'director',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        mode: 'background',
+        mcpConfigPath: MCP_CONFIG_PATH,
+        prompt: 'test',
+        env: { DIRECTOR_LABEL: 'cb1274a8' },
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
+      expect(cFlags.some((f) => f.includes('DIRECTOR_LABEL = "cb1274a8"'))).toBe(true);
+    });
+
+    test('merges multiple env overrides into Codex MCP server env', () => {
+      const mcpConfig = {
+        mcpServers: {
+          'persona-tasks': {
+            command: 'bun',
+            args: ['run', 'src/task-mcp-server.ts'],
+            env: { SHELL_PORT: '3000' },
+          },
+        },
+      };
+      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
+
+      const { child, args } = spawnPersona({
+        role: 'director',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        mode: 'background',
+        mcpConfigPath: MCP_CONFIG_PATH,
+        prompt: 'test',
+        env: { DIRECTOR_LABEL: 'abc123' },
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
+      expect(cFlags.some((f) => f.includes('DIRECTOR_LABEL = "abc123"'))).toBe(true);
+      expect(cFlags.some((f) => f.includes('SHELL_PORT = "3000"'))).toBe(true);
     });
 
     test('skips MCP args when .mcp.json does not exist', () => {
@@ -140,6 +198,31 @@ describe('persona-process', () => {
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags.filter((f) => f.includes('mcp_servers.'))).toHaveLength(0);
+    });
+
+    test('skips server names that cannot be expressed as Codex dotted keys', () => {
+      const mcpConfig = {
+        mcpServers: {
+          'bad key': { command: 'bun', args: ['run', 'foo.ts'] },
+          valid_key: { command: 'node', args: ['bar.js'] },
+        },
+      };
+      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
+
+      const { child, args } = spawnPersona({
+        role: 'director',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        mode: 'background',
+        mcpConfigPath: MCP_CONFIG_PATH,
+        prompt: 'test',
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
+      expect(cFlags).toContain('mcp_servers.valid_key.command="node"');
+      expect(cFlags.some((f) => f.includes('bad key'))).toBe(false);
     });
   });
 
@@ -395,7 +478,7 @@ describe('persona-process', () => {
     });
   });
 
-  describe('codex background prompt building (buildCodexPrompt)', () => {
+  describe('codex background prompt building (buildInjectedPrompt)', () => {
     test('codex background args end without prompt section when no prompt given', () => {
       const { child, args } = spawnPersona({
         role: 'explorer',
@@ -407,7 +490,7 @@ describe('persona-process', () => {
       });
       child.kill();
 
-      // With empty prompt and no soul/meta/persona files, buildCodexPrompt returns ''
+      // With empty prompt and no soul/meta/persona files, buildInjectedPrompt returns ''
       // so args should not contain a trailing prompt string
       const afterSkipIdx = args.indexOf('--skip-git-repo-check');
       expect(afterSkipIdx).toBeGreaterThan(-1);
@@ -457,7 +540,7 @@ describe('persona-process', () => {
       expect(builtPrompt).toContain('## Injected persona:explorer');
     });
 
-    test('codex background with resumeSessionId uses raw prompt, not buildCodexPrompt', () => {
+    test('codex background with resumeSessionId uses raw prompt, not buildInjectedPrompt', () => {
       writeFileSync(join(TEST_DIR, 'soul.md'), 'soul content');
 
       const { child, args } = spawnPersona({
@@ -471,7 +554,7 @@ describe('persona-process', () => {
       });
       child.kill();
 
-      // When resuming, prompt is passed as-is without buildCodexPrompt injection
+      // When resuming, prompt is passed as-is without buildInjectedPrompt injection
       expect(args).toContain('resume');
       expect(args).toContain('thread-resume-456');
       const lastArg = args[args.length - 1];
@@ -541,22 +624,5 @@ describe('persona-process', () => {
       expect(args).toContain(join(TEST_DIR, 'meta.md'));
     });
 
-    test('includes skills subdirectories as plugin-dir', () => {
-      mkdirSync(join(TEST_DIR, 'skills', 'web-browse'), { recursive: true });
-      mkdirSync(join(TEST_DIR, 'skills', 'coding'), { recursive: true });
-
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'claude', command: 'echo', name: 'claude' },
-        mode: 'background',
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).toContain(join(TEST_DIR, 'skills', 'web-browse'));
-      expect(args).toContain(join(TEST_DIR, 'skills', 'coding'));
-    });
-  });
+});
 });

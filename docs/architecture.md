@@ -71,10 +71,12 @@ SessionBridge (session-bridge.ts)
   └─ DirectorSessionAdapter (director-session-adapter/)
       ├─ claude.ts — stream-json 双向协议
       ├─ codex.ts — turn-based 协议
+      ├─ kimi.ts — stream-json stdin/stdout 协议
       │
       └─ DirectorRuntime (director-runtime/)
           ├─ claude.ts — daemon 进程（FIFO named pipe，长驻）
-          └─ codex.ts — 按 turn spawn（短驻，session resume）
+          ├─ codex.ts — 按 turn spawn（短驻，session resume）
+          └─ kimi.ts — daemon 进程（stdin/stdout pipe，长驻）
 ```
 
 ### SessionBridge
@@ -112,12 +114,14 @@ SessionBridge (session-bridge.ts)
 封装协议差异：
 - **Claude**：管理 FIFO 读写句柄，逐行解析 stream-json（init → assistant → result），提取响应文本和 metrics（token 用量、cost）
 - **Codex**：每轮 spawn `codex exec --resume`，解析 stdout 直到 `turn_completed`
+- **Kimi**：维护 stdin/stdout pipe，逐行解析 print stream-json（assistant → tool → assistant），不含 tool_calls 的 assistant message 触发 turn complete
 
 ### DirectorRuntime
 
 封装进程生命周期：
 - **Claude**：spawn detached daemon、PID 文件追踪、FIFO 创建/清理、SIGINT/SIGTERM
 - **Codex**：按需 spawn、session 文件管理、无常驻进程
+- **Kimi**：spawn detached daemon、stdin/stdout pipe、SIGINT/SIGTERM、resume hint 捕获
 
 ### 通信协议
 
@@ -141,7 +145,26 @@ codex exec --resume SESSION_ID "用户消息" \
   --full-auto --sandbox danger-full-access
 ```
 
-完整的 CLI 参数链和会话恢复机制见 [claude-code-startup.md](claude-code-startup.md)。
+**Kimi**（stdin/stdout pipe）：
+```bash
+kimi --print \
+  --input-format stream-json \
+  --output-format stream-json \
+  --work-dir ~/.persona \
+  --agent-file ~/.persona/kimi-agent.yaml
+```
+
+输入（写 stdin）：
+```json
+{"role":"user","content":"消息内容"}
+```
+
+输出（读 stdout）：
+```json
+{"role":"assistant","content":[{"type":"think","think":"..."},{"type":"text","text":"..."}]}
+```
+
+完整的 CLI 参数链和会话恢复机制见 [agent-backends.md](agent-backends.md)。
 
 ## DirectorPool
 
@@ -231,6 +254,8 @@ Shell 重启：
 API 路由支持 `?director={label}` 参数查看 pool Director 的会话历史。
 
 ## 技术栈
+
+> **config.yaml 加载时机**：config.yaml 在 Shell 启动时由 `main()` 一次性加载，运行期间不热更新。修改后需通过 `/shell-restart` 重新加载。例外：task-runner 在 spawn 子任务时会重新 `loadConfig()` 获取最新的 agents 配置。
 
 | 组件 | 实现 |
 |------|------|

@@ -2,7 +2,7 @@ import type { Config } from '../config.js';
 import type { AgentRuntimeConfig } from '../persona-process.js';
 
 export interface DirectorRuntimeStatus {
-  kind: 'claude-daemon' | 'codex-turn-based';
+  kind: 'claude-daemon' | 'codex-turn-based' | 'kimi-daemon';
   alive: boolean;
   pid: number | null;
 }

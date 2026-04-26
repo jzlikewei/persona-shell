@@ -33,7 +33,8 @@
   }
 
   function fmtTokens(n) {
-    if (n == null || n === 0) return '0';
+    if (n == null) return '--';
+    if (n === 0) return '0';
     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
     if (n >= 1000) return Math.round(n / 1000) + 'k';
     return String(n);
@@ -235,7 +236,7 @@
     return {
       system: { status: dir.alive ? 'healthy' : 'error', uptime: 0, messaging: 'unknown', directorAlive: !!dir.alive },
       activity: { state: state },
-      context: { tokens: tokens, limit: limit, percent: Math.round(pct), lastFlushAgoMs: null },
+      context: { tokens: tokens, limit: limit, percent: Math.round(pct), live: true, lastFlushAgoMs: null },
       metrics: { today: { messagesProcessed: 0, avgResponseSec: 0, totalCostUsd: 0 }, recentMessages: [], recentErrors: [] },
       queue: q.map(function(i) { return { correlationId: i.correlationId || '', preview: (i.text || '').slice(0,60), timestamp: i.timestamp, cancelled: !!i.cancelled }; }),
       tasks: { summary: { running: 0, completed: 0, failed: 0 }, recent: [] },
@@ -700,21 +701,23 @@
           ctxData = {
             tokens: pc.tokens,
             limit: pcLimit,
-            percent: pcLimit > 0 ? Math.round((pc.tokens / pcLimit) * 100) : 0,
+            percent: (pc.live !== false && pcLimit > 0 && pc.tokens != null) ? Math.round((pc.tokens / pcLimit) * 100) : 0,
+            live: pc.live !== false,
             lastFlushAgoMs: pc.lastFlushAt ? (now - pc.lastFlushAt) : null,
           };
           break;
         }
       }
     }
-    var pct = ctxData.percent || 0;
+    var live = ctxData.live !== false;
+    var pct = live ? (ctxData.percent || 0) : 0;
     var bc = pct > 95 ? 'var(--red)' : pct > 80 ? 'var(--yellow)' : 'var(--green)';
     var bar = $('ctx-bar');
     bar.style.width = Math.min(pct, 100) + '%';
     bar.style.background = bc;
     $('ctx-tokens').textContent = fmtTokens(ctxData.tokens) + ' / ' + fmtTokens(ctxData.limit);
     var pe = $('ctx-pct');
-    pe.textContent = pct + '%';
+    pe.textContent = live ? (pct + '%') : '--';
     pe.style.color = bc;
     $('ctx-flush').textContent = 'Last flush: ' + (ctxData.lastFlushAgoMs != null ? fmtAgoMs(ctxData.lastFlushAgoMs) : '--');
 

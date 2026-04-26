@@ -16,9 +16,17 @@ fi
 # 2. 初始化身份仓库
 if [ -d "$PERSONA_DIR" ]; then
   echo "⚠️  $PERSONA_DIR 已存在，跳过模板复制"
+  if [ ! -L "$PERSONA_DIR/.claude/skills" ]; then
+    mkdir -p "$PERSONA_DIR/.claude"
+    ln -sf ../skills "$PERSONA_DIR/.claude/skills"
+    echo "   ✓ 已补建 .claude/skills 软链接"
+  fi
 else
   echo "📁 初始化身份仓库 → $PERSONA_DIR"
   cp -r "$PROJECT_DIR/persona-template" "$PERSONA_DIR"
+  mkdir -p "$PERSONA_DIR/.claude"
+  ln -sf ../skills "$PERSONA_DIR/.claude/skills"
+  echo "   ✓ 已创建 .claude/skills 软链接"
   cd "$PERSONA_DIR" && git init -q && git add -A && git commit -q -m "init persona"
   echo "   ✓ 已创建并初始化 git"
 fi

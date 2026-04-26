@@ -7,6 +7,8 @@ const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
 const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
 const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
+const ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.ANTHROPIC_API_KEY ?? '';
+const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL ?? '';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
 /** Scan personas/ directory and return available role names */
@@ -39,6 +41,7 @@ const TOOLS = [
       properties: {
         role: { type: 'string', description: buildRoleDescription() },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
+        model: { type: 'string', description: '可选 model 名称；不传则使用角色或 provider 的默认 model' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt' },
         project_dir: { type: 'string', description: '可选，子任务的工作目录（项目路径）；不传则默认在 persona 根目录下执行' },
@@ -90,6 +93,7 @@ const TOOLS = [
         name: { type: 'string', description: 'Job 名称' },
         role: { type: 'string', description: `${buildRoleDescription()}，action_type=director_msg 时可填 "system"` },
         agent: { type: 'string', description: '可选 agent provider 名称；不传则使用该角色的默认 agent' },
+        model: { type: 'string', description: '可选 model 名称；不传则使用角色或 provider 的默认 model' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整 prompt（action_type=spawn_role 时使用）' },
         schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00"' },
@@ -132,7 +136,7 @@ const TOOLS = [
   },
   {
     name: 'send_attachment',
-    description: '发送文件或图片给用户。Shell 自动处理上传和投递，Director 不需要关心投递渠道。当前仅支持图片格式（.png, .jpg, .jpeg, .gif, .webp）。文件大小限制 10MB。',
+    description: '发送文件或图片给用户。Shell 自动处理上传和投递,Director 不需要关心投递渠道。支持图片(.png, .jpg, .jpeg, .gif, .webp)和任意文件格式。文件大小限制 10MB。',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -142,6 +146,14 @@ const TOOLS = [
         },
       },
       required: ['path'],
+    },
+  },
+  {
+    name: 'list_models',
+    description: '列出当前可用的 Anthropic 模型',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
     },
   },
 ];
@@ -169,6 +181,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         type: 'role',
         role: args.role,
         agent: args.agent,
+        model: args.model,
         description: args.description,
         prompt: args.prompt,
         max_retry: args.max_retry,
@@ -208,6 +221,22 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return callShell('POST', `/api/cron-jobs/${args.id}/toggle`);
     case 'send_attachment':
       return callShell('POST', '/api/send-attachment', { path: args.path, source_director: DIRECTOR_LABEL });
+    case 'list_models': {
+      if (!ANTHROPIC_BASE_URL) {
+        throw new Error('ANTHROPIC_BASE_URL is not set');
+      }
+      const res = await fetch(`${ANTHROPIC_BASE_URL}/v1/models`, {
+        headers: {
+          'Authorization': `Bearer ${ANTHROPIC_AUTH_TOKEN}`,
+          'anthropic-version': '2023-06-01',
+        },
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Anthropic API returned ${res.status}: ${text}`);
+      }
+      return res.json();
+    }
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
