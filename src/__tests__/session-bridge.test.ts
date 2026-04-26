@@ -430,7 +430,7 @@ describe('SessionBridge', () => {
     await new Promise(r => setTimeout(r, 10));
 
     expect(initialAdapter.sent[0]).toContain('切换到 fake-codex');
-    expect(initialAdapter.sent[0]).toContain('state/sessions/test-bridge.md');
+    expect(initialAdapter.sent[0]).toContain('workspaces/test-bridge-Test Group/context.md');
 
     initialAdapter.completeTurn({ responseText: '已保存', durationMs: 1 });
     await new Promise(r => setTimeout(r, 10));
@@ -438,9 +438,9 @@ describe('SessionBridge', () => {
     const switchedAdapter = FakeAdapter.instances.at(-1)!;
     expect(switchedAdapter).not.toBe(initialAdapter);
     expect(switchedAdapter.options.directorAgent.name).toBe('fake-codex');
-    expect(switchedAdapter.sent[0]).toContain('state/sessions/test-bridge.md');
+    expect(switchedAdapter.sent[0]).toContain('workspaces/test-bridge-Test Group/context.md');
     expect(switchedAdapter.sent[0]).toContain('恢复这个会话的上下文');
-    expect(existsSync('/tmp/persona-test/state/sessions/test-bridge.md')).toBe(true);
+    expect(existsSync('/tmp/persona-test/workspaces/test-bridge-Test Group/context.md')).toBe(true);
 
     switchedAdapter.completeTurn({ responseText: 'restored', durationMs: 1 });
     await expect(switchPromise).resolves.toBe(true);

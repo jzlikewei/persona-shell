@@ -41,6 +41,7 @@ bun run dev
    | `im:message.pins:read` | 查看 Pin 消息 | 读取置顶消息 |
    | `im:message.pins:write_only` | 添加、取消 Pin 消息 | 管理置顶消息 |
    | `im:message:recall` | 撤回消息 | 撤回已发送的消息 |
+   | `contact:user.base:readonly` | 获取用户基本信息 | 群聊消息识别发送者用户名 |
 
 4. **事件订阅**：事件与回调 → 事件配置 → 添加 `im.message.receive_v1`（接收消息）
    - ⚠️ **消息接收模式**：务必选择「**接收群中所有消息**」而非「仅接收 @机器人 的消息」，否则小群中不 @ 机器人就无法触发回复

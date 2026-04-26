@@ -336,6 +336,17 @@ async function main() {
           case 'check_flush':
             console.log('[scheduler] shell_action: check_flush (reserved)');
             break;
+          case 'flush':
+            console.log('[scheduler] shell_action: flush — flushing all Directors');
+            try {
+              await pool.flushAll();
+              console.log('[scheduler] flush: pool Directors flushed, flushing main Director');
+              await director.flush();
+              console.log('[scheduler] flush completed');
+            } catch (err) {
+              console.error('[scheduler] flush failed:', err);
+            }
+            break;
           default:
             console.warn(`[scheduler] Unknown shell_action: ${job.action_name}`);
         }
@@ -398,6 +409,20 @@ async function main() {
       message: '@prompts/daily-report.md',
     });
     console.log('[shell] Seeded built-in cron job: daily-report');
+  }
+
+  const existingDailyFlush = listCronJobs().find((j) => j.name === 'daily-flush');
+  if (!existingDailyFlush) {
+    createCronJob({
+      name: 'daily-flush',
+      role: 'system',
+      description: '每日 flush 所有 Director，加载最新配置',
+      prompt: '',
+      schedule: 'daily 11:00',
+      action_type: 'shell_action',
+      action_name: 'flush',
+    });
+    console.log('[shell] Seeded built-in cron job: daily-flush');
   }
 
   // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
@@ -849,7 +874,8 @@ async function main() {
     const quotePrefix = msg.quotedText ? formatQuote(msg.quotedText, config.director.quote_max_length) : '';
     let directorText: string;
     if (chatType === 'group') {
-      directorText = `[群聊: ${msg.groupName || '未知群'}] ${quotePrefix}${text}`;
+      const senderTag = msg.senderName ? ` | ${msg.senderName}` : '';
+      directorText = `[群聊: ${msg.groupName || '未知群'}${senderTag}] ${quotePrefix}${text}`;
     } else {
       directorText = `${quotePrefix}${text}`;
     }

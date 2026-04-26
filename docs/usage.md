@@ -68,7 +68,7 @@
 
 Director 作为长驻 daemon 运行，上下文窗口会随对话持续膨胀。FLUSH 机制解决这个问题——定期"重启认知"，进程不死：
 
-1. **Drain** — 等待当前处理中的消息完成
+1. **Drain** — 等待当前处理中的消息完成（Pool Director 跳过此阶段，直接进入 Checkpoint）
 2. **Checkpoint** — Director 把工作状态写到 `daily/state.md`（"我正在做什么"）
 3. **Kill** — 终止进程、清空 session
 4. **Bootstrap** — 启动新 Director，读取 state.md 恢复上下文
@@ -308,6 +308,7 @@ curl localhost:3000/api/sessions
 | `/flush` | 当前会话 | 保存上下文后刷新 🔒 |
 | `/clear` | 当前会话 | 清空上下文（不保存）🔒 |
 | `/restart` | 当前会话 | 重启 Director（保留 session）🔒 |
+| `/new-session` | 当前会话 | 丢弃当前 session，下次消息创建全新 session（不保存上下文）🔒 |
 | `/shell-restart` `/restart-shell` | 全局 | 重启整个 Shell 🔒 |
 | `/switch-agent <agent>` | 当前会话 | 切换当前会话的 Director agent，并持久化恢复上下文 |
 | `/start-with-codex` | 当前会话 | 快捷切到 Codex 后端 |

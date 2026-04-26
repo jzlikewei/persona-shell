@@ -330,6 +330,24 @@ export class DirectorPool extends EventEmitter {
     console.log(`[pool] All ${keys.length} group Director(s) shut down`);
   }
 
+  /** Flush all pool Directors: checkpoint → clearSession → restart → bootstrap.
+   *  Each Director gets a new session with latest config/skills. */
+  async flushAll(): Promise<void> {
+    const keys = [...this.entries.keys()];
+    for (const key of keys) {
+      const entry = this.entries.get(key);
+      if (entry) {
+        console.log(`[pool] Flushing Director for group "${entry.groupName}"`);
+        try {
+          await entry.bridge.flush();
+        } catch (err) {
+          console.error(`[pool] Failed to flush Director "${entry.groupName}":`, err);
+        }
+      }
+    }
+    console.log(`[pool] Flushed ${keys.length} group Director(s)`);
+  }
+
   /** Detach from all pool Directors without killing them (for shell restart).
    *  Processes become orphans; restoreEntries() will reconnect on next startup. */
   async detachAll(): Promise<void> {

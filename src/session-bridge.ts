@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, type Config } from './config.js';
@@ -101,8 +101,9 @@ export class SessionBridge extends EventEmitter {
   private personaRole: string = 'director';
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
-  private static readonly FLUSH_STEP_TIMEOUT = 5 * 60_000;
-  private static readonly BOOTSTRAP_TIMEOUT = 3 * 60_000;
+  private static readonly FLUSH_STEP_TIMEOUT = 90_000;
+  private static readonly FLUSH_DRAIN_TIMEOUT = 30_000;
+  private static readonly BOOTSTRAP_TIMEOUT = 90_000;
 
   constructor(options: SessionBridgeOptions) {
     super();
@@ -249,9 +250,23 @@ export class SessionBridge extends EventEmitter {
 
     if (!this.isMain) {
       this.flushing = true;
+      const flushStart = Date.now();
+
+      if (this.pendingCount > 0) {
+        console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages (non-main)...`);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
+        if (!drained) {
+          console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms (non-main), proceeding`);
+          this.discardNextResponse = true;
+          this.pendingTurns = [];
+        } else {
+          console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms (non-main)`);
+        }
+      }
 
       // Checkpoint: ask Director to save group context before termination
       const statePath = this.getSessionStateFilePath();
+      const checkpointStart = Date.now();
       console.log(`[bridge:${this.label}] FLUSH: starting checkpoint (non-main) → ${statePath}`);
       const checkpointDone = new Promise<void>((resolve) => {
         this.flushCheckpointResolve = resolve;
@@ -260,7 +275,7 @@ export class SessionBridge extends EventEmitter {
       const poolCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-pool', {
         group_name: this.groupName ?? this.label,
         state_path: statePath,
-      }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」当前会话的工作状态保存到 ${statePath}，包括：当前讨论焦点、关键决策、未完成事项。只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
+      }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${statePath}，按 Context（背景目标约束）/ Knowledge（决策发现里程碑）/ State（当前任务待办）三层结构组织，只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
       await this.writeRaw(poolCheckpointMsg);
 
       const checkpointOk = await Promise.race([
@@ -268,22 +283,24 @@ export class SessionBridge extends EventEmitter {
         this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
       ]);
       if (!checkpointOk) {
-        console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout (non-main), forcing reset`);
+        console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms (non-main), forcing reset`);
         this.flushCheckpointResolve = null;
         this.discardNextResponse = true;
-        // 清除过期的 checkpoint pending turn
         const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
         if (idx >= 0) this.pendingTurns.splice(idx, 1);
       } else {
-        console.log(`[bridge:${this.label}] FLUSH: checkpoint done (non-main)`);
+        console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms (non-main)`);
       }
 
+      const restartStart = Date.now();
       this.expectedStaleCloses++;
       this.adapter.terminate('SIGTERM');
       this.clearSession();
       await this.restart();
+      console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms (non-main)`);
 
       // Bootstrap with saved state
+      const bootstrapStart = Date.now();
       const bootstrapDone = new Promise<void>((resolve) => {
         this.flushBootstrapResolve = resolve;
       });
@@ -295,16 +312,17 @@ export class SessionBridge extends EventEmitter {
         this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
       ]);
       if (!bootstrapOk) {
-        console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout (non-main) — forcing flush finish`);
+        console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms (non-main) — forcing flush finish`);
         this.flushBootstrapResolve = null;
         this.discardNextResponse = true;
-        // 清除过期的 bootstrap pending turn
         const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
         if (idx >= 0) this.pendingTurns.splice(idx, 1);
+      } else {
+        console.log(`[bridge:${this.label}] FLUSH: bootstrap done in ${Date.now() - bootstrapStart}ms (non-main)`);
       }
 
       this.finishFlush();
-      console.log(`[bridge:${this.label}] FLUSH: complete (non-main)`);
+      console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms (non-main)`);
       return true;
     }
 
@@ -321,19 +339,22 @@ export class SessionBridge extends EventEmitter {
     }
 
     this.flushing = true;
+    const flushStart = Date.now();
 
     if (this.pendingCount > 0) {
       console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
-      const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+      const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
       if (!drained) {
-        console.warn(`[bridge:${this.label}] FLUSH: drain timeout, aborting flush`);
+        console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms, aborting flush`);
         this.flushing = false;
         return false;
       }
+      console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms`);
     }
 
     this.emit('flush-drain-complete');
 
+    const checkpointStart = Date.now();
     console.log(`[bridge:${this.label}] FLUSH: starting checkpoint...`);
     const checkpointDone = new Promise<void>((resolve) => {
       this.flushCheckpointResolve = resolve;
@@ -348,21 +369,23 @@ export class SessionBridge extends EventEmitter {
       this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!checkpointOk) {
-      console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout, skipping checkpoint and forcing reset`);
+      console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms, forcing reset`);
       this.flushCheckpointResolve = null;
       this.discardNextResponse = true;
-      // 清除过期的 checkpoint pending turn
       const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
       if (idx >= 0) this.pendingTurns.splice(idx, 1);
     } else {
-      console.log(`[bridge:${this.label}] FLUSH: checkpoint done`);
+      console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms`);
     }
 
+    const restartStart = Date.now();
     this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
     await this.restart();
+    console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms`);
 
+    const bootstrapStart = Date.now();
     const bootstrapDone = new Promise<void>((resolve) => {
       this.flushBootstrapResolve = resolve;
     });
@@ -376,16 +399,15 @@ export class SessionBridge extends EventEmitter {
       this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
     ]);
     if (!bootstrapOk) {
-      console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout — forcing flush finish`);
+      console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms — forcing flush finish`);
       this.flushBootstrapResolve = null;
       this.discardNextResponse = true;
-      // 清除过期的 bootstrap pending turn
       const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
       if (idx >= 0) this.pendingTurns.splice(idx, 1);
       this.finishFlush();
     } else {
       this.finishFlush();
-      console.log(`[bridge:${this.label}] FLUSH: complete`);
+      console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms`);
     }
     return true;
   }
@@ -534,7 +556,7 @@ export class SessionBridge extends EventEmitter {
     try {
       if (this.pendingCount > 0) {
         console.log(`[bridge:${this.label}] Agent switch: draining ${this.pendingCount} in-flight messages...`);
-        const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
         if (!drained) {
           console.warn(`[bridge:${this.label}] Agent switch: drain timeout, aborting`);
           return false;
@@ -619,7 +641,7 @@ export class SessionBridge extends EventEmitter {
     try {
       if (this.pendingCount > 0) {
         console.log(`[bridge:${this.label}] Persona switch: draining ${this.pendingCount} in-flight messages...`);
-        const drained = await this.waitForDrain(SessionBridge.FLUSH_STEP_TIMEOUT);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
         if (!drained) {
           console.warn(`[bridge:${this.label}] Persona switch: drain timeout, aborting`);
           return false;
@@ -1011,10 +1033,24 @@ export class SessionBridge extends EventEmitter {
   }
 
   private getSessionStateFilePath(): string {
-    const dir = join(this.config.persona_dir, 'state', 'sessions');
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const file = join(dir, `${this.label}.md`);
-    if (!existsSync(file)) writeFileSync(file, '');
+    const root = join(this.config.persona_dir, 'workspaces');
+    if (!existsSync(root)) mkdirSync(root, { recursive: true });
+    const suffix = this.groupName ? `-${this.groupName.replace(/[\/\\:*?"<>|]/g, '_')}` : '';
+    const wsDir = join(root, `${this.label}${suffix}`);
+    if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
+    const file = join(wsDir, 'context.md');
+    if (!existsSync(file)) {
+      // migrate from legacy flat file (workspaces/{label}-{group}.md)
+      const legacyFlat = join(root, `${this.label}${suffix}.md`);
+      const legacyBare = join(root, `${this.label}.md`);
+      if (existsSync(legacyFlat)) {
+        renameSync(legacyFlat, file);
+      } else if (existsSync(legacyBare)) {
+        renameSync(legacyBare, file);
+      } else {
+        writeFileSync(file, '');
+      }
+    }
     return file;
   }
 
@@ -1042,7 +1078,7 @@ export class SessionBridge extends EventEmitter {
     }
 
     return loadPrompt(this.config.persona_dir, 'agent-switch-checkpoint-pool', vars)
-      ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请把群「${this.groupName ?? this.label}」当前会话的上下文保存到 ${sessionStatePath}，包括：讨论目标、当前结论、未完成事项、后续动作。该文件只服务于这个会话。保存完成后回复"已保存"。`;
+      ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${sessionStatePath}，按 Context / Knowledge / State 三层结构组织。保存完成后回复"已保存"。`;
   }
 
   private buildPersonaSwitchCheckpointPrompt(targetRole: string): string {
@@ -1055,7 +1091,7 @@ export class SessionBridge extends EventEmitter {
     };
 
     return loadPrompt(this.config.persona_dir, 'persona-switch-checkpoint', vars)
-      ?? `[FLUSH] 当前人格即将从「${this.personaRole}」切换到「${targetRole}」。请把当前会话的上下文保存到 ${sessionStatePath}，包括：讨论焦点、关键结论、未完成事项。保存完成后回复"已保存"。`;
+      ?? `[FLUSH] 当前人格即将从「${this.personaRole}」切换到「${targetRole}」。请将当前 workspace 更新到 ${sessionStatePath}，按 Context / Knowledge / State 三层结构组织。保存完成后回复"已保存"。`;
   }
 
   private getPersonaSwitchBootstrapSource(freshStart: boolean): string | undefined {
@@ -1081,7 +1117,7 @@ export class SessionBridge extends EventEmitter {
         group_name: groupName,
         state_path: sourcePath,
         shared_note: sharedNote,
-      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote}`;
+      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote} 该 workspace 文件是你的工作记忆，重要状态变更时主动更新，不要只等 flush。`;
     } else {
       msg = loadPrompt(this.config.persona_dir, 'bootstrap-pool-fresh', {
         group_name: groupName,
