@@ -47,7 +47,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: MCP_CONFIG_PATH,
         prompt: 'test',
@@ -65,6 +65,34 @@ describe('persona-process', () => {
       expect(cFlags.some((f) => f.includes('SHELL_PORT'))).toBe(true);
     });
 
+    test('skips MCP -c args for codex cli mode', () => {
+      const mcpConfig = {
+        mcpServers: {
+          'persona-tasks': {
+            command: 'bun',
+            args: ['run', 'src/task-mcp-server.ts'],
+            env: { SHELL_PORT: '3000' },
+          },
+        },
+      };
+      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
+
+      const { child, args } = spawnPersona({
+        role: 'director',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'cli' },
+        mode: 'background',
+        mcpConfigPath: MCP_CONFIG_PATH,
+        prompt: 'test',
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      expect(args).not.toContain('-c');
+      expect(args[args.length - 1]).toContain('Codex task system access');
+      expect(args[args.length - 1]).toContain('task-mcp-server.ts');
+    });
+
     test('merges DIRECTOR_LABEL into Codex MCP server env when provided', () => {
       const mcpConfig = {
         mcpServers: {
@@ -80,7 +108,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: MCP_CONFIG_PATH,
         prompt: 'test',
@@ -108,7 +136,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: MCP_CONFIG_PATH,
         prompt: 'test',
@@ -126,7 +154,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: join(TEST_DIR, 'nonexistent.json'),
         prompt: 'test',
@@ -150,7 +178,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: MCP_CONFIG_PATH,
         prompt: 'test',
@@ -170,7 +198,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: MCP_CONFIG_PATH,
         prompt: 'test',
@@ -188,7 +216,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: MCP_CONFIG_PATH,
         prompt: 'test',
@@ -212,7 +240,7 @@ describe('persona-process', () => {
       const { child, args } = spawnPersona({
         role: 'director',
         personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
+        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
         mode: 'background',
         mcpConfigPath: MCP_CONFIG_PATH,
         prompt: 'test',
@@ -538,6 +566,27 @@ describe('persona-process', () => {
       const builtPrompt = args[args.length - 1];
       expect(builtPrompt).toContain('Explorer persona instructions');
       expect(builtPrompt).toContain('## Injected persona:explorer');
+    });
+
+    test('codex background prompt includes agent system_prompt_file content', () => {
+      mkdirSync(join(TEST_DIR, 'prompts'), { recursive: true });
+      writeFileSync(join(TEST_DIR, 'prompts', 'codex.md'), 'Codex-specific agent instructions');
+
+      const { child, args } = spawnPersona({
+        role: 'explorer',
+        personaDir: TEST_DIR,
+        agent: { type: 'codex', command: 'echo', name: 'codex', system_prompt_file: 'prompts/codex.md' },
+        mode: 'background',
+        prompt: 'search',
+        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
+      });
+      child.kill();
+
+      const builtPrompt = args[args.length - 1];
+      expect(args).not.toContain('--append-system-prompt-file');
+      expect(builtPrompt).toContain('Codex-specific agent instructions');
+      expect(builtPrompt).toContain('## Injected agent');
+      expect(builtPrompt).toContain('search');
     });
 
     test('codex background with resumeSessionId uses raw prompt, not buildInjectedPrompt', () => {

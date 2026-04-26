@@ -758,10 +758,16 @@ async function main() {
     if (text.trim() === '/new-session') {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
-      const poolEntry = getTargetEntry();
-      const targetDirector = poolEntry?.bridge ?? director;
-      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
-      targetDirector.resetSession();
+      let label = 'main';
+      if (routingKey && chatType === 'group') {
+        const groupName = msg.groupName ?? chatId.slice(0, 8);
+        const directorAgentName = pool.getDirectorAgentName(routingKey)
+          ?? config.agents.defaults.director ?? 'claude';
+        const poolEntry = await pool.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        label = `group "${poolEntry.groupName}"`;
+      } else {
+        director.resetSession();
+      }
       await messaging.reply(messageId, `${label} session 已重置，下次消息将创建新 session`).catch(() => {});
       console.log(`[shell] /new-session: cleared session for ${label}`);
       return;

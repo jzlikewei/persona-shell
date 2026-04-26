@@ -108,6 +108,26 @@ export class DirectorPool extends EventEmitter {
     return this.entries.get(routingKey);
   }
 
+  /** Reset an existing or remembered group Director session. */
+  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+    const existing = this.entries.get(routingKey);
+    if (existing) {
+      existing.bridge.resetSession();
+      existing.directorAgentName = existing.bridge.getDirectorAgentName();
+      existing.lastActiveAt = Date.now();
+      this.closedEntries.delete(routingKey);
+      this.persistEntries();
+      return existing;
+    }
+
+    const entry = await this.getOrCreate(routingKey, opts);
+    entry.bridge.resetSession();
+    entry.directorAgentName = entry.bridge.getDirectorAgentName();
+    entry.lastActiveAt = Date.now();
+    this.persistEntries();
+    return entry;
+  }
+
   /** Find a pool entry by Director label (for task callback routing) */
   findByLabel(label: string): PoolEntry | undefined {
     for (const entry of this.entries.values()) {
