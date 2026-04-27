@@ -35,6 +35,7 @@ export interface PoolEntry {
   groupName: string;
   lastActiveAt: number;
   directorAgentName?: string;
+  messagesSinceFlush: number;
 }
 
 /** Metadata for closed pool sessions (kept for UI display) */
@@ -47,6 +48,8 @@ interface ClosedPoolEntry {
   closedAt: number;
   directorAgentName?: string;
 }
+
+const MIN_MESSAGES_FOR_FLUSH = 5;
 
 /** 管理多个 Director 会话实例的生命周期。
  *
@@ -209,6 +212,7 @@ export class DirectorPool extends EventEmitter {
       groupName: name,
       lastActiveAt: Date.now(),
       directorAgentName: activeDirectorAgentName,
+      messagesSinceFlush: 0,
     };
     this.entries.set(routingKey, entry);
     this.closedEntries.delete(routingKey); // re-activated
@@ -238,6 +242,9 @@ export class DirectorPool extends EventEmitter {
 
     try {
       await entry.bridge.send(text);
+      entry.messagesSinceFlush++;
+      const countKey = `pool:${routingKey}:msgCount`;
+      setState(countKey, entry.messagesSinceFlush);
     } catch (err) {
       entry.queue.resolve(correlationId);
       throw err;
@@ -357,15 +364,23 @@ export class DirectorPool extends EventEmitter {
     for (const key of keys) {
       const entry = this.entries.get(key);
       if (entry) {
-        console.log(`[pool] Flushing Director for group "${entry.groupName}"`);
+        const countKey = `pool:${key}:msgCount`;
+        const msgCount = getState<number>(countKey) ?? 0;
+        if (msgCount < MIN_MESSAGES_FOR_FLUSH) {
+          console.log(`[pool] Skipping flush for "${entry.groupName}" (only ${msgCount} messages since last flush)`);
+          continue;
+        }
+        console.log(`[pool] Flushing Director for group "${entry.groupName}" (${msgCount} messages)`);
         try {
           await entry.bridge.flush();
+          setState(countKey, 0);
+          entry.messagesSinceFlush = 0;
         } catch (err) {
           console.error(`[pool] Failed to flush Director "${entry.groupName}":`, err);
         }
       }
     }
-    console.log(`[pool] Flushed ${keys.length} group Director(s)`);
+    console.log(`[pool] Flushed group Director(s)`);
   }
 
   /** Detach from all pool Directors without killing them (for shell restart).
@@ -530,6 +545,7 @@ export class DirectorPool extends EventEmitter {
         groupName: item.groupName,
         lastActiveAt: item.lastActiveAt,
         directorAgentName: bridge.getDirectorAgentName(),
+        messagesSinceFlush: getState<number>(`pool:${item.routingKey}:msgCount`) ?? 0,
       };
       this.entries.set(item.routingKey, entry);
       this.closedEntries.delete(item.routingKey); // re-activated, remove stale closed entry
