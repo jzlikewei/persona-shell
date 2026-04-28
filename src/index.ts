@@ -15,6 +15,7 @@ import { updateTask, listTasks, createTask, getTask, getState, deleteState, list
 import { writeFileSync, existsSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
+import { parseShellRestartCommand, buildShellRestartBlockedMessage } from './shell-restart.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -768,10 +769,22 @@ async function main() {
     }
 
     // /shell-restart | /restart-shell — detach pool Directors + shutdown main Director + exit Shell (launchd will respawn)
-    if (text.trim() === '/shell-restart' || text.trim() === '/restart-shell') {
+    const shellRestart = parseShellRestartCommand(text);
+    if (shellRestart) {
       if (!isMaster) return;
-      await messaging.reply(messageId, 'Shell 正在重启...').catch(() => {});
-      console.log('[shell] /shell-restart: detaching pool Directors and exiting for launchd respawn');
+      const runningTasks = taskRunner.getRunningTasks();
+      if (runningTasks.length > 0 && !shellRestart.force) {
+        await messaging.reply(messageId, buildShellRestartBlockedMessage(runningTasks)).catch(() => {});
+        console.warn(`[shell] /shell-restart refused: running tasks=${runningTasks.join(', ')}`);
+        return;
+      }
+
+      if (runningTasks.length > 0) {
+        console.warn(`[shell] /shell-restart --force: proceeding with running tasks=${runningTasks.join(', ')}`);
+      }
+
+      await messaging.reply(messageId, shellRestart.force ? 'Shell 正在强制重启...' : 'Shell 正在重启...').catch(() => {});
+      console.log(`[shell] /shell-restart${shellRestart.force ? ' --force' : ''}: detaching pool Directors and exiting for launchd respawn`);
       await pool.detachAll();
       await director.shutdown();
       process.exit(0);
@@ -828,7 +841,7 @@ async function main() {
         '/esc — 取消队列中最早的消息',
         '/session-restart — 重启当前 Director（保留 session，加载新配置）',
         '/new-session — 丢弃当前 session，下次消息创建全新 session',
-        '/shell-restart — 重启整个 Shell 进程（代码更新生效）',
+        '/shell-restart [--force] — 重启整个 Shell 进程（有后台任务时默认拒绝）',
         '/help — 显示此帮助信息',
       ];
       await messaging.reply(messageId, lines.join('\n')).catch(() => {});
