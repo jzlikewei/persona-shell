@@ -7,6 +7,7 @@ export type AgentProviderType = 'claude' | 'codex' | 'kimi';
 export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApproval = 'untrusted' | 'on-request' | 'never';
+export type CodexMcpMode = 'cli' | 'mcp' | 'off';
 
 export interface AgentProviderConfig {
   type: AgentProviderType;
@@ -17,6 +18,7 @@ export interface AgentProviderConfig {
   sandbox?: CodexSandbox;
   approval?: CodexApproval;
   search?: boolean;
+  mcp_mode?: CodexMcpMode;
   model?: string;
   /** Per-agent system prompt file, relative to persona_dir (e.g. "prompts/gemini.md") */
   system_prompt_file?: string;
@@ -134,6 +136,7 @@ export function loadConfig(path?: string): Config {
     sandbox?: unknown;
     approval?: unknown;
     search?: unknown;
+    mcp_mode?: unknown;
     model?: unknown;
     system_prompt_file?: unknown;
     agent_file?: unknown;
@@ -164,6 +167,9 @@ export function loadConfig(path?: string): Config {
           ? { approval: provider.approval }
           : {}),
         ...(typeof provider?.search === 'boolean' ? { search: provider.search } : {}),
+        ...(provider?.mcp_mode === 'cli' || provider?.mcp_mode === 'mcp' || provider?.mcp_mode === 'off'
+          ? { mcp_mode: provider.mcp_mode }
+          : {}),
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
         ...(typeof provider?.system_prompt_file === 'string' && provider.system_prompt_file.trim()
           ? { system_prompt_file: provider.system_prompt_file.trim() }
@@ -198,6 +204,7 @@ export function loadConfig(path?: string): Config {
       sandbox: 'danger-full-access',
       approval: 'never',
       search: false,
+      mcp_mode: 'cli',
     };
   }
 

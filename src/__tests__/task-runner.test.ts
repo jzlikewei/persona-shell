@@ -120,4 +120,36 @@ echo '{"type":"turn.completed"}'
     expect(result.success).toBe(true);
     expect(result.resultFile).toBeDefined();
   });
+
+  test('does not pass MCP config to codex task in cli mode', async () => {
+    const runner = new TaskRunner({
+      agents: {
+        defaults: { default: 'codex', executor: 'codex' },
+        providers: {
+          codex: { type: 'codex', command: FAKE_CODEX, mcp_mode: 'cli' },
+        },
+      },
+      personaDir: PERSONA_DIR,
+      defaultTimeoutMs: 5000,
+    });
+
+    const result = await new Promise<{
+      success: boolean;
+      spawnArgs?: string[];
+    }>((resolve) => {
+      runner.once('task-completed', resolve);
+      runner.once('task-failed', resolve);
+      runner.runTask({
+        taskId: 'T-TEST-001',
+        role: 'executor',
+        agent: 'codex',
+        prompt: 'write test file',
+        description: 'codex cli mode test',
+      });
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.spawnArgs).toBeDefined();
+    expect(result.spawnArgs).not.toContain('-c');
+  });
 });

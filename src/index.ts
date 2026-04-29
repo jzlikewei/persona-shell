@@ -15,6 +15,7 @@ import { updateTask, listTasks, createTask, getTask, getState, deleteState, list
 import { writeFileSync, existsSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
+import { parseShellRestartCommand, buildShellRestartBlockedMessage } from './shell-restart.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -130,6 +131,12 @@ async function main() {
     defaultTimeoutMs: config.task.default_timeout_ms,
   });
 
+  // Startup: clean up orphan tasks from previous crash/restart
+  const orphanRecovered = taskRunner.cleanupOrphanTasks(
+    (filter) => listTasks(filter) as Array<{ id: string; created_at: string; started_at: string | null; extra: unknown; description: string }>,
+    (id, data) => updateTask(id, data),
+  );
+
   /** Resolve the target chatId and Director for a task callback based on source_director.
    *  Falls back to main Director + last chatId if source is unknown. */
   async function resolveTaskTarget(task: { source_director?: string | null }): Promise<{
@@ -166,11 +173,11 @@ async function main() {
   }
 
   // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + messaging notification
-  taskRunner.on('task-started', (taskId: string, spawnArgs: string[]) => {
+  taskRunner.on('task-started', (taskId: string, spawnArgs: string[], pid: number) => {
     updateTask(taskId, {
       status: 'running',
       started_at: localNow(),
-      extra: { spawnArgs },
+      extra: { spawnArgs, pid },
     });
   });
 
@@ -385,6 +392,12 @@ async function main() {
     },
   );
   scheduler.start();
+
+  // Notify Director about recovered orphan tasks from previous crash
+  if (orphanRecovered.length > 0) {
+    const summary = orphanRecovered.map(t => `- ${t.id}(${t.description}): ${t.status}`).join('\n');
+    director.send(`[STARTUP] 回收了 ${orphanRecovered.length} 个上次崩溃遗留的孤儿任务:\n${summary}`).catch(() => {});
+  }
 
   // Cron response forwarding — Director 处理 cron 消息后，转发响应到主聊天
   director.on('cron-response', (reply: string) => {
@@ -758,20 +771,38 @@ async function main() {
     if (text.trim() === '/new-session') {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
-      const poolEntry = getTargetEntry();
-      const targetDirector = poolEntry?.bridge ?? director;
-      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
-      targetDirector.resetSession();
+      let label = 'main';
+      if (routingKey && chatType === 'group') {
+        const groupName = msg.groupName ?? chatId.slice(0, 8);
+        const directorAgentName = pool.getDirectorAgentName(routingKey)
+          ?? config.agents.defaults.director ?? 'claude';
+        const poolEntry = await pool.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        label = `group "${poolEntry.groupName}"`;
+      } else {
+        director.resetSession();
+      }
       await messaging.reply(messageId, `${label} session 已重置，下次消息将创建新 session`).catch(() => {});
       console.log(`[shell] /new-session: cleared session for ${label}`);
       return;
     }
 
     // /shell-restart | /restart-shell — detach pool Directors + shutdown main Director + exit Shell (launchd will respawn)
-    if (text.trim() === '/shell-restart' || text.trim() === '/restart-shell') {
+    const shellRestart = parseShellRestartCommand(text);
+    if (shellRestart) {
       if (!isMaster) return;
-      await messaging.reply(messageId, 'Shell 正在重启...').catch(() => {});
-      console.log('[shell] /shell-restart: detaching pool Directors and exiting for launchd respawn');
+      const runningTasks = taskRunner.getRunningTasks();
+      if (runningTasks.length > 0 && !shellRestart.force) {
+        await messaging.reply(messageId, buildShellRestartBlockedMessage(runningTasks)).catch(() => {});
+        console.warn(`[shell] /shell-restart refused: running tasks=${runningTasks.join(', ')}`);
+        return;
+      }
+
+      if (runningTasks.length > 0) {
+        console.warn(`[shell] /shell-restart --force: proceeding with running tasks=${runningTasks.join(', ')}`);
+      }
+
+      await messaging.reply(messageId, shellRestart.force ? 'Shell 正在强制重启...' : 'Shell 正在重启...').catch(() => {});
+      console.log(`[shell] /shell-restart${shellRestart.force ? ' --force' : ''}: detaching pool Directors and exiting for launchd respawn`);
       await pool.detachAll();
       await director.shutdown();
       process.exit(0);
@@ -828,7 +859,7 @@ async function main() {
         '/esc — 取消队列中最早的消息',
         '/session-restart — 重启当前 Director（保留 session，加载新配置）',
         '/new-session — 丢弃当前 session，下次消息创建全新 session',
-        '/shell-restart — 重启整个 Shell 进程（代码更新生效）',
+        '/shell-restart [--force] — 重启整个 Shell 进程（有后台任务时默认拒绝）',
         '/help — 显示此帮助信息',
       ];
       await messaging.reply(messageId, lines.join('\n')).catch(() => {});
@@ -1020,12 +1051,20 @@ async function main() {
     }, 3000);
   }
 
-  // Graceful shutdown — detach pool Directors (keep alive for reconnect), stop main Director
-  process.on('SIGINT', async () => {
-    console.log('[shell] Shutting down (SIGINT) — detaching pool Directors...');
+  // Graceful shutdown — cancel running tasks, detach pool Directors, stop main Director
+  async function gracefulShutdown(signal: string): Promise<void> {
+    console.log(`[shell] Shutting down (${signal}) — cleaning up...`);
+    const runningTaskIds = taskRunner.getRunningTasks();
+    for (const taskId of runningTaskIds) {
+      console.log(`[shell] Cancelling task ${taskId} before shutdown`);
+      taskRunner.cancelTask(taskId);
+    }
     await Promise.allSettled([pool.detachAll(), director.stop()]);
     process.exit(0);
-  });
+  }
+
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
 main().catch((err) => {

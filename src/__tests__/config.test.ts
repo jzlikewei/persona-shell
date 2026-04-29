@@ -285,7 +285,7 @@ describe('config', () => {
         expect(p.model).toBe('sonnet');
       });
 
-      test('parses codex provider with sandbox/approval/search', () => {
+      test('parses codex provider with sandbox/approval/search/mcp_mode', () => {
         writeMinimalConfig({
           config: [
             'feishu:',
@@ -298,6 +298,7 @@ describe('config', () => {
             '      sandbox: workspace-write',
             '      approval: on-request',
             '      search: true',
+            '      mcp_mode: mcp',
             '',
           ].join('\n'),
           secret: `feishu:\n  app_secret: s\n`,
@@ -309,6 +310,7 @@ describe('config', () => {
         expect(p.sandbox).toBe('workspace-write');
         expect(p.approval).toBe('on-request');
         expect(p.search).toBe(true);
+        expect(p.mcp_mode).toBe('mcp');
       });
 
       test('skips provider with invalid type', () => {
