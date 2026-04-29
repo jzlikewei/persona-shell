@@ -18,7 +18,7 @@
 | 后台任务（create_task） | ✅ | ✅ | ✅ | Director 派发，子角色独立执行，MCP 驱动 |
 | Cron 定时任务 | ✅ | ✅ | ✅ | spawn_role / director_msg / shell_action |
 | 人格定义（personas/） | ✅ | ✅ | ✅ | Claude Code agent frontmatter 格式 |
-| 技能插件（skills/） | ✅ | — | ✅ | Claude Code plugin 体系；Kimi `--skills-dir` |
+| 技能插件（skills/） | ✅ | ✅ | ✅ | Claude `.claude/skills`；Codex `.agents/skills`；Kimi `--skills-dir` |
 | **记忆与持久化** | | | | |
 | 身份仓库（~/.persona） | ✅ | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
 | 日报自动生成 | ✅ | — | — | 主 Director 写入 daily/YYYY-MM-DD.md |
@@ -164,9 +164,9 @@ agents:
 |---|---|---|---|
 | 进程模型 | 常驻 daemon（FIFO pipe） | 按 turn spawn（每轮一次） | 常驻 daemon（stdin/stdout pipe） |
 | 流式响应 | ✅ 实时推送 chunk | ❌ 整段返回 | ⚠️ 整段 JSON 行返回 |
-| 身份注入 | `--append-system-prompt-file` `--plugin-dir` | Prompt 拼接 | `--agent-file` `--skills-dir` |
-| 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 | Kimi 原生工具 + skills |
-| 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、不需要实时反馈的场景 | 需要 Skills 或 Kimi 模型能力的场景 |
+| 身份注入 | `--append-system-prompt-file` `--plugin-dir` | Prompt 拼接 + `.agents/skills` | `--agent-file` `--skills-dir` |
+| 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |
+| 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 | 需要 Kimi 模型能力的场景 |
 
 ## 人格自定义
 
@@ -201,7 +201,7 @@ tools: [Read, Grep, Glob, Bash]
 
 ### 技能（Skills）
 
-技能定义在 `~/.persona/skills/` 下，每个技能是一个 Claude Code plugin 目录。Director 可以通过 `/skill-name` 调用技能。
+技能定义在 `~/.persona/skills/` 下。Claude Code 通过 `.claude/skills` 软链接发现，Codex 通过 `.agents/skills` 软链接发现，Kimi 通过 `--skills-dir` 加载。Director 可以通过 `/skill-name` 调用技能。
 
 ```
 ~/.persona/skills/

@@ -123,7 +123,9 @@ export class TaskRunner extends EventEmitter {
       personaDir,
       agent,
       mode: 'background',
-      mcpConfigPath: join(personaDir, '.mcp.json'),
+      mcpConfigPath: agent.type === 'codex' && agent.mcp_mode !== 'mcp'
+        ? undefined
+        : join(personaDir, '.mcp.json'),
       prompt: fullPrompt,
       projectDir: input.projectDir,
       stderrPath: join(getLogDir(), `task-${input.taskId}.stderr.log`),
@@ -219,6 +221,7 @@ export class TaskRunner extends EventEmitter {
         success,
         durationMs,
         costUsd: entry.costUsd,
+        spawnArgs: args,
         ...(success ? { resultFile: finalResultFile } : { error }),
       };
 
