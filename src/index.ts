@@ -350,6 +350,12 @@ async function main() {
               console.log('[scheduler] flush: pool Directors flushed, flushing main Director');
               await director.flush();
               console.log('[scheduler] flush completed');
+              const lastChatId = messaging.getLastChatId();
+              if (lastChatId) {
+                await messaging.sendMessage(lastChatId, '🔄 定时 FLUSH 已完成，所有 Director 上下文已刷新').catch((e) => {
+                  console.warn('[scheduler] flush notification failed:', e?.message ?? e);
+                });
+              }
             } catch (err) {
               console.error('[scheduler] flush failed:', err);
             }
@@ -614,11 +620,15 @@ async function main() {
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.flush();
-      if (success) {
-        await messaging.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`).catch(() => {});
-      } else {
-        await messaging.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`).catch(() => {});
-      }
+      const flushMsg = success
+        ? `FLUSH 完成，${label} 上下文已刷新`
+        : `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`;
+      await messaging.reply(messageId, flushMsg).catch(async (err) => {
+        console.warn(`[shell] /flush reply failed, falling back to sendMessage:`, err?.message ?? err);
+        await messaging.sendMessage(chatId, flushMsg).catch((e) => {
+          console.error(`[shell] /flush sendMessage also failed:`, e?.message ?? e);
+        });
+      });
       return;
     }
 
