@@ -7,6 +7,7 @@ import { spawnPersona } from '../persona-process.js';
 import { resolveAgentProvider, loadConfig, type Config } from '../config.js';
 import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
+import { localNow } from './task-store.js';
 
 export interface TaskRunnerConfig {
   configPath?: string;
@@ -51,6 +52,10 @@ interface RunningTask {
 const GRACEFUL_KILL_DELAY = 5_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
 const CODEX_RESULT_STAGING_DIR = '/tmp/persona-task-results';
+
+function isPidRunning(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
 
 export class TaskRunner extends EventEmitter {
   private config: TaskRunnerConfig;
@@ -146,7 +151,7 @@ export class TaskRunner extends EventEmitter {
     }
 
     console.log(`[task-runner] Task ${input.taskId} started (role=${input.role}, agent=${agent.name}, pid=${child.pid}, timeout=${timeoutMs}ms)`);
-    this.emit('task-started', input.taskId, args);
+    this.emit('task-started', input.taskId, args, child.pid);
 
     // Timeout protection
     const timer = setTimeout(() => {
@@ -336,5 +341,93 @@ export class TaskRunner extends EventEmitter {
     } catch {
       return { ok: false, error: 'failed to move result file into outbox' };
     }
+  }
+
+  /** Startup cleanup: scan DB for tasks stuck in 'running'/'dispatched' and resolve them. */
+  cleanupOrphanTasks(
+    listTasksFn: (filter: { status: string }) => Array<{ id: string; created_at: string; started_at: string | null; extra: unknown; description: string }>,
+    updateTaskFn: (id: string, data: Record<string, unknown>) => void,
+  ): Array<{ id: string; status: string; description: string }> {
+    const recovered: Array<{ id: string; status: string; description: string }> = [];
+
+    // Phase 1: running tasks — check process liveness, harvest results or kill
+    const running = listTasksFn({ status: 'running' });
+    if (running.length > 0) {
+      console.log(`[task-runner] Found ${running.length} orphan running task(s), cleaning up...`);
+    }
+
+    for (const task of running) {
+      const extra = task.extra as Record<string, unknown> | null;
+      const pid = extra?.pid as number | undefined;
+
+      if (!pid) {
+        updateTaskFn(task.id, { status: 'failed', completed_at: localNow(), error: 'orphaned (shell restarted, no PID)' });
+        console.log(`[task-runner] Orphan ${task.id}: no PID, marked failed`);
+        recovered.push({ id: task.id, status: 'failed', description: task.description });
+        continue;
+      }
+
+      const alive = isPidRunning(pid);
+      const resultFile = this.resolveOrphanResultFile(task);
+
+      if (!alive) {
+        if (resultFile) {
+          updateTaskFn(task.id, { status: 'completed', completed_at: localNow(), result_file: resultFile, error: null });
+          console.log(`[task-runner] Orphan ${task.id}: dead but result exists, marked completed`);
+          recovered.push({ id: task.id, status: 'completed', description: task.description });
+        } else {
+          updateTaskFn(task.id, { status: 'failed', completed_at: localNow(), error: 'orphaned (process dead, no result)' });
+          console.log(`[task-runner] Orphan ${task.id}: dead, no result, marked failed`);
+          recovered.push({ id: task.id, status: 'failed', description: task.description });
+        }
+      } else {
+        if (resultFile) {
+          this.killProcessGroup(pid, 'SIGTERM');
+          updateTaskFn(task.id, { status: 'completed', completed_at: localNow(), result_file: resultFile });
+          console.log(`[task-runner] Orphan ${task.id}: alive with result, killed and marked completed`);
+          recovered.push({ id: task.id, status: 'completed', description: task.description });
+        } else {
+          this.killProcessGroup(pid, 'SIGTERM');
+          updateTaskFn(task.id, { status: 'failed', completed_at: localNow(), error: 'orphaned (killed on shell restart)' });
+          console.log(`[task-runner] Orphan ${task.id}: alive without result, killed and marked failed`);
+          recovered.push({ id: task.id, status: 'failed', description: task.description });
+        }
+      }
+    }
+
+    // Phase 2: dispatched but never started — mark stale ones as failed
+    const dispatched = listTasksFn({ status: 'dispatched' });
+    for (const task of dispatched) {
+      const age = Date.now() - new Date(task.created_at).getTime();
+      if (age > this.config.defaultTimeoutMs) {
+        updateTaskFn(task.id, { status: 'failed', completed_at: localNow(), error: 'orphaned (never started, shell restarted)' });
+        console.log(`[task-runner] Stale dispatched ${task.id}: age=${Math.round(age / 1000)}s, marked failed`);
+        recovered.push({ id: task.id, status: 'failed', description: task.description });
+      }
+    }
+
+    return recovered;
+  }
+
+  private resolveOrphanResultFile(task: { id: string; created_at: string }): string | null {
+    const createdDate = new Date(task.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    const outboxFile = join(this.config.personaDir, 'outbox', createdDate, `${task.id}.md`);
+    if (existsSync(outboxFile)) return outboxFile;
+
+    // Check Codex staging directory
+    const stagingFile = join(CODEX_RESULT_STAGING_DIR, `${task.id}.md`);
+    if (existsSync(stagingFile)) {
+      const outboxDir = join(this.config.personaDir, 'outbox', createdDate);
+      if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true });
+      try {
+        copyFileSync(stagingFile, outboxFile);
+        rmSync(stagingFile, { force: true });
+        return outboxFile;
+      } catch {
+        return null;
+      }
+    }
+
+    return null;
   }
 }

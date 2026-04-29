@@ -131,6 +131,12 @@ async function main() {
     defaultTimeoutMs: config.task.default_timeout_ms,
   });
 
+  // Startup: clean up orphan tasks from previous crash/restart
+  const orphanRecovered = taskRunner.cleanupOrphanTasks(
+    (filter) => listTasks(filter) as Array<{ id: string; created_at: string; started_at: string | null; extra: unknown; description: string }>,
+    (id, data) => updateTask(id, data),
+  );
+
   /** Resolve the target chatId and Director for a task callback based on source_director.
    *  Falls back to main Director + last chatId if source is unknown. */
   async function resolveTaskTarget(task: { source_director?: string | null }): Promise<{
@@ -167,11 +173,11 @@ async function main() {
   }
 
   // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + messaging notification
-  taskRunner.on('task-started', (taskId: string, spawnArgs: string[]) => {
+  taskRunner.on('task-started', (taskId: string, spawnArgs: string[], pid: number) => {
     updateTask(taskId, {
       status: 'running',
       started_at: localNow(),
-      extra: { spawnArgs },
+      extra: { spawnArgs, pid },
     });
   });
 
@@ -386,6 +392,12 @@ async function main() {
     },
   );
   scheduler.start();
+
+  // Notify Director about recovered orphan tasks from previous crash
+  if (orphanRecovered.length > 0) {
+    const summary = orphanRecovered.map(t => `- ${t.id}(${t.description}): ${t.status}`).join('\n');
+    director.send(`[STARTUP] 回收了 ${orphanRecovered.length} 个上次崩溃遗留的孤儿任务:\n${summary}`).catch(() => {});
+  }
 
   // Cron response forwarding — Director 处理 cron 消息后，转发响应到主聊天
   director.on('cron-response', (reply: string) => {
@@ -1039,12 +1051,20 @@ async function main() {
     }, 3000);
   }
 
-  // Graceful shutdown — detach pool Directors (keep alive for reconnect), stop main Director
-  process.on('SIGINT', async () => {
-    console.log('[shell] Shutting down (SIGINT) — detaching pool Directors...');
+  // Graceful shutdown — cancel running tasks, detach pool Directors, stop main Director
+  async function gracefulShutdown(signal: string): Promise<void> {
+    console.log(`[shell] Shutting down (${signal}) — cleaning up...`);
+    const runningTaskIds = taskRunner.getRunningTasks();
+    for (const taskId of runningTaskIds) {
+      console.log(`[shell] Cancelling task ${taskId} before shutdown`);
+      taskRunner.cancelTask(taskId);
+    }
     await Promise.allSettled([pool.detachAll(), director.stop()]);
     process.exit(0);
-  });
+  }
+
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
 main().catch((err) => {
