@@ -5,7 +5,7 @@ import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
 import type { IncomingMessage } from './messaging/messaging.js';
 import { MessageQueue } from './queue.js';
-import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
+import { startConsole, type MetricsCollector } from './console.js';
 import { TaskRunner, type TaskResult } from './task/task-runner.js';
 import { spawnPersona } from './persona-process.js';
 import { createInterface } from 'readline';
@@ -117,7 +117,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, undefined, configPath);
+  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, configPath);
 
   // Restore pool entries from previous Shell session + clean up orphans
   await pool.restoreEntries();
@@ -255,30 +255,9 @@ async function main() {
     }
   });
 
-  // Attachment compositor — buffer attachments per Director until response arrives
-  const attachmentsBySource = new Map<string, string[]>();
-  const attachmentBuffer: AttachmentBuffer = {
-    push(source: string, filePath: string) {
-      const list = attachmentsBySource.get(source) ?? [];
-      list.push(filePath);
-      attachmentsBySource.set(source, list);
-      log.debug(`[shell] Compositor: buffered attachment ${filePath} for ${source} (${list.length} pending)`);
-    },
-    drain(source: string): string[] {
-      const list = attachmentsBySource.get(source) ?? [];
-      attachmentsBySource.delete(source);
-      return list;
-    },
-    isProcessing(source: string): boolean {
-      if (source === 'main') return queue.length > 0;
-      const entry = pool.findByLabel(source);
-      return entry ? entry.queue.length > 0 : false;
-    },
-  };
 
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
-  pool.setAttachmentBuffer(attachmentBuffer);
-  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, attachmentBuffer, pool);
+  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, pool);
   messaging.addClient(webClient);
 
   // 7.4: Scheduler — interval-driven cron job automation
@@ -442,11 +421,6 @@ async function main() {
     const orphaned = queue.clearAll();
     if (orphaned.length > 0) {
       console.log(`[shell] Cleared ${orphaned.length} orphaned queue items after flush drain`);
-    }
-    // Compositor: discard main Director's buffered attachments — they'll never have a target message
-    const discarded = attachmentBuffer.drain('main');
-    if (discarded.length > 0) {
-      console.log(`[shell] Compositor: discarding ${discarded.length} buffered attachment(s) after flush`);
     }
   });
 
@@ -967,23 +941,6 @@ async function main() {
       await messaging.reply(item.messageId, replyWithTiming);
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
       console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
-
-      // Compositor: drain buffered attachments for main Director, reply to the same message
-      const attachments = attachmentBuffer.drain('main');
-      for (const filePath of attachments) {
-        try {
-          const ext = extname(filePath).toLowerCase();
-          const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
-          if (imageExts.has(ext)) {
-            await messaging.uploadAndReplyImage(item.messageId, filePath);
-          } else {
-            await messaging.uploadAndReplyFile(item.messageId, filePath);
-          }
-          log.debug(`[shell] Compositor: sent attachment ${filePath} as reply to ${item.messageId}`);
-        } catch (err) {
-          console.error(`[shell] Compositor: failed to send attachment ${filePath}:`, err);
-        }
-      }
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
       metrics.addError(`Reply failed: ${String(err).slice(0, 200)}`);

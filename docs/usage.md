@@ -168,6 +168,31 @@ agents:
 | 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 | Kimi 原生工具 + skills |
 | 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、不需要实时反馈的场景 | 需要 Skills 或 Kimi 模型能力的场景 |
 
+## 命令行快捷启动
+
+除了通过飞书 IM 和 Web 控制台，你可以直接在终端启动一个交互式 Director，复用与 Shell 相同的身份配置（soul、personas、MCP、skills）。
+
+### 安装
+
+```bash
+# 依赖 fzf
+brew install fzf
+
+# 添加 alias（可自定义命令名）
+echo "alias pa='~/.persona/scripts/agent.sh'" >> ~/.zshrc
+source ~/.zshrc
+```
+
+### 使用
+
+```bash
+pa
+```
+
+启动后 fzf 列出所有 workspace，选择后以该 workspace 的 `context.md` 作为上下文启动 Claude Code 交互式会话。
+
+与 Shell 内 Director 的区别：这是独立的 Claude Code REPL，不经过消息队列、不连飞书、不触发 FLUSH。适合本地调试、临时对话、或需要完整 persona 身份但不走 IM 的场景。
+
 ## 人格自定义
 
 ### 角色定义
