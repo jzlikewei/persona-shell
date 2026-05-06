@@ -131,6 +131,12 @@ async function main() {
     defaultTimeoutMs: config.task.default_timeout_ms,
   });
 
+  // Startup: clean up orphan tasks from previous crash/restart
+  const orphanRecovered = taskRunner.cleanupOrphanTasks(
+    (filter) => listTasks(filter) as Array<{ id: string; created_at: string; started_at: string | null; extra: unknown; description: string }>,
+    (id, data) => updateTask(id, data),
+  );
+
   /** Resolve the target chatId and Director for a task callback based on source_director.
    *  Falls back to main Director + last chatId if source is unknown. */
   async function resolveTaskTarget(task: { source_director?: string | null }): Promise<{
@@ -167,11 +173,11 @@ async function main() {
   }
 
   // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + messaging notification
-  taskRunner.on('task-started', (taskId: string, spawnArgs: string[]) => {
+  taskRunner.on('task-started', (taskId: string, spawnArgs: string[], pid: number) => {
     updateTask(taskId, {
       status: 'running',
       started_at: localNow(),
-      extra: { spawnArgs },
+      extra: { spawnArgs, pid },
     });
   });
 
@@ -323,6 +329,12 @@ async function main() {
               console.log('[scheduler] flush: pool Directors flushed, flushing main Director');
               await director.flush();
               console.log('[scheduler] flush completed');
+              const lastChatId = messaging.getLastChatId();
+              if (lastChatId) {
+                await messaging.sendMessage(lastChatId, '🔄 定时 FLUSH 已完成，所有 Director 上下文已刷新').catch((e) => {
+                  console.warn('[scheduler] flush notification failed:', e?.message ?? e);
+                });
+              }
             } catch (err) {
               console.error('[scheduler] flush failed:', err);
             }
@@ -365,6 +377,12 @@ async function main() {
     },
   );
   scheduler.start();
+
+  // Notify Director about recovered orphan tasks from previous crash
+  if (orphanRecovered.length > 0) {
+    const summary = orphanRecovered.map(t => `- ${t.id}(${t.description}): ${t.status}`).join('\n');
+    director.send(`[STARTUP] 回收了 ${orphanRecovered.length} 个上次崩溃遗留的孤儿任务:\n${summary}`).catch(() => {});
+  }
 
   // Cron response forwarding — Director 处理 cron 消息后，转发响应到主聊天
   director.on('cron-response', (reply: string) => {
@@ -576,11 +594,15 @@ async function main() {
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.flush();
-      if (success) {
-        await messaging.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`).catch(() => {});
-      } else {
-        await messaging.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`).catch(() => {});
-      }
+      const flushMsg = success
+        ? `FLUSH 完成，${label} 上下文已刷新`
+        : `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`;
+      await messaging.reply(messageId, flushMsg).catch(async (err) => {
+        console.warn(`[shell] /flush reply failed, falling back to sendMessage:`, err?.message ?? err);
+        await messaging.sendMessage(chatId, flushMsg).catch((e) => {
+          console.error(`[shell] /flush sendMessage also failed:`, e?.message ?? e);
+        });
+      });
       return;
     }
 
@@ -733,10 +755,16 @@ async function main() {
     if (text.trim() === '/new-session') {
       if (!isMaster) return;
       messaging.addReaction(messageId, 'Typing').catch(() => {});
-      const poolEntry = getTargetEntry();
-      const targetDirector = poolEntry?.bridge ?? director;
-      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
-      targetDirector.resetSession();
+      let label = 'main';
+      if (routingKey && chatType === 'group') {
+        const groupName = msg.groupName ?? chatId.slice(0, 8);
+        const directorAgentName = pool.getDirectorAgentName(routingKey)
+          ?? config.agents.defaults.director ?? 'claude';
+        const poolEntry = await pool.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        label = `group "${poolEntry.groupName}"`;
+      } else {
+        director.resetSession();
+      }
       await messaging.reply(messageId, `${label} session 已重置，下次消息将创建新 session`).catch(() => {});
       console.log(`[shell] /new-session: cleared session for ${label}`);
       return;
@@ -990,12 +1018,20 @@ async function main() {
     }, 3000);
   }
 
-  // Graceful shutdown — detach pool Directors (keep alive for reconnect), stop main Director
-  process.on('SIGINT', async () => {
-    console.log('[shell] Shutting down (SIGINT) — detaching pool Directors...');
+  // Graceful shutdown — cancel running tasks, detach pool Directors, stop main Director
+  async function gracefulShutdown(signal: string): Promise<void> {
+    console.log(`[shell] Shutting down (${signal}) — cleaning up...`);
+    const runningTaskIds = taskRunner.getRunningTasks();
+    for (const taskId of runningTaskIds) {
+      console.log(`[shell] Cancelling task ${taskId} before shutdown`);
+      taskRunner.cancelTask(taskId);
+    }
     await Promise.allSettled([pool.detachAll(), director.stop()]);
     process.exit(0);
-  });
+  }
+
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
 main().catch((err) => {

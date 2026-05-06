@@ -85,6 +85,7 @@ agents:
       sandbox: "danger-full-access"
       approval: "never"
       search: false
+      mcp_mode: "cli"          # cli(默认): 在 prompt 注入 task CLI 用法；mcp: 注入 MCP tools；off: 关闭 task 注入
     kimi:
       type: "kimi"
       command: "kimi"
@@ -170,7 +171,7 @@ launchctl start com.persona.shell
 │   ├── director.md                # 主分身人格
 │   ├── explorer.md                # 研究员角色
 │   └── critic.md                  # 审查员角色
-├── skills/                      # 技能（= Claude Code plugin）
+├── skills/                      # 技能（Claude / Codex / Kimi 共用）
 ├── prompts/                     # 系统 prompt 模板，可自定义以覆盖默认行为
 ├── memory/                      # 跨会话记忆
 ├── daily/                       # 日报 + 工作记忆
@@ -179,7 +180,7 @@ launchctl start com.persona.shell
 └── config.yaml                  # 运行配置
 ```
 
-这些文件通过 CLI 参数在启动时注入 Claude Code（`--append-system-prompt-file`、`--plugin-dir`、`--add-dir`）。Kimi 则通过 `--agent-file` 加载 agent 规范来注入身份。详见 [`agent-backends.md`](agent-backends.md)。
+这些文件通过 CLI 参数或后端原生发现机制注入：Claude Code 使用 `--append-system-prompt-file`、`--plugin-dir`、`--add-dir`，Codex 通过 `--cd ~/.persona` 发现 `.agents/skills`，Kimi 通过 `--agent-file` 和 `--skills-dir` 加载。详见 [`agent-backends.md`](agent-backends.md)。
 
 ### Agent Provider 配置说明
 
@@ -217,13 +218,15 @@ launchctl start com.persona.shell
 
 Shell 内置了 watchdog 机制，断连超过 2 分钟且飞书 API 可达时会自动重启进程。如果使用 launchd 服务化部署，进程退出后会自动拉起。持续断连通常是网络问题，检查代理配置（飞书域名应在 `no_proxy` 列表中）。
 
-### 自定义 Skills 未被 Claude Code 加载
+### 自定义 Skills 未被 Claude Code / Codex 加载
 
-`skills/` 目录下的自定义 Skill（如 abstract-dog-style、code-review、browser-harness 等）没有被 Claude Code 发现和加载。这是因为 Claude Code 只会自动扫描 `--add-dir` 指定目录下的 `.claude/` 子目录来发现 plugins/skills。
+`skills/` 目录下的自定义 Skill（如 abstract-dog-style、code-review、browser-harness 等）需要通过后端各自的发现入口加载：Claude Code 扫描 `.claude/skills`，Codex 扫描 `.agents/skills`。
 
-**解决方法**：确保身份仓库中存在软链接 `~/.persona/.claude/skills` → `~/.persona/skills`。`bun run init` 会自动创建此软链接。如果是已有身份仓库缺少此链接，手动执行：
+**解决方法**：确保身份仓库中存在两个软链接：`~/.persona/.claude/skills` → `~/.persona/skills`，`~/.persona/.agents/skills` → `~/.persona/skills`。`bun run init` 会自动创建这些软链接。如果是已有身份仓库缺少链接，手动执行：
 
 ```bash
 mkdir -p ~/.persona/.claude
 ln -sf ../skills ~/.persona/.claude/skills
+mkdir -p ~/.persona/.agents
+ln -sf ../skills ~/.persona/.agents/skills
 ```

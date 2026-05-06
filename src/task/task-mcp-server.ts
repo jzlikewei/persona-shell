@@ -1,6 +1,6 @@
 /** Minimal MCP server (stdio transport) for task system — proxies to Shell HTTP API */
 
-import { readdirSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { join, basename } from 'path';
 
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
@@ -216,6 +216,63 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
   }
 }
 
+function normalizeCliToolName(name: string): string {
+  return name.replace(/-/g, '_');
+}
+
+function printCliUsage(): never {
+  const usage = [
+    'Usage:',
+    '  task-mcp-server.ts cli <tool> [json-args]',
+    '  task-mcp-server.ts cli <tool> -',
+    '',
+    'Tools:',
+    '  create_task, get_task, list_tasks, cancel_task',
+    '  create_cron_job, list_cron_jobs, delete_cron_job, toggle_cron_job',
+    '  send_attachment',
+    '',
+    'Examples:',
+    `  bun run src/task/task-mcp-server.ts cli list_tasks '{"limit":5}'`,
+    `  printf '{"role":"explorer","description":"demo","prompt":"read code"}' | bun run src/task/task-mcp-server.ts cli create_task -`,
+  ].join('\n');
+  process.stderr.write(`${usage}\n`);
+  process.exit(2);
+}
+
+async function runCli(argv: string[]): Promise<void> {
+  const tool = argv[0];
+  if (!tool || tool === '-h' || tool === '--help') printCliUsage();
+
+  const rawArgs = argv[1] ?? '{}';
+  let parsedArgs: unknown;
+  try {
+    const json = rawArgs === '-' ? readFileSync(0, 'utf-8') : rawArgs;
+    parsedArgs = json.trim() ? JSON.parse(json) : {};
+  } catch (err) {
+    process.stderr.write(`Invalid JSON args: ${err}\n`);
+    process.exit(2);
+  }
+
+  if (!parsedArgs || typeof parsedArgs !== 'object' || Array.isArray(parsedArgs)) {
+    process.stderr.write('JSON args must be an object\n');
+    process.exit(2);
+  }
+
+  try {
+    const result = await handleToolCall(normalizeCliToolName(tool), parsedArgs as Record<string, unknown>);
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } catch (err) {
+    process.stderr.write(`Error: ${err}\n`);
+    process.exit(1);
+  }
+}
+
+if (process.argv[2] === 'cli') {
+  runCli(process.argv.slice(3));
+} else {
+  runMcpServer();
+}
+
 // JSON-RPC over stdio
 const decoder = new TextDecoder();
 let buffer = '';
@@ -268,21 +325,23 @@ function write(obj: unknown) {
   process.stdout.write(json + '\n');
 }
 
-// Read stdin line by line
-process.stdin.on('data', (chunk) => {
-  buffer += decoder.decode(chunk, { stream: true });
-  let newline: number;
-  while ((newline = buffer.indexOf('\n')) !== -1) {
-    const line = buffer.slice(0, newline).trim();
-    buffer = buffer.slice(newline + 1);
-    if (!line) continue;
-    try {
-      const msg = JSON.parse(line);
-      processMessage(msg).catch((err) => {
-        process.stderr.write(`[task-mcp] Error: ${err}\n`);
-      });
-    } catch {
-      process.stderr.write(`[task-mcp] Invalid JSON: ${line.slice(0, 100)}\n`);
+function runMcpServer(): void {
+  // Read stdin line by line
+  process.stdin.on('data', (chunk) => {
+    buffer += decoder.decode(chunk, { stream: true });
+    let newline: number;
+    while ((newline = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      try {
+        const msg = JSON.parse(line);
+        processMessage(msg).catch((err) => {
+          process.stderr.write(`[task-mcp] Error: ${err}\n`);
+        });
+      } catch {
+        process.stderr.write(`[task-mcp] Invalid JSON: ${line.slice(0, 100)}\n`);
+      }
     }
-  }
-});
+  });
+}

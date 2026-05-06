@@ -84,11 +84,11 @@ function buildClaudeRoleArgs(role: string, personaDir: string): string[] {
 }
 
 /**
- * 构建 agent 级别的 system prompt 参数。
+ * 构建 Claude agent 级别的 system prompt 参数。
  * 如果 agent config 指定了 system_prompt_file，注入为 --append-system-prompt-file。
  * 路径相对于 personaDir 解析。
  */
-function buildAgentPromptArgs(agent: PersonaSpawnOptions['agent'], personaDir: string): string[] {
+function buildClaudeAgentPromptArgs(agent: PersonaSpawnOptions['agent'], personaDir: string): string[] {
   if (!agent.system_prompt_file) return [];
   const filePath = join(personaDir, agent.system_prompt_file);
   if (existsSync(filePath)) {
@@ -96,6 +96,16 @@ function buildAgentPromptArgs(agent: PersonaSpawnOptions['agent'], personaDir: s
   }
   console.warn(`[persona-process] Agent system_prompt_file not found: ${filePath}`);
   return [];
+}
+
+function readAgentPromptFile(agent: PersonaSpawnOptions['agent'], personaDir: string): string {
+  if (!agent.system_prompt_file) return '';
+  const filePath = join(personaDir, agent.system_prompt_file);
+  if (existsSync(filePath)) {
+    return readFileSync(filePath, 'utf-8').trim();
+  }
+  console.warn(`[persona-process] Agent system_prompt_file not found: ${filePath}`);
+  return '';
 }
 
 /**
@@ -180,6 +190,55 @@ function buildCodexMcpOverrideArgs(mcpConfigPath?: string, mcpEnvOverrides?: Rec
   }
 }
 
+function buildCodexTaskCliPrompt(personaDir: string, mcpConfigPath?: string, directorLabel?: string): string {
+  if (!mcpConfigPath || !existsSync(mcpConfigPath)) return '';
+
+  try {
+    const raw = JSON.parse(readFileSync(mcpConfigPath, 'utf-8')) as {
+      mcpServers?: Record<string, {
+        command?: unknown;
+        args?: unknown;
+        env?: unknown;
+      }>;
+    };
+    const server = raw.mcpServers?.['persona-tasks'];
+    if (!server || typeof server !== 'object') return '';
+    const command = typeof server.command === 'string' && server.command.trim()
+      ? server.command.trim()
+      : 'bun';
+    const serverArgs = Array.isArray(server.args)
+      ? server.args.filter((value): value is string => typeof value === 'string')
+      : [];
+    if (serverArgs.length === 0) return '';
+
+    const envEntries = server.env && typeof server.env === 'object'
+      ? Object.entries(server.env as Record<string, unknown>)
+          .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      : [];
+    const mergedEnv = Object.fromEntries(envEntries);
+    if (directorLabel) mergedEnv.DIRECTOR_LABEL = directorLabel;
+    if (!mergedEnv.PERSONA_DIR) mergedEnv.PERSONA_DIR = personaDir;
+
+    const envPrefix = Object.entries(mergedEnv)
+      .map(([key, value]) => `${key}=${shellQuote(value)}`)
+      .join(' ');
+    const baseCommand = [envPrefix, command, ...serverArgs, 'cli']
+      .filter(Boolean)
+      .map((part, index) => index === 0 && part === envPrefix ? part : shellQuote(part))
+      .join(' ');
+
+    return [
+      'Codex task system access:',
+      `- Use \`${baseCommand} list_tasks '{"limit":20}'\` to inspect tasks.`,
+      `- Use \`${baseCommand} create_task '{"role":"explorer","description":"short description","prompt":"full prompt"}'\` to create background tasks.`,
+      `- Use \`${baseCommand} get_task '{"task_id":"T-..."}'\` to inspect one task.`,
+      `- Use \`${baseCommand} send_attachment '{"path":"/tmp/file-or-outbox-file"}'\` to send a file.`,
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
 /**
  * 为 Kimi 构建注入 DIRECTOR_LABEL 的临时 MCP 配置文件。
  * Kimi CLI 通过 --mcp-config-file 读取 JSON，没有 Codex 的 -c override 机制，
@@ -243,7 +302,9 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.env?.DIRECTOR_LABEL) {
       mcpEnvOverrides.DIRECTOR_LABEL = options.env.DIRECTOR_LABEL;
     }
-    args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath, mcpEnvOverrides));
+    if (options.agent.mcp_mode === 'mcp') {
+      args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath, mcpEnvOverrides));
+    }
     const codexCd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
       ? options.projectDir
       : options.personaDir;
@@ -314,7 +375,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       args.push('--model', options.agent.model);
     }
     args.push(...buildClaudeInjectionArgs(options.personaDir));
-    args.push(...buildAgentPromptArgs(options.agent, options.personaDir));
+    args.push(...buildClaudeAgentPromptArgs(options.agent, options.personaDir));
     args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
     if (options.mcpConfigPath) args.push('--mcp-config', options.mcpConfigPath);
     if (options.sessionId) args.push('--resume', options.sessionId);
@@ -339,7 +400,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
         args.push('--model', options.agent.model);
       }
       args.push(...buildClaudeInjectionArgs(options.personaDir));
-      args.push(...buildAgentPromptArgs(options.agent, options.personaDir));
+      args.push(...buildClaudeAgentPromptArgs(options.agent, options.personaDir));
       args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
       if (options.prompt) args.push('-p', options.prompt);
     } else if (options.agent.type === 'codex') {
@@ -350,7 +411,17 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       args.push('--json', '--skip-git-repo-check');
       const prompt = options.resumeSessionId
         ? (options.prompt ?? '')
-        : buildInjectedPrompt(options.role, options.personaDir, options.prompt ?? '');
+        : buildInjectedPrompt(
+            options.role,
+            options.personaDir,
+            options.prompt ?? '',
+            [
+              readAgentPromptFile(options.agent, options.personaDir),
+              options.agent.mcp_mode !== 'mcp' && options.agent.mcp_mode !== 'off'
+                ? buildCodexTaskCliPrompt(options.personaDir, options.mcpConfigPath, options.env?.DIRECTOR_LABEL)
+                : '',
+            ].filter(Boolean).join('\n\n'),
+          );
       if (prompt) args.push(prompt);
     }
   }
@@ -417,8 +488,13 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   return { child, args };
 }
 
-function buildInjectedPrompt(role: string, personaDir: string, taskPrompt: string): string {
+function buildInjectedPrompt(role: string, personaDir: string, taskPrompt: string, agentPrompt = ''): string {
   const sections: string[] = [];
+
+  if (agentPrompt.trim()) {
+    sections.push(`## Injected agent\n\n${agentPrompt.trim()}`);
+  }
+
   const promptFiles = [
     { label: 'soul', path: join(personaDir, 'soul.md') },
     { label: 'meta', path: join(personaDir, 'meta.md') },

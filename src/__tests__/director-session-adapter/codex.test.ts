@@ -15,13 +15,14 @@ function buildCapturingHooks() {
   const metrics: DirectorSessionMetricsUpdate[] = [];
   const loggedLines: string[] = [];
   const persistedSessions: Array<{ id: string; name: string | null }> = [];
+  let clearSessionCalls = 0;
   let sessionId: string | null = null;
   let sessionName: string | null = null;
 
   const hooks: DirectorSessionAdapterHooks = {
     restorePersistedSession: () => ({ sessionId, sessionName }),
     persistSession: (id, name) => { sessionId = id; persistedSessions.push({ id, name }); },
-    clearSession: () => { sessionId = null; },
+    clearSession: () => { sessionId = null; clearSessionCalls += 1; },
     getSessionId: () => sessionId,
     getSessionName: () => sessionName,
     setSessionName: (name) => { sessionName = name; },
@@ -34,7 +35,16 @@ function buildCapturingHooks() {
     onRuntimeClosed: () => {},
   };
 
-  return { hooks, turns, failures, metrics, loggedLines, persistedSessions, setSessionId: (id: string | null) => { sessionId = id; } };
+  return {
+    hooks,
+    turns,
+    failures,
+    metrics,
+    loggedLines,
+    persistedSessions,
+    getClearSessionCalls: () => clearSessionCalls,
+    setSessionId: (id: string | null) => { sessionId = id; },
+  };
 }
 
 function buildOptions(): DirectorSessionAdapterOptions {
@@ -341,6 +351,24 @@ describe('CodexSessionAdapter', () => {
 
       expect(failures).toHaveLength(1);
       expect(failures[0]).toBe('codex exited with code 1: unexpected status 500 | stderr: stderr line | recent events: {"type":"turn.failed"}');
+    });
+
+    test('clears persisted session on invalid prompt failure', () => {
+      const { hooks, failures, getClearSessionCalls, setSessionId } = buildCapturingHooks();
+      setSessionId('stale-thread-id');
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleClose } = getPrivateMethods(adapter);
+
+      handleClose({
+        code: 1,
+        startedAt: Date.now(),
+        currentResponse: '',
+        sawTurnCompleted: false,
+        lastErrorMessage: '{"error":{"message":"Invalid Responses API request","code":"invalid_prompt"}}',
+      });
+
+      expect(failures).toHaveLength(1);
+      expect(getClearSessionCalls()).toBe(1);
     });
 
     test('separates multiple agent_message segments with newlines in response', () => {

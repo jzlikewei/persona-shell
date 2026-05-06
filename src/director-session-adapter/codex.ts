@@ -34,6 +34,12 @@ function summarizeFailure(event: CodexTurnCloseEvent): string {
   return parts.join(' | ');
 }
 
+function isInvalidPromptFailure(event: CodexTurnCloseEvent): boolean {
+  return [event.lastErrorMessage, ...(event.recentLines ?? [])]
+    .filter((value): value is string => typeof value === 'string')
+    .some((value) => value.includes('invalid_prompt') || value.includes('Invalid Responses API request'));
+}
+
 export class CodexSessionAdapter implements DirectorSessionAdapter {
   private runtime: CodexDirectorRuntime;
   private readonly label: string;
@@ -170,6 +176,9 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
 
   private handleClose(event: CodexTurnCloseEvent): void {
     if (event.code !== 0 || !event.sawTurnCompleted) {
+      if (isInvalidPromptFailure(event)) {
+        this.hooks.clearSession();
+      }
       const base = `codex exited with code ${event.code ?? 'null'}`;
       const summary = summarizeFailure(event);
       const message = summary ? `${base}: ${summary}` : base;

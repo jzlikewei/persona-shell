@@ -21,12 +21,20 @@ if [ -d "$PERSONA_DIR" ]; then
     ln -sf ../skills "$PERSONA_DIR/.claude/skills"
     echo "   ✓ 已补建 .claude/skills 软链接"
   fi
+  if [ ! -L "$PERSONA_DIR/.agents/skills" ]; then
+    mkdir -p "$PERSONA_DIR/.agents"
+    ln -sf ../skills "$PERSONA_DIR/.agents/skills"
+    echo "   ✓ 已补建 .agents/skills 软链接"
+  fi
 else
   echo "📁 初始化身份仓库 → $PERSONA_DIR"
   cp -r "$PROJECT_DIR/persona-template" "$PERSONA_DIR"
   mkdir -p "$PERSONA_DIR/.claude"
   ln -sf ../skills "$PERSONA_DIR/.claude/skills"
   echo "   ✓ 已创建 .claude/skills 软链接"
+  mkdir -p "$PERSONA_DIR/.agents"
+  ln -sf ../skills "$PERSONA_DIR/.agents/skills"
+  echo "   ✓ 已创建 .agents/skills 软链接"
   cd "$PERSONA_DIR" && git init -q && git add -A && git commit -q -m "init persona"
   echo "   ✓ 已创建并初始化 git"
 fi
