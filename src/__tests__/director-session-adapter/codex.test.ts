@@ -371,6 +371,24 @@ describe('CodexSessionAdapter', () => {
       expect(getClearSessionCalls()).toBe(1);
     });
 
+    test('clears persisted session on "no rollout found" stderr failure', () => {
+      const { hooks, failures, getClearSessionCalls, setSessionId } = buildCapturingHooks();
+      setSessionId('expired-thread-id');
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleClose } = getPrivateMethods(adapter);
+
+      handleClose({
+        code: 1,
+        startedAt: Date.now(),
+        currentResponse: '',
+        sawTurnCompleted: false,
+        stderrTail: ['Error: thread/resume: thread/resume failed: no rollout found for thread id expired-thread-id'],
+      });
+
+      expect(failures).toHaveLength(1);
+      expect(getClearSessionCalls()).toBe(1);
+    });
+
     test('separates multiple agent_message segments with newlines in response', () => {
       const { hooks, turns } = buildCapturingHooks();
       const adapter = new CodexSessionAdapter(buildOptions(), hooks);
