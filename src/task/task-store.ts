@@ -385,6 +385,7 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const id = generateCronId(d);
   const now = localNow();
   const enabled = input.enabled !== false ? 1 : 0;
+  const lastRunAt = enabled && isDailySchedule(input.schedule) ? now : null;
   const actionType = input.action_type ?? 'spawn_role';
   const message = input.message ?? null;
   const actionName = input.action_name ?? null;
@@ -393,12 +394,16 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const sourceDirector = input.source_director ?? null;
 
   d.run(
-    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name, timeout_ms, max_retry, source_director)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName, timeoutMs, maxRetry, sourceDirector],
+    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, last_run_at, created_at, updated_at, action_type, message, action_name, timeout_ms, max_retry, source_director)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, lastRunAt, now, now, actionType, message, actionName, timeoutMs, maxRetry, sourceDirector],
   );
 
   return getCronJob(id)!;
+}
+
+function isDailySchedule(schedule: string): boolean {
+  return /^daily\s+\d{2}:\d{2}$/.test(schedule);
 }
 
 export function getCronJob(id: string): CronJob | null {
@@ -443,6 +448,12 @@ export function deleteCronJob(id: string): boolean {
 }
 
 export function toggleCronJob(id: string): CronJob | null {
-  getDb().run('UPDATE cron_jobs SET enabled = 1 - enabled, updated_at = ? WHERE id = ?', [localNow(), id]);
+  const job = getCronJob(id);
+  if (!job) return null;
+
+  const now = localNow();
+  const enabled = !job.enabled;
+  const lastRunAt = enabled && isDailySchedule(job.schedule) ? now : job.last_run_at;
+  getDb().run('UPDATE cron_jobs SET enabled = ?, last_run_at = ?, updated_at = ? WHERE id = ?', [enabled ? 1 : 0, lastRunAt, now, id]);
   return getCronJob(id);
 }

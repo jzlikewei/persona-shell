@@ -452,6 +452,30 @@ describe('task-store', () => {
       expect(job.max_retry).toBe(3);
     });
 
+    test('daily jobs initialize last_run_at to creation time to avoid same-day backfill', () => {
+      const job = createCronJob({
+        name: 'daily no backfill',
+        role: 'system',
+        description: 'd',
+        prompt: 'p',
+        schedule: 'daily 19:00',
+      });
+      expect(job.last_run_at).toBeTruthy();
+      expect(new Date(job.last_run_at!).getTime()).toBeGreaterThan(0);
+    });
+
+    test('disabled daily jobs keep last_run_at empty', () => {
+      const job = createCronJob({
+        name: 'disabled daily',
+        role: 'system',
+        description: 'd',
+        prompt: 'p',
+        schedule: 'daily 19:00',
+        enabled: false,
+      });
+      expect(job.last_run_at).toBeNull();
+    });
+
     test('sequential cron jobs get incrementing IDs', () => {
       const c1 = createCronJob({ name: 'a', role: 'r', description: 'd', prompt: 'p', schedule: '* * * * *' });
       const c2 = createCronJob({ name: 'b', role: 'r', description: 'd', prompt: 'p', schedule: '* * * * *' });
@@ -562,6 +586,15 @@ describe('task-store', () => {
       const job = createCronJob({ name: 'test', role: 'r', description: 'd', prompt: 'p', schedule: '* * * * *', enabled: false });
       const toggled = toggleCronJob(job.id);
       expect(toggled!.enabled).toBe(true);
+    });
+
+    test('enabling a daily job initializes last_run_at to avoid same-day backfill', () => {
+      const job = createCronJob({ name: 'test', role: 'r', description: 'd', prompt: 'p', schedule: 'daily 19:00', enabled: false });
+      expect(job.last_run_at).toBeNull();
+
+      const toggled = toggleCronJob(job.id);
+      expect(toggled!.enabled).toBe(true);
+      expect(toggled!.last_run_at).toBeTruthy();
     });
 
     test('double toggle returns to original state', () => {
