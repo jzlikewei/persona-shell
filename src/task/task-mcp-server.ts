@@ -84,7 +84,7 @@ const TOOLS = [
   },
   {
     name: 'create_cron_job',
-    description: '创建定时 cron job（持久化到 SQLite，由 Scheduler 自动触发）。支持三种 action 类型：spawn_role（默认，spawn 子角色进程）、director_msg（给 Director 发系统消息）、shell_action（执行 Shell 内部动作）',
+    description: '创建定时 cron job（持久化到 SQLite，由 Scheduler 自动触发）。支持三种 action 类型：spawn_role（默认，spawn 子角色进程）、director_msg（给 Director 发系统消息）、shell_action（执行 Shell 内部动作或任意 bash 命令）',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -97,7 +97,7 @@ const TOOLS = [
         schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00"' },
         action_type: { type: 'string', description: '动作类型: "spawn_role"(默认) | "director_msg" | "shell_action"', enum: ['spawn_role', 'director_msg', 'shell_action'] },
         message: { type: 'string', description: 'action_type=director_msg 时的消息内容，支持 {today} {yesterday} 模板变量' },
-        action_name: { type: 'string', description: 'action_type=shell_action 时的动作名，如 "check_feishu"' },
+        action_name: { type: 'string', description: 'action_type=shell_action 时的动作名。内置动作: "check_feishu" / "check_flush" / "flush"；以 "!" 开头表示执行任意 bash 命令，如 "!cd /path && ./run.sh"' },
       },
       required: ['name', 'role', 'description', 'prompt', 'schedule'],
     },

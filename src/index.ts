@@ -10,6 +10,7 @@ import { TaskRunner, type TaskResult } from './task/task-runner.js';
 import { spawnPersona } from './persona-process.js';
 import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
+import { isBashAction, extractBashCommand, runBashAction } from './task/shell-bash.js';
 import { resolveCronMessage } from './prompt-loader.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task/task-store.js';
 import { writeFileSync, existsSync } from 'fs';
@@ -315,7 +316,26 @@ async function main() {
         await director.sendCronMessage(msg);
       },
       executeShellAction: async (job) => {
-        switch (job.action_name) {
+        const actionName = job.action_name ?? '';
+
+        if (isBashAction(actionName)) {
+          const cmd = extractBashCommand(actionName);
+          console.log(`[scheduler] shell_action: bash exec for ${job.name}: ${cmd}`);
+          try {
+            const result = await runBashAction(cmd);
+            const outSnippet = result.stdout.trim().slice(0, 500);
+            const errSnippet = result.stderr.trim().slice(0, 500);
+            console.log(`[scheduler] bash ok for ${job.name}` + (outSnippet ? `\n  stdout: ${outSnippet}` : '') + (errSnippet ? `\n  stderr: ${errSnippet}` : ''));
+          } catch (err: unknown) {
+            const e = err as { code?: number; stderr?: string; message?: string };
+            const errSnippet = (e.stderr ?? e.message ?? '').trim().slice(0, 500);
+            console.error(`[scheduler] bash FAILED for ${job.name} (exit=${e.code ?? '?'})\n  stderr: ${errSnippet}`);
+            throw new Error(`bash command failed (exit=${e.code ?? '?'}): ${errSnippet}`);
+          }
+          return;
+        }
+
+        switch (actionName) {
           case 'check_feishu':
             console.log('[scheduler] shell_action: check_feishu (reserved)');
             break;
