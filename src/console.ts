@@ -522,6 +522,7 @@ export function startConsole(
                 prompt: task.prompt,
                 description: task.description,
                 projectDir: (task.extra as Record<string, unknown>)?.project_dir as string | undefined,
+                timeoutMs: task.timeout_ms ?? undefined,
               });
             }
             return Response.json(task);

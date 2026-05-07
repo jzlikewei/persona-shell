@@ -27,6 +27,8 @@ export interface CreateTaskInput {
   max_retry?: number;
   project_dir?: string;
   extra?: Record<string, unknown>;
+  /** 任务超时时间（毫秒）；为空时使用 config 默认值 */
+  timeout_ms?: number;
   /** 发起方 Director 的标识（如 'main' 或 pool label），用于回调路由 */
   source_director?: string;
 }
@@ -49,6 +51,8 @@ export interface Task {
   cost_usd: number | null;
   duration_ms: number | null;
   extra: Record<string, unknown> | null;
+  /** 任务超时时间（毫秒）；null 表示使用 config 默认值 */
+  timeout_ms: number | null;
   /** 发起方 Director 标识，用于任务回调路由 */
   source_director: string | null;
 }
@@ -193,6 +197,9 @@ function migrateTasksTable(db: Database): void {
   if (!existing.has('agent')) {
     db.run('ALTER TABLE tasks ADD COLUMN agent TEXT');
   }
+  if (!existing.has('timeout_ms')) {
+    db.run('ALTER TABLE tasks ADD COLUMN timeout_ms INTEGER');
+  }
 }
 
 function rowToTask(row: Record<string, unknown>): Task {
@@ -228,11 +235,12 @@ export function createTask(input: CreateTaskInput): Task {
   const extra = Object.keys(extraObj).length > 0 ? JSON.stringify(extraObj) : null;
   const sourceDirector = input.source_director ?? null;
   const agent = input.agent?.trim() || null;
+  const timeoutMs = input.timeout_ms ?? null;
 
   d.run(
-    `INSERT INTO tasks (id, type, role, agent, description, prompt, status, created_at, retry_count, max_retry, extra, source_director)
-     VALUES (?, ?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?)`,
-    [id, input.type, input.role, agent, input.description, input.prompt, now, input.max_retry ?? 3, extra, sourceDirector],
+    `INSERT INTO tasks (id, type, role, agent, description, prompt, status, created_at, retry_count, max_retry, extra, source_director, timeout_ms)
+     VALUES (?, ?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?, ?)`,
+    [id, input.type, input.role, agent, input.description, input.prompt, now, input.max_retry ?? 3, extra, sourceDirector, timeoutMs],
   );
 
   return getTask(id)!;
@@ -241,6 +249,18 @@ export function createTask(input: CreateTaskInput): Task {
 export function getTask(id: string): Task | null {
   const row = getDb().query('SELECT * FROM tasks WHERE id = ?').get(id) as Record<string, unknown> | null;
   return row ? rowToTask(row) : null;
+}
+
+/** Batch-read timeout_ms for a list of task IDs. Returns a Map of id → timeout_ms (null if not set). */
+export function getTaskTimeouts(ids: string[]): Map<string, number | null> {
+  const result = new Map<string, number | null>();
+  if (ids.length === 0) return result;
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = getDb().query(`SELECT id, timeout_ms FROM tasks WHERE id IN (${placeholders})`).all(...ids) as Array<{ id: string; timeout_ms: number | null }>;
+  for (const row of rows) {
+    result.set(row.id, row.timeout_ms ?? null);
+  }
+  return result;
 }
 
 export function listTasks(filter?: { status?: string; role?: string; limit?: number }): Task[] {
@@ -268,7 +288,7 @@ export function updateTask(id: string, update: Partial<Omit<Task, 'id'>>): void 
     'type', 'role', 'agent', 'description', 'prompt', 'status',
     'started_at', 'completed_at', 'result_file', 'error',
     'retry_count', 'max_retry', 'cost_usd', 'duration_ms', 'extra',
-    'source_director',
+    'source_director', 'timeout_ms',
   ] as const;
 
   const sets: string[] = [];

@@ -44,6 +44,7 @@ const TOOLS = [
         prompt: { type: 'string', description: '完整 prompt' },
         project_dir: { type: 'string', description: '可选，子任务的工作目录（项目路径）；不传则默认在 persona 根目录下执行' },
         max_retry: { type: 'number', description: '最大重试次数 (默认 3)' },
+        timeout_ms: { type: 'number', description: '可选，任务超时时间（毫秒）；不传则使用 config 默认值。运行中可通过 DB 修改并自动同步' },
       },
       required: ['role', 'description', 'prompt'],
     },
@@ -178,6 +179,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         prompt: args.prompt,
         max_retry: args.max_retry,
         project_dir: args.project_dir,
+        timeout_ms: args.timeout_ms,
         source_director: DIRECTOR_LABEL,
       });
     case 'get_task':
