@@ -320,19 +320,31 @@ async function main() {
 
         if (isBashAction(actionName)) {
           const cmd = extractBashCommand(actionName);
-          console.log(`[scheduler] shell_action: bash exec for ${job.name}: ${cmd}`);
-          try {
-            const result = await runBashAction(cmd);
-            const outSnippet = result.stdout.trim().slice(0, 500);
-            const errSnippet = result.stderr.trim().slice(0, 500);
-            console.log(`[scheduler] bash ok for ${job.name}` + (outSnippet ? `\n  stdout: ${outSnippet}` : '') + (errSnippet ? `\n  stderr: ${errSnippet}` : ''));
-          } catch (err: unknown) {
-            const e = err as { code?: number; stderr?: string; message?: string };
-            const errSnippet = (e.stderr ?? e.message ?? '').trim().slice(0, 500);
-            console.error(`[scheduler] bash FAILED for ${job.name} (exit=${e.code ?? '?'})\n  stderr: ${errSnippet}`);
-            throw new Error(`bash command failed (exit=${e.code ?? '?'}): ${errSnippet}`);
+          const maxRetry = Number.isFinite(job.max_retry) ? Math.max(0, job.max_retry) : 3;
+          const timeoutMs = job.timeout_ms ?? undefined;
+          console.log(`[scheduler] shell_action: bash exec for ${job.name}: ${cmd} (timeout=${timeoutMs ?? 'default'}ms retry=${maxRetry})`);
+
+          let lastError: unknown = null;
+          for (let attempt = 0; attempt <= maxRetry; attempt += 1) {
+            try {
+              if (attempt > 0) {
+                console.log(`[scheduler] bash retry ${attempt}/${maxRetry} for ${job.name}`);
+              }
+              const result = await runBashAction(cmd, { timeoutMs });
+              const outSnippet = result.stdout.trim().slice(0, 500);
+              const errSnippet = result.stderr.trim().slice(0, 500);
+              console.log(`[scheduler] bash ok for ${job.name}` + (outSnippet ? `\n  stdout: ${outSnippet}` : '') + (errSnippet ? `\n  stderr: ${errSnippet}` : ''));
+              return;
+            } catch (err: unknown) {
+              lastError = err;
+              const e = err as { code?: number | string; stderr?: string; message?: string };
+              const errSnippet = (e.stderr ?? e.message ?? '').trim().slice(0, 500);
+              console.error(`[scheduler] bash FAILED for ${job.name} attempt=${attempt + 1}/${maxRetry + 1} (exit=${e.code ?? '?'})\n  stderr: ${errSnippet}`);
+            }
           }
-          return;
+          const e = lastError as { code?: number | string; stderr?: string; message?: string };
+          const errSnippet = (e?.stderr ?? e?.message ?? '').trim().slice(0, 500);
+          throw new Error(`bash command failed after ${maxRetry + 1} attempts (exit=${e?.code ?? '?'}): ${errSnippet}`);
         }
 
         switch (actionName) {

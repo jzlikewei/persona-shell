@@ -98,6 +98,8 @@ const TOOLS = [
         action_type: { type: 'string', description: '动作类型: "spawn_role"(默认) | "director_msg" | "shell_action"', enum: ['spawn_role', 'director_msg', 'shell_action'] },
         message: { type: 'string', description: 'action_type=director_msg 时的消息内容，支持 {today} {yesterday} 模板变量' },
         action_name: { type: 'string', description: 'action_type=shell_action 时的动作名。内置动作: "check_feishu" / "check_flush" / "flush"；以 "!" 开头表示执行任意 bash 命令，如 "!cd /path && ./run.sh"' },
+        timeout_ms: { type: 'number', description: 'action_type=shell_action 时的超时时间，单位毫秒；不传默认 5 分钟' },
+        max_retry: { type: 'number', description: 'action_type=shell_action 失败后的最大重试次数，默认 3' },
       },
       required: ['name', 'role', 'description', 'prompt', 'schedule'],
     },
@@ -201,6 +203,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         action_type: args.action_type,
         message: args.message,
         action_name: args.action_name,
+        timeout_ms: args.timeout_ms,
+        max_retry: args.max_retry,
         source_director: DIRECTOR_LABEL,
       });
     case 'list_cron_jobs':

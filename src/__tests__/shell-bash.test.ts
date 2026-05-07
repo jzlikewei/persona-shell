@@ -73,4 +73,14 @@ describe('runBashAction', () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout.trim()).toBe('2');
   });
+
+  test('supports custom timeout', async () => {
+    try {
+      await runBashAction('sleep 1', { timeoutMs: 50 });
+      expect(true).toBe(false);
+    } catch (err: unknown) {
+      const e = err as { code?: string };
+      expect(e.code).toBe('ETIMEDOUT');
+    }
+  });
 });

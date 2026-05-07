@@ -98,7 +98,9 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   updated_at  TEXT NOT NULL,
   action_type TEXT NOT NULL DEFAULT 'spawn_role',
   message     TEXT,
-  action_name TEXT
+  action_name TEXT,
+  timeout_ms  INTEGER,
+  max_retry   INTEGER NOT NULL DEFAULT 3
 )`;
 
 /** 生成语义化 Task ID: T-MMdd-HH-NNN */
@@ -171,6 +173,12 @@ function migrateCronJobsTable(db: Database): void {
   }
   if (!existing.has('source_director')) {
     db.run("ALTER TABLE cron_jobs ADD COLUMN source_director TEXT");
+  }
+  if (!existing.has('timeout_ms')) {
+    db.run("ALTER TABLE cron_jobs ADD COLUMN timeout_ms INTEGER");
+  }
+  if (!existing.has('max_retry')) {
+    db.run("ALTER TABLE cron_jobs ADD COLUMN max_retry INTEGER NOT NULL DEFAULT 3");
   }
 }
 
@@ -334,6 +342,10 @@ export interface CronJob {
   action_type: CronActionType;
   message: string | null;
   action_name: string | null;
+  /** shell_action 的超时时间；为空时使用默认值 */
+  timeout_ms: number | null;
+  /** shell_action 失败后的最大重试次数；默认 3 */
+  max_retry: number;
   /** 创建该 cron job 的 Director 标识，用于通知/回调路由 */
   source_director: string | null;
 }
@@ -349,6 +361,8 @@ export interface CreateCronJobInput {
   action_type?: CronActionType;
   message?: string;
   action_name?: string;
+  timeout_ms?: number;
+  max_retry?: number;
   /** 发起方 Director 标识（如 'main' 或 pool label） */
   source_director?: string;
 }
@@ -360,6 +374,8 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
     action_type: (row.action_type as CronActionType) ?? 'spawn_role',
     message: (row.message as string) ?? null,
     action_name: (row.action_name as string) ?? null,
+    timeout_ms: row.timeout_ms === null || row.timeout_ms === undefined ? null : Number(row.timeout_ms),
+    max_retry: row.max_retry === null || row.max_retry === undefined ? 3 : Number(row.max_retry),
     source_director: (row.source_director as string) ?? null,
   } as CronJob;
 }
@@ -372,12 +388,14 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const actionType = input.action_type ?? 'spawn_role';
   const message = input.message ?? null;
   const actionName = input.action_name ?? null;
+  const timeoutMs = input.timeout_ms ?? null;
+  const maxRetry = input.max_retry ?? 3;
   const sourceDirector = input.source_director ?? null;
 
   d.run(
-    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name, source_director)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName, sourceDirector],
+    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, created_at, updated_at, action_type, message, action_name, timeout_ms, max_retry, source_director)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, now, now, actionType, message, actionName, timeoutMs, maxRetry, sourceDirector],
   );
 
   return getCronJob(id)!;
@@ -398,7 +416,7 @@ export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
 }
 
 export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
-  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'source_director'] as const;
+  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'timeout_ms', 'max_retry', 'source_director'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 
