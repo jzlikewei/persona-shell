@@ -824,47 +824,10 @@ async function main() {
       process.exit(0);
     }
 
-    // 1.4: /status — show Director status summary (routes to correct Director)
-    if (text.trim() === '/status') {
-      const poolEntry = getTargetEntry();
-      if (poolEntry) {
-        const s = poolEntry.bridge.getStatus();
-        const label = poolEntry.groupName;
-        const tokenLine = s.contextMetricsLive
-          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
-          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
-        const lines = [
-          `🟢 [${label}] Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-          tokenLine,
-          `📬 Pending: ${s.pendingCount} | Queue: ${poolEntry.queue.length}`,
-          `🔄 Flushing: ${s.flushing ? 'yes' : 'no'}`,
-          `⏱️ Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
-        ];
-        await messaging.reply(messageId, lines.join('\n')).catch(() => {});
-      } else {
-        const s = director.getStatus();
-        const uptime = Math.floor((Date.now() - startTime) / 1000);
-        const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
-        const tokenLine = s.contextMetricsLive
-          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
-          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
-        const lines = [
-          `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-          tokenLine,
-          `📬 Pending: ${s.pendingCount} | Queue: ${queue.length}`,
-          `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
-          `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
-        ];
-        await messaging.reply(messageId, lines.join('\n')).catch(() => {});
-      }
-      return;
-    }
-
-    // 1.5: /help — list all available commands — global operation
+    // 1.4: /help — list all available commands — global operation
     if (text.trim() === '/help') {
       const lines = [
         '📖 可用命令:',
-        '/status — 查看 Director 状态摘要',
         '/switch-agent <agent> — 切换当前会话的 Director agent，并持久化恢复上下文',
         '/persona <name> — 切换人格角色（如 philosopher, critic 等）',
         '/start-with-codex — 将当前会话切到 Codex Director 模式',
