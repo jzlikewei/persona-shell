@@ -422,6 +422,60 @@ describe('task-store', () => {
       expect(job.action_name).toBe('my_action');
     });
 
+    test('stores shell_action timeout and retry policy', () => {
+      const job = createCronJob({
+        name: 'long job',
+        role: 'system',
+        description: 'd',
+        prompt: 'p',
+        schedule: 'daily 18:45',
+        action_type: 'shell_action',
+        action_name: '!sleep 10',
+        timeout_ms: 60 * 60_000,
+        max_retry: 3,
+      });
+      expect(job.timeout_ms).toBe(60 * 60_000);
+      expect(job.max_retry).toBe(3);
+    });
+
+    test('shell_action max_retry defaults to 3', () => {
+      const job = createCronJob({
+        name: 'default retry',
+        role: 'system',
+        description: 'd',
+        prompt: 'p',
+        schedule: 'daily 18:45',
+        action_type: 'shell_action',
+        action_name: '!echo ok',
+      });
+      expect(job.timeout_ms).toBeNull();
+      expect(job.max_retry).toBe(3);
+    });
+
+    test('daily jobs initialize last_run_at to creation time to avoid same-day backfill', () => {
+      const job = createCronJob({
+        name: 'daily no backfill',
+        role: 'system',
+        description: 'd',
+        prompt: 'p',
+        schedule: 'daily 19:00',
+      });
+      expect(job.last_run_at).toBeTruthy();
+      expect(new Date(job.last_run_at!).getTime()).toBeGreaterThan(0);
+    });
+
+    test('disabled daily jobs keep last_run_at empty', () => {
+      const job = createCronJob({
+        name: 'disabled daily',
+        role: 'system',
+        description: 'd',
+        prompt: 'p',
+        schedule: 'daily 19:00',
+        enabled: false,
+      });
+      expect(job.last_run_at).toBeNull();
+    });
+
     test('sequential cron jobs get incrementing IDs', () => {
       const c1 = createCronJob({ name: 'a', role: 'r', description: 'd', prompt: 'p', schedule: '* * * * *' });
       const c2 = createCronJob({ name: 'b', role: 'r', description: 'd', prompt: 'p', schedule: '* * * * *' });
@@ -477,11 +531,13 @@ describe('task-store', () => {
   });
 
   describe('updateCronJob()', () => {
-    test('updates name and schedule', () => {
+    test('updates name, schedule, timeout and retry policy', () => {
       const job = createCronJob({ name: 'old', role: 'r', description: 'd', prompt: 'p', schedule: '* * * * *' });
-      const updated = updateCronJob(job.id, { name: 'new', schedule: '0 9 * * *' });
+      const updated = updateCronJob(job.id, { name: 'new', schedule: '0 9 * * *', timeout_ms: 120_000, max_retry: 2 });
       expect(updated!.name).toBe('new');
       expect(updated!.schedule).toBe('0 9 * * *');
+      expect(updated!.timeout_ms).toBe(120_000);
+      expect(updated!.max_retry).toBe(2);
     });
 
     test('updates enabled flag', () => {
@@ -530,6 +586,15 @@ describe('task-store', () => {
       const job = createCronJob({ name: 'test', role: 'r', description: 'd', prompt: 'p', schedule: '* * * * *', enabled: false });
       const toggled = toggleCronJob(job.id);
       expect(toggled!.enabled).toBe(true);
+    });
+
+    test('enabling a daily job initializes last_run_at to avoid same-day backfill', () => {
+      const job = createCronJob({ name: 'test', role: 'r', description: 'd', prompt: 'p', schedule: 'daily 19:00', enabled: false });
+      expect(job.last_run_at).toBeNull();
+
+      const toggled = toggleCronJob(job.id);
+      expect(toggled!.enabled).toBe(true);
+      expect(toggled!.last_run_at).toBeTruthy();
     });
 
     test('double toggle returns to original state', () => {

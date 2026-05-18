@@ -34,10 +34,14 @@ function summarizeFailure(event: CodexTurnCloseEvent): string {
   return parts.join(' | ');
 }
 
-function isInvalidPromptFailure(event: CodexTurnCloseEvent): boolean {
-  return [event.lastErrorMessage, ...(event.recentLines ?? [])]
-    .filter((value): value is string => typeof value === 'string')
-    .some((value) => value.includes('invalid_prompt') || value.includes('Invalid Responses API request'));
+function isUnrecoverableSessionFailure(event: CodexTurnCloseEvent): boolean {
+  const texts = [event.lastErrorMessage, ...(event.recentLines ?? []), ...(event.stderrTail ?? [])]
+    .filter((value): value is string => typeof value === 'string');
+  return texts.some((value) =>
+    value.includes('invalid_prompt') ||
+    value.includes('Invalid Responses API request') ||
+    value.includes('no rollout found'),
+  );
 }
 
 export class CodexSessionAdapter implements DirectorSessionAdapter {
@@ -176,7 +180,7 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
 
   private handleClose(event: CodexTurnCloseEvent): void {
     if (event.code !== 0 || !event.sawTurnCompleted) {
-      if (isInvalidPromptFailure(event)) {
+      if (isUnrecoverableSessionFailure(event)) {
         this.hooks.clearSession();
       }
       const base = `codex exited with code ${event.code ?? 'null'}`;

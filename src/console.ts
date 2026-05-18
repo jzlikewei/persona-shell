@@ -20,16 +20,6 @@ interface WsConnection {
 // Shell 启动时间，用于计算 uptime
 const startedAt = Date.now();
 
-/** Attachment compositor buffer — implemented in index.ts */
-export interface AttachmentBuffer {
-  /** Buffer an attachment for a specific Director (by label) */
-  push(source: string, filePath: string): void;
-  /** Drain all buffered attachments for a specific Director */
-  drain(source: string): string[];
-  /** Whether the specified Director is currently processing a user message */
-  isProcessing(source: string): boolean;
-}
-
 /** Metrics collector interface — implemented in index.ts */
 export interface MetricsCollector {
   recentMessages: Array<{ direction: 'in' | 'out'; preview: string; timestamp: number; responseSec?: number }>;
@@ -51,7 +41,6 @@ export function startConsole(
   taskRunner?: TaskRunner,
   messaging?: MessagingClient,
   metrics?: MetricsCollector,
-  attachmentBuffer?: AttachmentBuffer,
   pool?: DirectorPool,
 ): MessagingClient {
   const port = config.console.port;
@@ -414,14 +403,8 @@ export function startConsole(
               return Response.json({ error: 'Messaging client not available' }, { status: 503 });
             }
 
-            // Compositor: if this Director is processing a user message, buffer for later delivery
+            // Send immediately as new message to target chat
             const sourceDirector = body.source_director ?? 'main';
-            if (attachmentBuffer?.isProcessing(sourceDirector)) {
-              attachmentBuffer.push(sourceDirector, resolved);
-              return Response.json({ queued: true });
-            }
-
-            // No pending response — send immediately as new message to lastChatId
             const ext = extname(resolved).toLowerCase();
             const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
             const isImage = imageExts.has(ext);
@@ -436,10 +419,29 @@ export function startConsole(
                 targetChatId = messaging.getLastChatId();
               }
               if (!targetChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
-              if (isImage) {
-                await messaging.uploadAndSendImage(targetChatId, resolved);
+
+              // Try to get the messageId of the currently-processing user message for reply threading
+              let replyMessageId: string | null = null;
+              if (sourceDirector && sourceDirector !== 'main' && pool) {
+                replyMessageId = pool.getProcessingMessageIdByLabel(sourceDirector);
+              }
+              if (!replyMessageId) {
+                const peeked = queue.peek();
+                replyMessageId = peeked?.messageId ?? null;
+              }
+
+              if (replyMessageId) {
+                if (isImage) {
+                  await messaging.uploadAndReplyImage(replyMessageId, resolved);
+                } else {
+                  await messaging.uploadAndReplyFile(replyMessageId, resolved);
+                }
               } else {
-                await messaging.uploadAndSendFile(targetChatId, resolved);
+                if (isImage) {
+                  await messaging.uploadAndSendImage(targetChatId, resolved);
+                } else {
+                  await messaging.uploadAndSendFile(targetChatId, resolved);
+                }
               }
               return Response.json({ success: true });
             } catch (err) {
@@ -520,6 +522,7 @@ export function startConsole(
                 prompt: task.prompt,
                 description: task.description,
                 projectDir: (task.extra as Record<string, unknown>)?.project_dir as string | undefined,
+                timeoutMs: task.timeout_ms ?? undefined,
               });
             }
             return Response.json(task);

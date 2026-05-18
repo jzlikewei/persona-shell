@@ -130,7 +130,27 @@ Director 可以创建定时任务——"闹钟"。
 |------|------|------|
 | **spawn_role** | 创建子角色任务 | 每天 9 点让 Explorer 扫一遍 HN |
 | **director_msg** | 给 Director 发消息 | 每天 23 点提醒写日报 |
-| **shell_action** | 执行 Shell 内部动作 | 定时 flush |
+| **shell_action** | 执行 Shell 内部动作或 bash 命令 | 定时 flush / 定时执行脚本 |
+
+#### shell_action 详解
+
+`shell_action` 支持两种模式：
+
+**内置动作**：`action_name` 填预定义名称（`check_feishu` / `check_flush` / `flush`），走 Shell 内部逻辑。
+
+**bash 命令**：`action_name` 以 `!` 开头，`!` 之后的字符串原样作为 shell 命令执行。
+
+```
+# 示例：定时运行脚本
+action_type = shell_action
+action_name = "!cd /path/to/project && ./scripts/run-daily-signal.sh --send-email"
+
+# 示例：定时清理临时文件
+action_type = shell_action
+action_name = "!find /tmp/persona -name '*.tmp' -mtime +7 -delete"
+```
+
+bash 命令使用当前用户的 shell 执行（`$SHELL`，默认 `/bin/bash`），超时 5 分钟。stdout/stderr 会记录到 Shell 日志，失败（非 0 退出）会在日志中报错。
 
 ### 管理
 
@@ -167,6 +187,31 @@ agents:
 | 身份注入 | `--append-system-prompt-file` `--plugin-dir` | Prompt 拼接 + `.agents/skills` | `--agent-file` `--skills-dir` |
 | 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |
 | 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 | 需要 Kimi 模型能力的场景 |
+
+## 命令行快捷启动
+
+除了通过飞书 IM 和 Web 控制台，你可以直接在终端启动一个交互式 Director，复用与 Shell 相同的身份配置（soul、personas、MCP、skills）。
+
+### 安装
+
+```bash
+# 依赖 fzf
+brew install fzf
+
+# 添加 alias（可自定义命令名）
+echo "alias pa='~/.persona/scripts/agent.sh'" >> ~/.zshrc
+source ~/.zshrc
+```
+
+### 使用
+
+```bash
+pa
+```
+
+启动后 fzf 列出所有 workspace，选择后以该 workspace 的 `context.md` 作为上下文启动 Claude Code 交互式会话。
+
+与 Shell 内 Director 的区别：这是独立的 Claude Code REPL，不经过消息队列、不连飞书、不触发 FLUSH。适合本地调试、临时对话、或需要完整 persona 身份但不走 IM 的场景。
 
 ## 人格自定义
 

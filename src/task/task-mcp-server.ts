@@ -44,6 +44,7 @@ const TOOLS = [
         prompt: { type: 'string', description: '完整 prompt' },
         project_dir: { type: 'string', description: '可选，子任务的工作目录（项目路径）；不传则默认在 persona 根目录下执行' },
         max_retry: { type: 'number', description: '最大重试次数 (默认 3)' },
+        timeout_ms: { type: 'number', description: '可选，任务超时时间（毫秒）；不传则使用 config 默认值。运行中可通过 DB 修改并自动同步' },
       },
       required: ['role', 'description', 'prompt'],
     },
@@ -84,7 +85,7 @@ const TOOLS = [
   },
   {
     name: 'create_cron_job',
-    description: '创建定时 cron job（持久化到 SQLite，由 Scheduler 自动触发）。支持三种 action 类型：spawn_role（默认，spawn 子角色进程）、director_msg（给 Director 发系统消息）、shell_action（执行 Shell 内部动作）',
+    description: '创建定时 cron job（持久化到 SQLite，由 Scheduler 自动触发）。支持三种 action 类型：spawn_role（默认，spawn 子角色进程）、director_msg（给 Director 发系统消息）、shell_action（执行 Shell 内部动作或任意 bash 命令）',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -97,7 +98,9 @@ const TOOLS = [
         schedule: { type: 'string', description: '调度表达式: "every 30m", "every 2h", "daily 09:00"' },
         action_type: { type: 'string', description: '动作类型: "spawn_role"(默认) | "director_msg" | "shell_action"', enum: ['spawn_role', 'director_msg', 'shell_action'] },
         message: { type: 'string', description: 'action_type=director_msg 时的消息内容，支持 {today} {yesterday} 模板变量' },
-        action_name: { type: 'string', description: 'action_type=shell_action 时的动作名，如 "check_feishu"' },
+        action_name: { type: 'string', description: 'action_type=shell_action 时的动作名。内置动作: "check_feishu" / "check_flush" / "flush"；以 "!" 开头表示执行任意 bash 命令，如 "!cd /path && ./run.sh"' },
+        timeout_ms: { type: 'number', description: 'action_type=shell_action 时的超时时间，单位毫秒；不传默认 5 分钟' },
+        max_retry: { type: 'number', description: 'action_type=shell_action 失败后的最大重试次数，默认 3' },
       },
       required: ['name', 'role', 'description', 'prompt', 'schedule'],
     },
@@ -176,6 +179,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         prompt: args.prompt,
         max_retry: args.max_retry,
         project_dir: args.project_dir,
+        timeout_ms: args.timeout_ms,
         source_director: DIRECTOR_LABEL,
       });
     case 'get_task':
@@ -201,6 +205,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         action_type: args.action_type,
         message: args.message,
         action_name: args.action_name,
+        timeout_ms: args.timeout_ms,
+        max_retry: args.max_retry,
         source_director: DIRECTOR_LABEL,
       });
     case 'list_cron_jobs':

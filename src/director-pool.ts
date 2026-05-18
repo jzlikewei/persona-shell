@@ -8,7 +8,6 @@ import { ClaudeProcess } from './claude-process.js';
 import { loadConfig, type Config } from './config.js';
 import type { MessagingClient } from './messaging/messaging.js';
 import { getState, setState } from './task/task-store.js';
-import type { AttachmentBuffer } from './console.js';
 import { log, getLogDir } from './logger.js';
 
 /** Pool entry data persisted to SQLite for crash recovery */
@@ -64,7 +63,6 @@ export class DirectorPool extends EventEmitter {
   private agentsConfig: Config['agents'];
   private directorConfig: Config['director'];
   private messaging: MessagingClient;
-  private attachmentBuffer?: AttachmentBuffer;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private configPath?: string;
 
@@ -74,7 +72,6 @@ export class DirectorPool extends EventEmitter {
     agentsConfig: Config['agents'],
     directorConfig: Config['director'],
     messaging: MessagingClient,
-    attachmentBuffer?: AttachmentBuffer,
     configPath?: string,
   ) {
     super();
@@ -83,7 +80,6 @@ export class DirectorPool extends EventEmitter {
     this.agentsConfig = agentsConfig;
     this.directorConfig = directorConfig;
     this.messaging = messaging;
-    this.attachmentBuffer = attachmentBuffer;
     this.configPath = configPath;
 
     // Restore closed entries from SQLite
@@ -144,10 +140,6 @@ export class DirectorPool extends EventEmitter {
     return this.entries.size;
   }
 
-  /** Set attachment buffer (called after pool construction to avoid circular dependency) */
-  setAttachmentBuffer(buffer: AttachmentBuffer): void {
-    this.attachmentBuffer = buffer;
-  }
 
   /** Get or create a Director for a group chat.
    *  @param routingKey — Map key (chatId for regular groups, threadId for topic groups)
@@ -283,6 +275,13 @@ export class DirectorPool extends EventEmitter {
     }
 
     await entry.bridge.notifyTaskDone(taskId, success, notifyMsgId);
+  }
+
+  /** Get the messageId of the currently-processing user message for a Director by label */
+  getProcessingMessageIdByLabel(label: string): string | null {
+    const entry = this.findByLabel(label);
+    const item = entry?.queue.peek();
+    return item?.messageId ?? null;
   }
 
   /** Get the feishuChatId for a Director by label (for sending notification messages) */
@@ -642,23 +641,6 @@ export class DirectorPool extends EventEmitter {
         await this.messaging.reply(item.messageId, replyWithTiming);
         queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
         console.log(`[pool:${groupName}] Replied to ${item.messageId} (${elapsedSec}s)`);
-
-        // Compositor: drain buffered attachments for this pool Director
-        const attachments = this.attachmentBuffer?.drain(bridge.label) ?? [];
-        for (const filePath of attachments) {
-          try {
-            const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
-            const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
-            if (imageExts.has(ext)) {
-              await this.messaging.uploadAndReplyImage(item.messageId, filePath);
-            } else {
-              await this.messaging.uploadAndReplyFile(item.messageId, filePath);
-            }
-            log.debug(`[pool:${groupName}] Compositor: sent attachment ${filePath}`);
-          } catch (attErr) {
-            console.error(`[pool:${groupName}] Compositor: failed to send attachment ${filePath}:`, attErr);
-          }
-        }
       } catch (err) {
         queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
         console.error(`[pool:${groupName}] reply failed, trying sendMessage as fallback:`, err);

@@ -7,7 +7,7 @@ import { spawnPersona } from '../persona-process.js';
 import { resolveAgentProvider, loadConfig, type Config } from '../config.js';
 import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
-import { localNow } from './task-store.js';
+import { localNow, getTaskTimeouts } from './task-store.js';
 
 export interface TaskRunnerConfig {
   configPath?: string;
@@ -44,6 +44,7 @@ interface RunningTask {
   rl?: ReturnType<typeof import('readline').createInterface>;
   startedAt: number;
   timedOut: boolean;
+  timeoutMs: number;
   outputPath: string;
   resultFile: string;
   costUsd?: number;
@@ -51,6 +52,7 @@ interface RunningTask {
 
 const GRACEFUL_KILL_DELAY = 5_000;
 const WATCHDOG_INTERVAL_MS = 30_000;
+const TIMEOUT_SYNC_INTERVAL_MS = 180_000;
 const CODEX_RESULT_STAGING_DIR = '/tmp/persona-task-results';
 
 function isPidRunning(pid: number): boolean {
@@ -61,12 +63,15 @@ export class TaskRunner extends EventEmitter {
   private config: TaskRunnerConfig;
   private running = new Map<string, RunningTask>();
   private watchdogTimer: NodeJS.Timeout;
+  private timeoutSyncTimer: NodeJS.Timeout;
 
   constructor(config: TaskRunnerConfig) {
     super();
     this.config = config;
     this.watchdogTimer = setInterval(() => this.checkProcessLiveness(), WATCHDOG_INTERVAL_MS);
     this.watchdogTimer.unref();
+    this.timeoutSyncTimer = setInterval(() => this.syncTimeoutsFromDb(), TIMEOUT_SYNC_INTERVAL_MS);
+    this.timeoutSyncTimer.unref();
   }
 
   runTask(input: RunTaskInput): void {
@@ -158,7 +163,7 @@ export class TaskRunner extends EventEmitter {
       this.killWithEscalation(input.taskId, child.pid!);
     }, timeoutMs);
 
-    const entry: RunningTask = { pid: child.pid, timer, child, startedAt, timedOut: false, outputPath, resultFile };
+    const entry: RunningTask = { pid: child.pid, timer, child, startedAt, timedOut: false, timeoutMs, outputPath, resultFile };
     this.running.set(input.taskId, entry);
 
     // Parse stream-json stdout and log to file
@@ -321,6 +326,38 @@ export class TaskRunner extends EventEmitter {
           ...(success ? { resultFile } : { error: `process disappeared (pid ${entry.pid})` }),
         };
         this.emit(success ? 'task-completed' : 'task-failed', result);
+      }
+    }
+  }
+
+  /** Sync timeout_ms from DB for running tasks. If DB value changed, reset the timer. */
+  private syncTimeoutsFromDb(): void {
+    if (this.running.size === 0) return;
+
+    const ids = Array.from(this.running.keys());
+    const dbTimeouts = getTaskTimeouts(ids);
+
+    for (const [taskId, entry] of this.running) {
+      if (entry.timedOut) continue;
+      const dbValue = dbTimeouts.get(taskId);
+      if (dbValue === undefined) continue;
+      const newTimeoutMs = dbValue ?? this.config.defaultTimeoutMs;
+      if (newTimeoutMs === entry.timeoutMs) continue;
+
+      const elapsed = Date.now() - entry.startedAt;
+      const remaining = newTimeoutMs - elapsed;
+
+      clearTimeout(entry.timer);
+      entry.timeoutMs = newTimeoutMs;
+
+      if (remaining <= 0) {
+        console.log(`[task-runner] Task ${taskId} timeout synced to ${newTimeoutMs}ms but already exceeded (elapsed=${elapsed}ms), killing`);
+        this.killWithEscalation(taskId, entry.pid);
+      } else {
+        entry.timer = setTimeout(() => {
+          this.killWithEscalation(taskId, entry.pid);
+        }, remaining);
+        console.log(`[task-runner] Task ${taskId} timeout synced: ${newTimeoutMs}ms (remaining=${Math.round(remaining / 1000)}s)`);
       }
     }
   }

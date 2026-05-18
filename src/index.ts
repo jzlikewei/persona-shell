@@ -5,11 +5,12 @@ import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
 import type { IncomingMessage } from './messaging/messaging.js';
 import { MessageQueue } from './queue.js';
-import { startConsole, type MetricsCollector, type AttachmentBuffer } from './console.js';
+import { startConsole, type MetricsCollector } from './console.js';
 import { TaskRunner, type TaskResult } from './task/task-runner.js';
 import { spawnPersona } from './persona-process.js';
 import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
+import { isBashAction, extractBashCommand, runBashAction } from './task/shell-bash.js';
 import { resolveCronMessage } from './prompt-loader.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task/task-store.js';
 import { writeFileSync, existsSync } from 'fs';
@@ -117,7 +118,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, undefined, configPath);
+  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, configPath);
 
   // Restore pool entries from previous Shell session + clean up orphans
   await pool.restoreEntries();
@@ -261,30 +262,9 @@ async function main() {
     }
   });
 
-  // Attachment compositor — buffer attachments per Director until response arrives
-  const attachmentsBySource = new Map<string, string[]>();
-  const attachmentBuffer: AttachmentBuffer = {
-    push(source: string, filePath: string) {
-      const list = attachmentsBySource.get(source) ?? [];
-      list.push(filePath);
-      attachmentsBySource.set(source, list);
-      log.debug(`[shell] Compositor: buffered attachment ${filePath} for ${source} (${list.length} pending)`);
-    },
-    drain(source: string): string[] {
-      const list = attachmentsBySource.get(source) ?? [];
-      attachmentsBySource.delete(source);
-      return list;
-    },
-    isProcessing(source: string): boolean {
-      if (source === 'main') return queue.length > 0;
-      const entry = pool.findByLabel(source);
-      return entry ? entry.queue.length > 0 : false;
-    },
-  };
 
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
-  pool.setAttachmentBuffer(attachmentBuffer);
-  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, attachmentBuffer, pool);
+  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, pool);
   messaging.addClient(webClient);
 
   // 7.4: Scheduler — interval-driven cron job automation
@@ -336,7 +316,38 @@ async function main() {
         await director.sendCronMessage(msg);
       },
       executeShellAction: async (job) => {
-        switch (job.action_name) {
+        const actionName = job.action_name ?? '';
+
+        if (isBashAction(actionName)) {
+          const cmd = extractBashCommand(actionName);
+          const maxRetry = Number.isFinite(job.max_retry) ? Math.max(0, job.max_retry) : 3;
+          const timeoutMs = job.timeout_ms ?? undefined;
+          console.log(`[scheduler] shell_action: bash exec for ${job.name}: ${cmd} (timeout=${timeoutMs ?? 'default'}ms retry=${maxRetry})`);
+
+          let lastError: unknown = null;
+          for (let attempt = 0; attempt <= maxRetry; attempt += 1) {
+            try {
+              if (attempt > 0) {
+                console.log(`[scheduler] bash retry ${attempt}/${maxRetry} for ${job.name}`);
+              }
+              const result = await runBashAction(cmd, { timeoutMs });
+              const outSnippet = result.stdout.trim().slice(0, 500);
+              const errSnippet = result.stderr.trim().slice(0, 500);
+              console.log(`[scheduler] bash ok for ${job.name}` + (outSnippet ? `\n  stdout: ${outSnippet}` : '') + (errSnippet ? `\n  stderr: ${errSnippet}` : ''));
+              return;
+            } catch (err: unknown) {
+              lastError = err;
+              const e = err as { code?: number | string; stderr?: string; message?: string };
+              const errSnippet = (e.stderr ?? e.message ?? '').trim().slice(0, 500);
+              console.error(`[scheduler] bash FAILED for ${job.name} attempt=${attempt + 1}/${maxRetry + 1} (exit=${e.code ?? '?'})\n  stderr: ${errSnippet}`);
+            }
+          }
+          const e = lastError as { code?: number | string; stderr?: string; message?: string };
+          const errSnippet = (e?.stderr ?? e?.message ?? '').trim().slice(0, 500);
+          throw new Error(`bash command failed after ${maxRetry + 1} attempts (exit=${e?.code ?? '?'}): ${errSnippet}`);
+        }
+
+        switch (actionName) {
           case 'check_feishu':
             console.log('[scheduler] shell_action: check_feishu (reserved)');
             break;
@@ -350,6 +361,12 @@ async function main() {
               console.log('[scheduler] flush: pool Directors flushed, flushing main Director');
               await director.flush();
               console.log('[scheduler] flush completed');
+              const lastChatId = messaging.getLastChatId();
+              if (lastChatId) {
+                await messaging.sendMessage(lastChatId, '🔄 定时 FLUSH 已完成，所有 Director 上下文已刷新').catch((e) => {
+                  console.warn('[scheduler] flush notification failed:', e?.message ?? e);
+                });
+              }
             } catch (err) {
               console.error('[scheduler] flush failed:', err);
             }
@@ -454,11 +471,6 @@ async function main() {
     const orphaned = queue.clearAll();
     if (orphaned.length > 0) {
       console.log(`[shell] Cleared ${orphaned.length} orphaned queue items after flush drain`);
-    }
-    // Compositor: discard main Director's buffered attachments — they'll never have a target message
-    const discarded = attachmentBuffer.drain('main');
-    if (discarded.length > 0) {
-      console.log(`[shell] Compositor: discarding ${discarded.length} buffered attachment(s) after flush`);
     }
   });
 
@@ -614,11 +626,15 @@ async function main() {
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
       const success = await targetDirector.flush();
-      if (success) {
-        await messaging.reply(messageId, `FLUSH 完成，${label} 上下文已刷新`).catch(() => {});
-      } else {
-        await messaging.reply(messageId, `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`).catch(() => {});
-      }
+      const flushMsg = success
+        ? `FLUSH 完成，${label} 上下文已刷新`
+        : `FLUSH 未能完成（${label}，超时或正在进行中），请稍后重试`;
+      await messaging.reply(messageId, flushMsg).catch(async (err) => {
+        console.warn(`[shell] /flush reply failed, falling back to sendMessage:`, err?.message ?? err);
+        await messaging.sendMessage(chatId, flushMsg).catch((e) => {
+          console.error(`[shell] /flush sendMessage also failed:`, e?.message ?? e);
+        });
+      });
       return;
     }
 
@@ -808,47 +824,10 @@ async function main() {
       process.exit(0);
     }
 
-    // 1.4: /status — show Director status summary (routes to correct Director)
-    if (text.trim() === '/status') {
-      const poolEntry = getTargetEntry();
-      if (poolEntry) {
-        const s = poolEntry.bridge.getStatus();
-        const label = poolEntry.groupName;
-        const tokenLine = s.contextMetricsLive
-          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
-          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
-        const lines = [
-          `🟢 [${label}] Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-          tokenLine,
-          `📬 Pending: ${s.pendingCount} | Queue: ${poolEntry.queue.length}`,
-          `🔄 Flushing: ${s.flushing ? 'yes' : 'no'}`,
-          `⏱️ Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
-        ];
-        await messaging.reply(messageId, lines.join('\n')).catch(() => {});
-      } else {
-        const s = director.getStatus();
-        const uptime = Math.floor((Date.now() - startTime) / 1000);
-        const lastFlushAgo = Math.floor((Date.now() - s.lastFlushAt) / 1000);
-        const tokenLine = s.contextMetricsLive
-          ? `📊 Context: ${s.lastInputTokens.toLocaleString()} / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`
-          : `📊 Context: -- / ${(s.contextWindow > 0 ? s.contextWindow : s.flushContextLimit).toLocaleString()}`;
-        const lines = [
-          `🟢 Director: ${s.alive ? 'alive' : 'dead'} (pid: ${s.pid ?? 'N/A'})`,
-          tokenLine,
-          `📬 Pending: ${s.pendingCount} | Queue: ${queue.length}`,
-          `🔄 Flushing: ${s.flushing ? 'yes' : 'no'} | Last flush: ${lastFlushAgo}s ago`,
-          `⏱️ Uptime: ${uptime}s | Session: ${s.sessionId?.slice(0, 8) ?? 'N/A'}`,
-        ];
-        await messaging.reply(messageId, lines.join('\n')).catch(() => {});
-      }
-      return;
-    }
-
-    // 1.5: /help — list all available commands — global operation
+    // 1.4: /help — list all available commands — global operation
     if (text.trim() === '/help') {
       const lines = [
         '📖 可用命令:',
-        '/status — 查看 Director 状态摘要',
         '/switch-agent <agent> — 切换当前会话的 Director agent，并持久化恢复上下文',
         '/persona <name> — 切换人格角色（如 philosopher, critic 等）',
         '/start-with-codex — 将当前会话切到 Codex Director 模式',
@@ -985,23 +964,6 @@ async function main() {
       await messaging.reply(item.messageId, replyWithTiming);
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
       console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
-
-      // Compositor: drain buffered attachments for main Director, reply to the same message
-      const attachments = attachmentBuffer.drain('main');
-      for (const filePath of attachments) {
-        try {
-          const ext = extname(filePath).toLowerCase();
-          const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
-          if (imageExts.has(ext)) {
-            await messaging.uploadAndReplyImage(item.messageId, filePath);
-          } else {
-            await messaging.uploadAndReplyFile(item.messageId, filePath);
-          }
-          log.debug(`[shell] Compositor: sent attachment ${filePath} as reply to ${item.messageId}`);
-        } catch (err) {
-          console.error(`[shell] Compositor: failed to send attachment ${filePath}:`, err);
-        }
-      }
     } catch (err) {
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
       metrics.addError(`Reply failed: ${String(err).slice(0, 200)}`);
@@ -1012,7 +974,10 @@ async function main() {
     }
   });
 
+  let shuttingDown = false;
+
   director.on('close', async () => {
+    if (shuttingDown) return;
     console.error('[shell] Director closed unexpectedly');
     metrics.addError('Director closed unexpectedly');
     // 4.1: Notify before exit
@@ -1053,6 +1018,8 @@ async function main() {
 
   // Graceful shutdown — cancel running tasks, detach pool Directors, stop main Director
   async function gracefulShutdown(signal: string): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[shell] Shutting down (${signal}) — cleaning up...`);
     const runningTaskIds = taskRunner.getRunningTasks();
     for (const taskId of runningTaskIds) {
