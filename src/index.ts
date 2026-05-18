@@ -974,7 +974,10 @@ async function main() {
     }
   });
 
+  let shuttingDown = false;
+
   director.on('close', async () => {
+    if (shuttingDown) return;
     console.error('[shell] Director closed unexpectedly');
     metrics.addError('Director closed unexpectedly');
     // 4.1: Notify before exit
@@ -1015,6 +1018,8 @@ async function main() {
 
   // Graceful shutdown — cancel running tasks, detach pool Directors, stop main Director
   async function gracefulShutdown(signal: string): Promise<void> {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[shell] Shutting down (${signal}) — cleaning up...`);
     const runningTaskIds = taskRunner.getRunningTasks();
     for (const taskId of runningTaskIds) {
