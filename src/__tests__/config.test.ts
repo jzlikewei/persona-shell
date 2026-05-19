@@ -144,7 +144,7 @@ describe('config', () => {
         expect(cfg.director.time_sync_interval_ms).toBe(2 * 3600_000);
         expect(cfg.director.flush_context_limit).toBe(700_000);
         expect(cfg.director.flush_interval_ms).toBe(7 * 86_400_000);
-        expect(cfg.director.quote_max_length).toBe(32);
+        expect(cfg.director.quote_max_length).toBe(50);
       });
 
       test('console defaults', () => {

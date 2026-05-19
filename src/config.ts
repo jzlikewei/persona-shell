@@ -260,7 +260,7 @@ export function loadConfig(path?: string): Config {
       flush_interval_ms: dir.flush_interval_days
         ? Number(dir.flush_interval_days) * 86_400_000
         : 7 * 86_400_000,
-      quote_max_length: Number(dir.quote_max_length ?? 32),
+      quote_max_length: Number(dir.quote_max_length ?? 50),
     },
     console: {
       enabled: con.enabled !== false,
