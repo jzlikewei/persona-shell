@@ -1016,15 +1016,14 @@ async function main() {
     }, 3000);
   }
 
-  // Graceful shutdown — cancel running tasks, detach pool Directors, stop main Director
+  // Graceful shutdown — detach Directors, orphan running tasks (they survive and get re-adopted on restart)
   async function gracefulShutdown(signal: string): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[shell] Shutting down (${signal}) — cleaning up...`);
     const runningTaskIds = taskRunner.getRunningTasks();
-    for (const taskId of runningTaskIds) {
-      console.log(`[shell] Cancelling task ${taskId} before shutdown`);
-      taskRunner.cancelTask(taskId);
+    if (runningTaskIds.length > 0) {
+      console.log(`[shell] Orphaning ${runningTaskIds.length} running task(s): ${runningTaskIds.join(', ')} (will re-adopt on restart)`);
     }
     await Promise.allSettled([pool.detachAll(), director.stop()]);
     process.exit(0);

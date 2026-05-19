@@ -40,7 +40,7 @@ export interface TaskResult {
 interface RunningTask {
   pid: number;
   timer: NodeJS.Timeout;
-  child: ChildProcess;
+  child?: ChildProcess;
   rl?: ReturnType<typeof import('readline').createInterface>;
   startedAt: number;
   timedOut: boolean;
@@ -424,10 +424,30 @@ export class TaskRunner extends EventEmitter {
           console.log(`[task-runner] Orphan ${task.id}: alive with result, killed and marked completed`);
           recovered.push({ id: task.id, status: 'completed', description: task.description });
         } else {
-          this.killProcessGroup(pid, 'SIGTERM');
-          updateTaskFn(task.id, { status: 'failed', completed_at: localNow(), error: 'orphaned (killed on shell restart)' });
-          console.log(`[task-runner] Orphan ${task.id}: alive without result, killed and marked failed`);
-          recovered.push({ id: task.id, status: 'failed', description: task.description });
+          // Re-adopt: task is still running, register it so watchdog monitors completion
+          const startedAt = task.started_at ? new Date(task.started_at).getTime() : Date.now();
+          const elapsed = Date.now() - startedAt;
+          const timeoutMs = (extra?.timeout_ms as number) ?? this.config.defaultTimeoutMs;
+          const remaining = Math.max(timeoutMs - elapsed, 60_000); // at least 1 min grace
+
+          const timer = setTimeout(() => {
+            this.killWithEscalation(task.id, pid);
+          }, remaining);
+
+          const createdDate = new Date(task.created_at).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+          const outputPath = join(this.config.personaDir, 'outbox', createdDate, `${task.id}.md`);
+
+          this.running.set(task.id, {
+            pid,
+            timer,
+            startedAt,
+            timedOut: false,
+            timeoutMs,
+            outputPath,
+            resultFile: outputPath,
+          });
+          console.log(`[task-runner] Orphan ${task.id}: re-adopted (pid=${pid}, remaining=${Math.round(remaining / 1000)}s)`);
+          recovered.push({ id: task.id, status: 're-adopted', description: task.description });
         }
       }
     }
