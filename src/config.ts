@@ -3,11 +3,12 @@ import { load } from 'js-yaml';
 import { dirname, resolve } from 'path';
 import { homedir } from 'os';
 
-export type AgentProviderType = 'claude' | 'codex' | 'kimi';
+export type AgentProviderType = 'claude' | 'codex' | 'codex-app-server' | 'kimi';
 export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApproval = 'untrusted' | 'on-request' | 'never';
 export type CodexMcpMode = 'cli' | 'mcp' | 'off';
+export type CodexAppServerTransport = 'stdio';
 
 export interface AgentProviderConfig {
   type: AgentProviderType;
@@ -19,6 +20,8 @@ export interface AgentProviderConfig {
   approval?: CodexApproval;
   search?: boolean;
   mcp_mode?: CodexMcpMode;
+  transport?: CodexAppServerTransport;
+  ephemeral?: boolean;
   model?: string;
   /** Per-agent system prompt file, relative to persona_dir (e.g. "prompts/gemini.md") */
   system_prompt_file?: string;
@@ -137,6 +140,8 @@ export function loadConfig(path?: string): Config {
     approval?: unknown;
     search?: unknown;
     mcp_mode?: unknown;
+    transport?: unknown;
+    ephemeral?: unknown;
     model?: unknown;
     system_prompt_file?: unknown;
     agent_file?: unknown;
@@ -149,7 +154,7 @@ export function loadConfig(path?: string): Config {
   for (const [name, provider] of providerEntries) {
     const type = provider?.type;
     const command = provider?.command;
-    if ((type === 'claude' || type === 'codex' || type === 'kimi') && typeof command === 'string' && command.trim()) {
+    if ((type === 'claude' || type === 'codex' || type === 'codex-app-server' || type === 'kimi') && typeof command === 'string' && command.trim()) {
       providers[name] = {
         type,
         command: command.trim(),
@@ -170,6 +175,8 @@ export function loadConfig(path?: string): Config {
         ...(provider?.mcp_mode === 'cli' || provider?.mcp_mode === 'mcp' || provider?.mcp_mode === 'off'
           ? { mcp_mode: provider.mcp_mode }
           : {}),
+        ...(provider?.transport === 'stdio' ? { transport: provider.transport } : {}),
+        ...(typeof provider?.ephemeral === 'boolean' ? { ephemeral: provider.ephemeral } : {}),
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
         ...(typeof provider?.system_prompt_file === 'string' && provider.system_prompt_file.trim()
           ? { system_prompt_file: provider.system_prompt_file.trim() }

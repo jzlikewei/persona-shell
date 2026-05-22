@@ -9,7 +9,7 @@ import type {
   DirectorSessionAdapterOptions,
   DirectorTurnResult,
 } from '../director-session-adapter/index.js';
-import type { DirectorRuntimeStatus } from '../director-runtime/index.js';
+import type { DirectorRuntimeStatus, DirectorSendResult } from '../director-runtime/index.js';
 
 class FakeAdapter implements DirectorSessionAdapter {
   static instances: FakeAdapter[] = [];
@@ -18,6 +18,7 @@ class FakeAdapter implements DirectorSessionAdapter {
   readonly terminations: NodeJS.Signals[] = [];
   ready = true;
   activeTurn = false;
+  nextSendResult: DirectorSendResult | void = undefined;
   shouldWaitOnShutdown = false;
   skipInterruptWhileFlushing = false;
   trackRestartBackoff = false;
@@ -47,8 +48,9 @@ class FakeAdapter implements DirectorSessionAdapter {
     return this.activeTurn;
   }
 
-  async send(content: string): Promise<void> {
+  async send(content: string): Promise<DirectorSendResult | void> {
     this.sent.push(content);
+    return this.nextSendResult;
   }
 
   interrupt(): void {
@@ -340,6 +342,29 @@ describe('SessionBridge', () => {
     adapter.completeTurn({ responseText: 'reply-2', durationMs: 5 });
 
     expect(responses).toEqual(['reply-1', 'reply-2']);
+    expect(bridge.getStatus().pendingCount).toBe(0);
+  });
+
+  test('steered user message is removed from pending queue and does not get its own response', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const responses: string[] = [];
+    const steered: string[] = [];
+    bridge.on('response', (reply: string) => responses.push(reply));
+    bridge.on('message-steered', () => steered.push('yes'));
+
+    await bridge.start();
+    await bridge.send('first');
+    adapter.nextSendResult = 'steered';
+    await bridge.send('second');
+    adapter.nextSendResult = undefined;
+
+    expect(bridge.getStatus().pendingCount).toBe(1);
+    expect(steered).toEqual(['yes']);
+
+    adapter.completeTurn({ responseText: 'combined reply', durationMs: 5 });
+
+    expect(responses).toEqual(['combined reply']);
     expect(bridge.getStatus().pendingCount).toBe(0);
   });
 
@@ -695,6 +720,123 @@ describe('SessionBridge', () => {
     await bridge.sendSystemMessage('fail');
     expect(bridge.getStatus().pendingCount).toBe(0);
     adapter.send = orig;
+  });
+
+  // ---- 11. Codex partial system-reply forwarding ----
+
+  test('codex system-reply partial agent message triggers immediate system-response', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const emitted: Array<{ event: string; args: unknown[] }> = [];
+    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-1', true, 'msg-100');
+
+    adapter.hooks.onPartialAgentMessage('任务已完成，报告如下…');
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].args[0]).toBe('任务已完成，报告如下…');
+    expect(emitted[0].args[1]).toBe('msg-100');
+
+    adapter.completeTurn({ responseText: '任务已完成，报告如下…', durationMs: 10 });
+  });
+
+  test('partial system-reply forwarding only fires once per turn', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const emitted: Array<{ event: string; args: unknown[] }> = [];
+    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-2', true, 'msg-200');
+
+    adapter.hooks.onPartialAgentMessage('first segment');
+    adapter.hooks.onPartialAgentMessage('second segment');
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].args[0]).toBe('first segment');
+
+    adapter.completeTurn({ responseText: 'first segment\nsecond segment', durationMs: 10 });
+  });
+
+  test('turn completion after partial forward emits only remainder', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const emitted: Array<{ event: string; args: unknown[] }> = [];
+    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-3', true, 'msg-300');
+
+    adapter.hooks.onPartialAgentMessage('结论：已完成');
+    adapter.completeTurn({ responseText: '结论：已完成\n后续已派发 task-4', durationMs: 10 });
+
+    expect(emitted).toHaveLength(2);
+    expect(emitted[0].args[0]).toBe('结论：已完成');
+    expect(emitted[1].args[0]).toBe('后续已派发 task-4');
+    expect(emitted[1].args[1]).toBe('msg-300');
+  });
+
+  test('turn completion after partial forward skips emission when no remainder', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const emitted: Array<{ event: string; args: unknown[] }> = [];
+    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-4', true, 'msg-400');
+
+    adapter.hooks.onPartialAgentMessage('done');
+    adapter.completeTurn({ responseText: 'done', durationMs: 10 });
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].args[0]).toBe('done');
+  });
+
+  test('user turn does not trigger partial system-reply forwarding', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const emitted: Array<{ event: string; args: unknown[] }> = [];
+    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+
+    await bridge.start();
+    await bridge.send('hello');
+
+    adapter.hooks.onPartialAgentMessage('user response chunk');
+    expect(emitted).toHaveLength(0);
+
+    adapter.completeTurn({ responseText: 'user response chunk', durationMs: 5 });
+  });
+
+  test('non-codex adapter does not trigger partial system-reply forwarding', async () => {
+    const bridge = createBridgeWithOptions({ providerName: 'fake-claude', directorAgentName: 'fake-claude' });
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const emitted: Array<{ event: string; args: unknown[] }> = [];
+    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-5', true, 'msg-500');
+
+    adapter.hooks.onPartialAgentMessage('should not forward');
+    expect(emitted).toHaveLength(0);
+
+    adapter.completeTurn({ responseText: 'should not forward', durationMs: 10 });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].args[0]).toBe('should not forward');
+  });
+
+  test('notifyTaskDone prompt includes stop-loss protocol', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-6', true, 'msg-600');
+
+    const sent = adapter.sent.at(-1)!;
+    expect(sent).toContain('简短结论');
+    expect(sent).toContain('不要在本轮等待后续任务完成');
+
+    adapter.completeTurn({ responseText: 'ack', durationMs: 1 });
   });
 });
 

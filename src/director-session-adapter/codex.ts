@@ -138,6 +138,8 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
       const event = JSON.parse(line);
       if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
         this.hooks.persistSession(event.thread_id, sessionName);
+      } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
+        this.hooks.onPartialAgentMessage(event.item.text);
       } else if (event.type === 'turn.completed') {
         const usage = event.usage;
         if (usage && typeof usage === 'object') {

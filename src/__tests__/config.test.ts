@@ -313,6 +313,37 @@ describe('config', () => {
         expect(p.mcp_mode).toBe('mcp');
       });
 
+      test('parses codex app-server provider', () => {
+        writeMinimalConfig({
+          config: [
+            'feishu:',
+            '  app_id: id',
+            'agents:',
+            '  providers:',
+            '    codex-live:',
+            '      type: codex-app-server',
+            '      command: /usr/bin/codex',
+            '      sandbox: danger-full-access',
+            '      approval: never',
+            '      search: true',
+            '      transport: stdio',
+            '      ephemeral: false',
+            '',
+          ].join('\n'),
+          secret: `feishu:\n  app_secret: s\n`,
+        });
+        const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
+        const p = cfg.agents.providers['codex-live'];
+        expect(p).toBeDefined();
+        expect(p.type).toBe('codex-app-server');
+        expect(p.command).toBe('/usr/bin/codex');
+        expect(p.sandbox).toBe('danger-full-access');
+        expect(p.approval).toBe('never');
+        expect(p.search).toBe(true);
+        expect(p.transport).toBe('stdio');
+        expect(p.ephemeral).toBe(false);
+      });
+
       test('skips provider with invalid type', () => {
         writeMinimalConfig({
           config: [

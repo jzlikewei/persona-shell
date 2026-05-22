@@ -8,6 +8,7 @@ import { loadPrompt } from './prompt-loader.js';
 import { ClaudeDirectorRuntime } from './director-runtime/claude.js';
 import { KimiDirectorRuntime } from './director-runtime/kimi.js';
 import { CodexSessionAdapter } from './director-session-adapter/codex.js';
+import { CodexAppServerSessionAdapter } from './director-session-adapter/codex-app-server.js';
 import { ClaudeSessionAdapter } from './director-session-adapter/claude.js';
 import { KimiSessionAdapter } from './director-session-adapter/kimi.js';
 import type {
@@ -99,6 +100,7 @@ export class SessionBridge extends EventEmitter {
   private expectedStaleCloses = 0;
   private discardNextResponse = false;
   private personaRole: string = 'director';
+  private partialSystemReplyText: string | null = null;
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
   private static readonly FLUSH_STEP_TIMEOUT = 90_000;
@@ -142,6 +144,9 @@ export class SessionBridge extends EventEmitter {
       }
       if (directorAgent.type === 'kimi') {
         return new KimiSessionAdapter(new KimiDirectorRuntime(), resolvedOptions, hooks);
+      }
+      if (directorAgent.type === 'codex-app-server') {
+        return new CodexAppServerSessionAdapter(resolvedOptions, hooks);
       }
       return new CodexSessionAdapter(resolvedOptions, hooks);
     };
@@ -250,80 +255,89 @@ export class SessionBridge extends EventEmitter {
 
     if (!this.isMain) {
       this.flushing = true;
-      const flushStart = Date.now();
+      try {
+        const flushStart = Date.now();
 
-      if (this.pendingCount > 0) {
-        console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages (non-main)...`);
-        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
-        if (!drained) {
-          console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms (non-main), proceeding`);
-          this.discardNextResponse = true;
-          this.pendingTurns = [];
-        } else {
-          console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms (non-main)`);
+        if (this.pendingCount > 0) {
+          console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages (non-main)...`);
+          const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
+          if (!drained) {
+            console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms (non-main), proceeding`);
+            this.discardNextResponse = true;
+            this.pendingTurns = [];
+          } else {
+            console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms (non-main)`);
+          }
         }
-      }
 
-      // Checkpoint: ask Director to save group context before termination
-      const statePath = this.getSessionStateFilePath();
-      const checkpointStart = Date.now();
-      console.log(`[bridge:${this.label}] FLUSH: starting checkpoint (non-main) → ${statePath}`);
-      const checkpointDone = new Promise<void>((resolve) => {
-        this.flushCheckpointResolve = resolve;
-      });
-      this.enqueuePendingTurn({ type: 'flush-checkpoint' });
-      const poolCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-pool', {
-        group_name: this.groupName ?? this.label,
-        state_path: statePath,
-      }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${statePath}，按 Context（背景目标约束）/ Knowledge（决策发现里程碑）/ State（当前任务待办）三层结构组织，只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
-      await this.writeRaw(poolCheckpointMsg);
+        // Checkpoint: ask Director to save group context before termination
+        const statePath = this.getSessionStateFilePath();
+        const checkpointStart = Date.now();
+        console.log(`[bridge:${this.label}] FLUSH: starting checkpoint (non-main) → ${statePath}`);
+        const checkpointDone = new Promise<void>((resolve) => {
+          this.flushCheckpointResolve = resolve;
+        });
+        this.enqueuePendingTurn({ type: 'flush-checkpoint' });
+        const poolCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-pool', {
+          group_name: this.groupName ?? this.label,
+          state_path: statePath,
+        }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${statePath}，按 Context（背景目标约束）/ Knowledge（决策发现里程碑）/ State（当前任务待办）三层结构组织，只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
+        await this.writeRaw(poolCheckpointMsg);
 
-      const checkpointOk = await Promise.race([
-        checkpointDone.then(() => true),
-        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
-      ]);
-      if (!checkpointOk) {
-        console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms (non-main), forcing reset`);
+        const checkpointOk = await Promise.race([
+          checkpointDone.then(() => true),
+          this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+        ]);
+        if (!checkpointOk) {
+          console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms (non-main), forcing reset`);
+          this.flushCheckpointResolve = null;
+          this.discardNextResponse = true;
+          const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
+          if (idx >= 0) this.pendingTurns.splice(idx, 1);
+        } else {
+          console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms (non-main)`);
+        }
+
+        const restartStart = Date.now();
+        this.expectedStaleCloses++;
+        this.adapter.terminate('SIGTERM');
+        this.clearSession();
+        await this.restart();
+        console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms (non-main)`);
+
+        // Bootstrap with saved state
+        const bootstrapStart = Date.now();
+        const bootstrapDone = new Promise<void>((resolve) => {
+          this.flushBootstrapResolve = resolve;
+        });
+        this.enqueuePendingTurn({ type: 'flush-bootstrap' });
+        await this.writeRaw(this.buildBootstrapMessage(statePath));
+
+        const bootstrapOk = await Promise.race([
+          bootstrapDone.then(() => true),
+          this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+        ]);
+        if (!bootstrapOk) {
+          console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms (non-main) — forcing flush finish`);
+          this.flushBootstrapResolve = null;
+          this.discardNextResponse = true;
+          const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
+          if (idx >= 0) this.pendingTurns.splice(idx, 1);
+        } else {
+          console.log(`[bridge:${this.label}] FLUSH: bootstrap done in ${Date.now() - bootstrapStart}ms (non-main)`);
+        }
+
+        this.finishFlush();
+        console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms (non-main)`);
+        return true;
+      } catch (err) {
+        console.error(`[bridge:${this.label}] FLUSH failed (non-main):`, err);
+        this.flushing = false;
+        this.discardNextResponse = false;
         this.flushCheckpointResolve = null;
-        this.discardNextResponse = true;
-        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
-        if (idx >= 0) this.pendingTurns.splice(idx, 1);
-      } else {
-        console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms (non-main)`);
-      }
-
-      const restartStart = Date.now();
-      this.expectedStaleCloses++;
-      this.adapter.terminate('SIGTERM');
-      this.clearSession();
-      await this.restart();
-      console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms (non-main)`);
-
-      // Bootstrap with saved state
-      const bootstrapStart = Date.now();
-      const bootstrapDone = new Promise<void>((resolve) => {
-        this.flushBootstrapResolve = resolve;
-      });
-      this.enqueuePendingTurn({ type: 'flush-bootstrap' });
-      await this.writeRaw(this.buildBootstrapMessage(statePath));
-
-      const bootstrapOk = await Promise.race([
-        bootstrapDone.then(() => true),
-        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
-      ]);
-      if (!bootstrapOk) {
-        console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms (non-main) — forcing flush finish`);
         this.flushBootstrapResolve = null;
-        this.discardNextResponse = true;
-        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
-        if (idx >= 0) this.pendingTurns.splice(idx, 1);
-      } else {
-        console.log(`[bridge:${this.label}] FLUSH: bootstrap done in ${Date.now() - bootstrapStart}ms (non-main)`);
+        return false;
       }
-
-      this.finishFlush();
-      console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms (non-main)`);
-      return true;
     }
 
     const runningTasks = listTasks({ status: 'running' });
@@ -339,77 +353,87 @@ export class SessionBridge extends EventEmitter {
     }
 
     this.flushing = true;
-    const flushStart = Date.now();
+    try {
+      const flushStart = Date.now();
 
-    if (this.pendingCount > 0) {
-      console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
-      const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
-      if (!drained) {
-        console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms, aborting flush`);
-        this.flushing = false;
-        return false;
+      if (this.pendingCount > 0) {
+        console.log(`[bridge:${this.label}] FLUSH: draining ${this.pendingCount} in-flight messages...`);
+        const drained = await this.waitForDrain(SessionBridge.FLUSH_DRAIN_TIMEOUT);
+        if (!drained) {
+          console.warn(`[bridge:${this.label}] FLUSH: drain timeout after ${Date.now() - flushStart}ms, proceeding`);
+          this.discardNextResponse = true;
+          this.pendingTurns = [];
+        } else {
+          console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms`);
+        }
       }
-      console.log(`[bridge:${this.label}] FLUSH: drain done in ${Date.now() - flushStart}ms`);
-    }
 
-    this.emit('flush-drain-complete');
+      this.emit('flush-drain-complete');
 
-    const checkpointStart = Date.now();
-    console.log(`[bridge:${this.label}] FLUSH: starting checkpoint...`);
-    const checkpointDone = new Promise<void>((resolve) => {
-      this.flushCheckpointResolve = resolve;
-    });
-    this.enqueuePendingTurn({ type: 'flush-checkpoint' });
-    const mainCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-main')
-      ?? '[FLUSH] 系统即将进行上下文刷新。请将当前工作状态保存到 daily/state.md，包括：进行中的任务、待处理的事项、需要保留的上下文。保存完成后回复"已保存"。';
-    await this.writeRaw(mainCheckpointMsg);
+      const checkpointStart = Date.now();
+      console.log(`[bridge:${this.label}] FLUSH: starting checkpoint...`);
+      const checkpointDone = new Promise<void>((resolve) => {
+        this.flushCheckpointResolve = resolve;
+      });
+      this.enqueuePendingTurn({ type: 'flush-checkpoint' });
+      const mainCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-main')
+        ?? '[FLUSH] 系统即将进行上下文刷新。请将当前工作状态保存到 daily/state.md，包括：进行中的任务、待处理的事项、需要保留的上下文。保存完成后回复"已保存"。';
+      await this.writeRaw(mainCheckpointMsg);
 
-    const checkpointOk = await Promise.race([
-      checkpointDone.then(() => true),
-      this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
-    ]);
-    if (!checkpointOk) {
-      console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms, forcing reset`);
+      const checkpointOk = await Promise.race([
+        checkpointDone.then(() => true),
+        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+      ]);
+      if (!checkpointOk) {
+        console.warn(`[bridge:${this.label}] FLUSH: checkpoint timeout after ${Date.now() - checkpointStart}ms, forcing reset`);
+        this.flushCheckpointResolve = null;
+        this.discardNextResponse = true;
+        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
+        if (idx >= 0) this.pendingTurns.splice(idx, 1);
+      } else {
+        console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms`);
+      }
+
+      const restartStart = Date.now();
+      this.expectedStaleCloses++;
+      this.adapter.terminate('SIGTERM');
+      this.clearSession();
+      await this.restart();
+      console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms`);
+
+      const bootstrapStart = Date.now();
+      const bootstrapDone = new Promise<void>((resolve) => {
+        this.flushBootstrapResolve = resolve;
+      });
+      this.enqueuePendingTurn({ type: 'flush-bootstrap' });
+      const flushBootstrapMsg = loadPrompt(this.config.persona_dir, 'flush-bootstrap-main')
+        ?? '[FLUSH] 你刚经历了上下文刷新。请读取 daily/state.md 恢复工作上下文。';
+      await this.writeRaw(flushBootstrapMsg);
+
+      const bootstrapOk = await Promise.race([
+        bootstrapDone.then(() => true),
+        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+      ]);
+      if (!bootstrapOk) {
+        console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms — forcing flush finish`);
+        this.flushBootstrapResolve = null;
+        this.discardNextResponse = true;
+        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
+        if (idx >= 0) this.pendingTurns.splice(idx, 1);
+        this.finishFlush();
+      } else {
+        this.finishFlush();
+        console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms`);
+      }
+      return true;
+    } catch (err) {
+      console.error(`[bridge:${this.label}] FLUSH failed:`, err);
+      this.flushing = false;
+      this.discardNextResponse = false;
       this.flushCheckpointResolve = null;
-      this.discardNextResponse = true;
-      const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
-      if (idx >= 0) this.pendingTurns.splice(idx, 1);
-    } else {
-      console.log(`[bridge:${this.label}] FLUSH: checkpoint done in ${Date.now() - checkpointStart}ms`);
-    }
-
-    const restartStart = Date.now();
-    this.expectedStaleCloses++;
-    this.adapter.terminate('SIGTERM');
-    this.clearSession();
-    await this.restart();
-    console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms`);
-
-    const bootstrapStart = Date.now();
-    const bootstrapDone = new Promise<void>((resolve) => {
-      this.flushBootstrapResolve = resolve;
-    });
-    this.enqueuePendingTurn({ type: 'flush-bootstrap' });
-    const flushBootstrapMsg = loadPrompt(this.config.persona_dir, 'flush-bootstrap-main')
-      ?? '[FLUSH] 你刚经历了上下文刷新。请读取 daily/state.md 恢复工作上下文。';
-    await this.writeRaw(flushBootstrapMsg);
-
-    const bootstrapOk = await Promise.race([
-      bootstrapDone.then(() => true),
-      this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
-    ]);
-    if (!bootstrapOk) {
-      console.warn(`[bridge:${this.label}] FLUSH: bootstrap timeout after ${Date.now() - bootstrapStart}ms — forcing flush finish`);
       this.flushBootstrapResolve = null;
-      this.discardNextResponse = true;
-      const idx = this.pendingTurns.findIndex(t => t.type === 'flush-bootstrap');
-      if (idx >= 0) this.pendingTurns.splice(idx, 1);
-      this.finishFlush();
-    } else {
-      this.finishFlush();
-      console.log(`[bridge:${this.label}] FLUSH: complete in ${Date.now() - flushStart}ms`);
+      return false;
     }
-    return true;
   }
 
   async clearContext(): Promise<boolean> {
@@ -805,7 +829,15 @@ export class SessionBridge extends EventEmitter {
       // best-effort logging
     }
 
-    await this.adapter.send(content);
+    const result = await this.adapter.send(content);
+    if (result === 'steered') {
+      const steeredTurn = this.pendingTurns.pop();
+      if (steeredTurn?.type === 'user') {
+        this.emit('message-steered');
+      } else if (steeredTurn) {
+        this.pendingTurns.push(steeredTurn);
+      }
+    }
   }
 
   async notifyTaskDone(taskId: string, success: boolean, replyToMessageId?: string): Promise<void> {
@@ -819,9 +851,10 @@ export class SessionBridge extends EventEmitter {
     }
 
     const tag = success ? 'TASK_DONE' : 'TASK_FAILED';
+    const stopLoss = '回复协议：先读取报告，立即给用户一段简短结论；如需后续任务可 create_task 派发，但不要在本轮等待后续任务完成。';
     const msg = success
-      ? `[${tag}] 后台任务 ${taskId} 已完成。调用 get_task MCP 工具查看详情。`
-      : `[${tag}] 后台任务 ${taskId} 失败。调用 get_task MCP 工具查看错误信息。`;
+      ? `[${tag}] 后台任务 ${taskId} 已完成。调用 get_task MCP 工具查看详情。${stopLoss}`
+      : `[${tag}] 后台任务 ${taskId} 失败。调用 get_task MCP 工具查看错误信息。${stopLoss}`;
 
     try {
       await this.writeRaw(msg);
@@ -976,6 +1009,7 @@ export class SessionBridge extends EventEmitter {
       buildSessionName: () => this.buildSessionName(),
       logOutput: (line) => this.logOutputEvent(line),
       onChunk: (text) => this.handleStreamChunk(text),
+      onPartialAgentMessage: (text) => this.handlePartialAgentMessage(text),
       onMetrics: (update) => this.handleMetricsUpdate(update),
       onTurnComplete: (result) => this.handleTurnComplete(result),
       onTurnFailure: (message) => this.handleTurnFailure(message),
@@ -1145,6 +1179,16 @@ export class SessionBridge extends EventEmitter {
     if (shouldStream) this.emit('chunk', text);
   }
 
+  private handlePartialAgentMessage(text: string): void {
+    if (this.partialSystemReplyText !== null) return;
+    if (this.directorAgent.type !== 'codex' && this.directorAgent.type !== 'codex-app-server') return;
+    const head = this.pendingTurns[0];
+    if (!head || head.type !== 'system-reply') return;
+    this.partialSystemReplyText = text;
+    log.debug(`[bridge:${this.label}] Partial system-reply forwarded (${text.length} chars, replyTo=${head.replyToMessageId})`);
+    this.emit('system-response', text, head.replyToMessageId);
+  }
+
   private handleMetricsUpdate(update: DirectorSessionMetricsUpdate): void {
     let shouldPersist = false;
     if (typeof update.lastInputTokens === 'number' && update.lastInputTokens > 0) {
@@ -1208,9 +1252,20 @@ export class SessionBridge extends EventEmitter {
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
         if (responseText) {
-          log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${responseText.slice(0, 100)}`);
-          this.emit('system-response', responseText, pending.replyToMessageId);
+          if (this.partialSystemReplyText !== null) {
+            const remainder = responseText.startsWith(this.partialSystemReplyText)
+              ? responseText.slice(this.partialSystemReplyText.length).replace(/^\n+/, '').trim()
+              : '';
+            if (remainder) {
+              log.debug(`[bridge:${this.label}] Task notification remainder (replyTo=${pending.replyToMessageId}): ${remainder.slice(0, 100)}`);
+              this.emit('system-response', remainder, pending.replyToMessageId);
+            }
+          } else {
+            log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${responseText.slice(0, 100)}`);
+            this.emit('system-response', responseText, pending.replyToMessageId);
+          }
         }
+        this.partialSystemReplyText = null;
         resolvedTurnType = 'system';
       } else if (pending.type === 'system-forward') {
         if (responseText) {
@@ -1255,6 +1310,7 @@ export class SessionBridge extends EventEmitter {
         this.emit('response', '处理失败，请稍后重试');
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
+        this.partialSystemReplyText = null;
       }
       this.emit('alert', `⚠️ Director 调用失败: ${message}`);
     }
@@ -1278,6 +1334,7 @@ export class SessionBridge extends EventEmitter {
     if (!this.flushing) {
       this.pendingTurns = [];
       this.systemReplyQueue = [];
+      this.partialSystemReplyText = null;
       this.emit('queue-desync');  // 通知外层清理 MessageQueue
     }
     this.resolveDrainIfNeeded();
@@ -1370,9 +1427,13 @@ export class SessionBridge extends EventEmitter {
       hour: '2-digit',
       minute: '2-digit',
     }).replace(':', '');
-    const prefix = this.directorAgent.type === 'codex' ? 'codex-director'
-      : this.directorAgent.type === 'kimi' ? 'kimi-director'
-      : 'director';
+    const prefix = this.directorAgent.type === 'codex'
+      ? 'codex-director'
+      : this.directorAgent.type === 'codex-app-server'
+        ? 'codex-app-server-director'
+        : this.directorAgent.type === 'kimi'
+          ? 'kimi-director'
+          : 'director';
     const nameParts = [prefix, this.label, `${dateStr}T${timeStr}`];
     if (this.groupName) nameParts.push(this.groupName);
     return nameParts.join('-');

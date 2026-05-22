@@ -1,7 +1,7 @@
 import type { FileHandle } from 'fs/promises';
 import type { Config } from '../config.js';
 import type { AgentRuntimeConfig } from '../persona-process.js';
-import type { DirectorRuntimeStatus } from '../director-runtime/index.js';
+import type { DirectorRuntimeStatus, DirectorSendResult } from '../director-runtime/index.js';
 
 export interface DirectorSessionMetricsUpdate {
   lastInputTokens?: number;
@@ -31,6 +31,7 @@ export interface DirectorSessionAdapterHooks {
   logOutput(line: string): void;
   onChunk(text: string): void;
   onMetrics(update: DirectorSessionMetricsUpdate): void;
+  onPartialAgentMessage(text: string): void;
   onTurnComplete(result: DirectorTurnResult): void;
   onTurnFailure(message: string): void;
   onRuntimeClosed(): Promise<void> | void;
@@ -41,7 +42,7 @@ export interface DirectorSessionAdapter {
   isReady(): boolean;
   getStatus(): DirectorRuntimeStatus;
   hasActiveTurn(): boolean;
-  send(content: string): Promise<void>;
+  send(content: string): Promise<DirectorSendResult | void>;
   interrupt(): void;
   stop(): Promise<void>;
   terminate(signal: NodeJS.Signals): void;

@@ -714,6 +714,13 @@ export class DirectorPool extends EventEmitter {
       }
     });
 
+    bridge.on('message-steered', () => {
+      const item = queue.resolveOldest();
+      if (item) {
+        queue.logAction('STEERED', item.messageId, `cid=${item.correlationId}`);
+      }
+    });
+
     // queue-desync → clear orphaned queue items after Director crash
     bridge.on('queue-desync', () => {
       const orphans = queue.clearAll();

@@ -209,6 +209,40 @@ codex exec \
 
 转换逻辑在 `persona-process.ts` 的 `buildCodexMcpOverrideArgs()` 中实现。
 
+### App Server 模式（experimental）
+
+`type: codex-app-server` 使用 `codex app-server --listen stdio://` 作为长驻 JSON-RPC runtime。它是可选后端，不替代默认的 `codex exec` turn-based 模式。
+
+```yaml
+agents:
+  providers:
+    codex-live:
+      type: codex-app-server
+      command: codex
+      sandbox: danger-full-access
+      approval: never
+      transport: stdio
+  defaults:
+    director: codex-live
+```
+
+关键行为：
+
+| 能力 | 实现 |
+|------|------|
+| 流式输出 | 监听 `item/agentMessage/delta` 并转发为 bridge `chunk` |
+| 多 turn | 首轮 `thread/start`，后续普通消息走 `turn/start` |
+| active turn 追加用户消息 | 当前 turn 未完成时，新用户消息走 `turn/steer` + `expectedTurnId` |
+| session 持久化 | 保存 `thread.id`，重启 runtime 后优先 `thread/resume` |
+| 中断 | 优先 `turn/interrupt`，失败时退回进程信号 |
+
+注意事项：
+
+- Codex CLI 仍将 `app-server` 标为 experimental，生产默认仍建议保留 `codex` turn-based fallback。
+- `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
+- 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
+- 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。
+
 ---
 
 ## Kimi

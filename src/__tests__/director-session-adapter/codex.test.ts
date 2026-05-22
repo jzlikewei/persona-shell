@@ -15,6 +15,7 @@ function buildCapturingHooks() {
   const metrics: DirectorSessionMetricsUpdate[] = [];
   const loggedLines: string[] = [];
   const persistedSessions: Array<{ id: string; name: string | null }> = [];
+  const partialMessages: string[] = [];
   let clearSessionCalls = 0;
   let sessionId: string | null = null;
   let sessionName: string | null = null;
@@ -29,6 +30,7 @@ function buildCapturingHooks() {
     buildSessionName: () => 'test-codex-session',
     logOutput: (line) => loggedLines.push(line),
     onChunk: () => {},
+    onPartialAgentMessage: (text) => partialMessages.push(text),
     onMetrics: (update) => metrics.push(update),
     onTurnComplete: (result) => turns.push(result),
     onTurnFailure: (msg) => failures.push(msg),
@@ -44,6 +46,7 @@ function buildCapturingHooks() {
     persistedSessions,
     getClearSessionCalls: () => clearSessionCalls,
     setSessionId: (id: string | null) => { sessionId = id; },
+    partialMessages,
   };
 }
 
@@ -235,6 +238,37 @@ describe('CodexSessionAdapter', () => {
       const { handleLine } = getPrivateMethods(adapter);
 
       expect(() => handleLine('not-json', 'sess')).not.toThrow();
+    });
+
+    test('calls onPartialAgentMessage for item.completed agent_message', () => {
+      const { hooks, partialMessages } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleLine } = getPrivateMethods(adapter);
+
+      handleLine(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: 'first reply' },
+      }), 'sess');
+
+      handleLine(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'agent_message', text: 'second reply' },
+      }), 'sess');
+
+      expect(partialMessages).toEqual(['first reply', 'second reply']);
+    });
+
+    test('does not call onPartialAgentMessage for non-agent_message items', () => {
+      const { hooks, partialMessages } = buildCapturingHooks();
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleLine } = getPrivateMethods(adapter);
+
+      handleLine(JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'tool_call', text: 'tool output' },
+      }), 'sess');
+
+      expect(partialMessages).toHaveLength(0);
     });
   });
 

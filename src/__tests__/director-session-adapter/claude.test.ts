@@ -27,6 +27,7 @@ function buildCapturingHooks() {
     buildSessionName: () => 'test-session',
     logOutput: (line) => loggedLines.push(line),
     onChunk: (text) => chunks.push(text),
+    onPartialAgentMessage: () => {},
     onMetrics: (update) => metrics.push(update as Record<string, unknown>),
     onTurnComplete: (result) => turns.push(result),
     onTurnFailure: () => {},

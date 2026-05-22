@@ -474,6 +474,13 @@ async function main() {
     }
   });
 
+  director.on('message-steered', () => {
+    const item = queue.resolveOldest();
+    if (item) {
+      queue.logAction('STEERED', item.messageId, `cid=${item.correlationId}`);
+    }
+  });
+
   // Clear orphaned queue items after Director crash — pendingTurns were reset
   // but MessageQueue still has items that would match the wrong response.
   director.on('queue-desync', () => {

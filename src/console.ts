@@ -420,12 +420,13 @@ export function startConsole(
               }
               if (!targetChatId) return Response.json({ error: 'No active chat to send to' }, { status: 400 });
 
-              // Try to get the messageId of the currently-processing user message for reply threading
+              // Try to get the messageId of the currently-processing user message for reply threading.
+              // Only fall back to main queue when source IS main — otherwise the reply API
+              // routes by parent-message chat, sending the attachment to the wrong conversation.
               let replyMessageId: string | null = null;
               if (sourceDirector && sourceDirector !== 'main' && pool) {
                 replyMessageId = pool.getProcessingMessageIdByLabel(sourceDirector);
-              }
-              if (!replyMessageId) {
+              } else {
                 const peeked = queue.peek();
                 replyMessageId = peeked?.messageId ?? null;
               }
