@@ -2,7 +2,8 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { readFileSync, statSync, mkdirSync } from 'fs';
 import { extname, basename, join } from 'path';
 import type { Config } from '../config.js';
-import type { MessagingClient, MessageHandler, IncomingMessage, Attachment } from './messaging.js';
+import type { MessagingClient, MessageHandler, IncomingMessage, Attachment, StreamingReplyHandle } from './messaging.js';
+import { UpdatingTextStreamingReply } from './updating-text-stream.js';
 import { getState, setState } from '../task/task-store.js';
 import { log } from '../logger.js';
 
@@ -178,6 +179,9 @@ const SDK_SELF_HEAL_WINDOW = 30_000;   // 给 SDK 30s 自行重连的窗口
 const FEISHU_API_CHECK_TIMEOUT = 5_000; // 飞书 API 可达性检查超时
 
 const RETRY_DELAYS = [1000, 3000];
+const STREAM_UPDATE_DEBOUNCE_MS = 700;
+const STREAM_MIN_UPDATE_CHARS = 48;
+const STREAM_INITIAL_TEXT = '思考中...';
 
 // Chat info cache (name + member count + chat mode) for group chats
 const chatInfoCache = new Map<string, { name: string; memberCount: number; chatMode: 'group' | 'topic'; fetchedAt: number }>();
@@ -221,6 +225,14 @@ function getWsReadyState(wsClient: Lark.WSClient): number {
   }
 }
 
+function extractMessageId(response: unknown): string | null {
+  if (!response || typeof response !== 'object') return null;
+  const root = response as { data?: { message_id?: unknown }; message_id?: unknown };
+  if (typeof root.data?.message_id === 'string') return root.data.message_id;
+  if (typeof root.message_id === 'string') return root.message_id;
+  return null;
+}
+
 /** 检查飞书 API 是否可达（轻量 HTTP 请求） */
 async function isFeishuReachable(client: Lark.Client): Promise<boolean> {
   try {
@@ -257,6 +269,28 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     appId: config.app_id,
     appSecret: config.app_secret,
   });
+
+  async function replyText(messageId: string, text: string): Promise<string | null> {
+    const res = await withRetry('reply', async () => {
+      const r = await client.im.v1.message.reply({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify({ text }), msg_type: 'text' },
+      });
+      lastActiveTime = Date.now();
+      return r;
+    });
+    return extractMessageId(res);
+  }
+
+  async function updateMessageText(messageId: string, text: string): Promise<void> {
+    await withRetry('message.update', async () => {
+      await client.im.v1.message.update({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify({ text }), msg_type: 'text' },
+      });
+      lastActiveTime = Date.now();
+    });
+  }
 
   const handlers: MessageHandler[] = [];
   let lastActiveTime = Date.now();
@@ -669,13 +703,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     },
 
     async reply(messageId: string, text: string) {
-      await withRetry('reply', async () => {
-        await client.im.v1.message.reply({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify({ text }), msg_type: 'text' },
-        });
-        lastActiveTime = Date.now();
-      });
+      await replyText(messageId, text);
     },
 
     async sendMessage(chatId: string, text: string): Promise<string | null> {
@@ -688,6 +716,27 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         return r;
       });
       return res?.data?.message_id ?? null;
+    },
+
+    async startStreamingReply(messageId: string, initialText = STREAM_INITIAL_TEXT): Promise<StreamingReplyHandle | null> {
+      try {
+        const streamMessageId = await replyText(messageId, initialText);
+        if (!streamMessageId) return null;
+        return new UpdatingTextStreamingReply({
+          sourceMessageId: messageId,
+          streamMessageId,
+          updateText: updateMessageText,
+          fallbackReply: replyText,
+          logDebug: (message) => log.debug(`[feishu] ${message}`),
+          debounceMs: STREAM_UPDATE_DEBOUNCE_MS,
+          minUpdateChars: STREAM_MIN_UPDATE_CHARS,
+          completeText: '已完成',
+          abortText: '处理已中断',
+        });
+      } catch (err) {
+        console.warn('[feishu] Failed to start streaming reply:', err);
+        return null;
+      }
     },
 
     async addReaction(messageId: string, emojiType: string) {

@@ -126,10 +126,10 @@ persona-shell (Bun)
 | DirectorPool 可见性（Groups 列表） | ✅ 完成 (81151b5) |
 | 流式 streaming bubble（Web） | ✅ 完成 (81151b5) |
 | Pool Director 会话查看 | ✅ 完成 (81151b5) |
-| 飞书流式响应（message.update） | 🔲 TODO |
+| 飞书流式响应（message.update） | ✅ 完成 |
 
 ## TODO
 
-- [ ] 飞书流式响应：StreamingReply 状态机 + `im.v1.message.update` API
+- [x] 飞书流式响应：StreamingReply 状态机 + `im.v1.message.update` API
 - [ ] 日志查看器（多源切换 + tail）
 - [ ] Token 用量趋势图

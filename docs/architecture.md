@@ -31,6 +31,7 @@ interface MessagingClient {
   onMessage(handler: (msg: IncomingMessage) => void): void;
   reply(messageId: string, text: string): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<string | null>;
+  startStreamingReply?(messageId: string, initialText?: string): Promise<StreamingReplyHandle | null>;
   addReaction(messageId: string, emoji: string): Promise<void>;
   uploadAndReplyImage / uploadAndReplyFile / uploadAndSendImage / uploadAndSendFile
   getLastChatId(): string | null;
@@ -43,6 +44,8 @@ interface MessagingClient {
 ### MessagingRouter
 
 多渠道路由器，所有 client 的入站消息汇入同一个 handler。Director 回复时按 `messageId` 查 origin 路由到正确的 client。`sendMessage`（主动通知）默认走 primary client。新增渠道只需实现 `MessagingClient` + `router.addClient()`。
+
+支持流式回复的渠道可以实现 `startStreamingReply()`：路由层在消息入队时创建句柄，`SessionBridge` 的 `chunk` 事件持续 append，`response` 事件用完整文本 final。飞书实现使用 `im.v1.message.reply` 创建初始回复，再用 `im.v1.message.update` 节流编辑同一条机器人消息。
 
 ### 引用消息
 

@@ -6,7 +6,7 @@ import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import { ClaudeProcess } from './claude-process.js';
 import { loadConfig, type Config } from './config.js';
-import type { MessagingClient } from './messaging/messaging.js';
+import type { MessagingClient, StreamingReplyHandle } from './messaging/messaging.js';
 import { getState, setState } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
 
@@ -65,6 +65,7 @@ export class DirectorPool extends EventEmitter {
   private messaging: MessagingClient;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private configPath?: string;
+  private streamingReplies = new Map<string, StreamingReplyHandle>();
 
   constructor(
     mainBridge: SessionBridge,
@@ -233,13 +234,50 @@ export class DirectorPool extends EventEmitter {
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
+      await this.startStreamingReply(correlationId, messageId);
       await entry.bridge.send(text);
       entry.messagesSinceFlush++;
       const countKey = `pool:${routingKey}:msgCount`;
       setState(countKey, entry.messagesSinceFlush);
     } catch (err) {
       entry.queue.resolve(correlationId);
+      await this.abortStreamingReply(correlationId, '消息发送失败');
       throw err;
+    }
+  }
+
+  async abortStreamingReply(correlationId: string, text?: string): Promise<void> {
+    const handle = this.streamingReplies.get(correlationId);
+    if (!handle) return;
+    this.streamingReplies.delete(correlationId);
+    await handle.abort(text).catch((err) => {
+      log.debug(`[pool] Streaming reply abort failed: ${(err as Error).message}`);
+    });
+  }
+
+  private async startStreamingReply(correlationId: string, messageId: string): Promise<void> {
+    if (!this.messaging.startStreamingReply) return;
+    const handle = await this.messaging.startStreamingReply(messageId);
+    if (handle) this.streamingReplies.set(correlationId, handle);
+  }
+
+  private appendStreamingReply(queue: MessageQueue, text: string): void {
+    const item = queue.peek();
+    if (!item) return;
+    this.streamingReplies.get(item.correlationId)?.append(text);
+  }
+
+  private async finishStreamingReply(correlationId: string, text: string): Promise<boolean> {
+    const handle = this.streamingReplies.get(correlationId);
+    if (!handle) return false;
+    this.streamingReplies.delete(correlationId);
+    await handle.final(text);
+    return true;
+  }
+
+  private abortStreamingReplies(items: QueueItem[], text?: string): void {
+    for (const item of items) {
+      void this.abortStreamingReply(item.correlationId, text);
     }
   }
 
@@ -638,10 +676,14 @@ export class DirectorPool extends EventEmitter {
       }
 
       try {
-        await this.messaging.reply(item.messageId, replyWithTiming);
+        const streamed = await this.finishStreamingReply(item.correlationId, replyWithTiming);
+        if (!streamed) {
+          await this.messaging.reply(item.messageId, replyWithTiming);
+        }
         queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
         console.log(`[pool:${groupName}] Replied to ${item.messageId} (${elapsedSec}s)`);
       } catch (err) {
+        this.streamingReplies.delete(item.correlationId);
         queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
         console.error(`[pool:${groupName}] reply failed, trying sendMessage as fallback:`, err);
         await this.messaging.sendMessage(feishuChatId, replyWithTiming).catch((e) => {
@@ -667,6 +709,10 @@ export class DirectorPool extends EventEmitter {
     // close → remove from pool
     bridge.on('close', () => {
       console.log(`[pool] Session bridge for group "${groupName}" closed, removing from pool`);
+      const orphaned = queue.clearAll();
+      if (orphaned.length > 0) {
+        this.abortStreamingReplies(orphaned, 'Director 已关闭，本轮回复已中断');
+      }
       const entry = this.entries.get(routingKey);
       if (entry) this.moveToClosedEntries(routingKey, entry);
       this.entries.delete(routingKey);
@@ -710,6 +756,7 @@ export class DirectorPool extends EventEmitter {
     bridge.on('flush-drain-complete', () => {
       const orphaned = queue.clearAll();
       if (orphaned.length > 0) {
+        this.abortStreamingReplies(orphaned, '上下文刷新中断了本轮回复');
         console.log(`[pool:${groupName}] Cleared ${orphaned.length} orphaned queue items after flush drain`);
       }
     });
@@ -718,6 +765,7 @@ export class DirectorPool extends EventEmitter {
       const item = queue.resolveOldest();
       if (item) {
         queue.logAction('STEERED', item.messageId, `cid=${item.correlationId}`);
+        void this.abortStreamingReply(item.correlationId, '已并入上一轮处理');
       }
     });
 
@@ -725,15 +773,19 @@ export class DirectorPool extends EventEmitter {
     bridge.on('queue-desync', () => {
       const orphans = queue.clearAll();
       if (orphans.length > 0) {
+        this.abortStreamingReplies(orphans, 'Director 已重启，本轮回复已中断');
         console.warn(`[pool:${groupName}] Cleared ${orphans.length} orphaned queue items after crash`);
       }
     });
 
     // chunk / stream-abort → re-emit on pool level for console broadcast
     bridge.on('chunk', (text: string) => {
+      if (!isWeb) this.appendStreamingReply(queue, text);
       this.emit('chunk', bridge.label, text);
     });
     bridge.on('stream-abort', () => {
+      const item = queue.peek();
+      if (item) void this.abortStreamingReply(item.correlationId, 'Director 流式输出已中断');
       this.emit('stream-abort', bridge.label);
     });
   }

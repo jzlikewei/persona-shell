@@ -1,4 +1,4 @@
-import type { MessagingClient, MessageHandler, IncomingMessage } from './messaging.js';
+import type { MessagingClient, MessageHandler, IncomingMessage, StreamingReplyHandle } from './messaging.js';
 
 const MAX_ORIGIN_ENTRIES = 10_000;
 
@@ -47,6 +47,12 @@ export class MessagingRouter implements MessagingClient {
 
   async sendMessage(chatId: string, text: string): Promise<string | null> {
     return this.primary.sendMessage(chatId, text);
+  }
+
+  async startStreamingReply(messageId: string, initialText?: string): Promise<StreamingReplyHandle | null> {
+    const client = this.messageOrigin.get(messageId) ?? this.primary;
+    if (!client.startStreamingReply) return null;
+    return client.startStreamingReply(messageId, initialText);
   }
 
   async addReaction(messageId: string, emoji: string): Promise<void> {

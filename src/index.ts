@@ -3,7 +3,7 @@ import { SessionBridge } from './session-bridge.js';
 import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
-import type { IncomingMessage } from './messaging/messaging.js';
+import type { IncomingMessage, StreamingReplyHandle } from './messaging/messaging.js';
 import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector } from './console.js';
 import { TaskRunner, type TaskResult } from './task/task-runner.js';
@@ -46,6 +46,42 @@ async function main() {
   });
   const messaging = new MessagingRouter(feishu);
   const startTime = Date.now();
+  const streamingReplies = new Map<string, StreamingReplyHandle>();
+
+  async function startStreamingReplyFor(correlationId: string, messageId: string): Promise<void> {
+    if (!messaging.startStreamingReply) return;
+    const handle = await messaging.startStreamingReply(messageId);
+    if (handle) streamingReplies.set(correlationId, handle);
+  }
+
+  function appendStreamingReply(text: string): void {
+    const item = queue.peek();
+    if (!item) return;
+    streamingReplies.get(item.correlationId)?.append(text);
+  }
+
+  async function finishStreamingReply(correlationId: string, text: string): Promise<boolean> {
+    const handle = streamingReplies.get(correlationId);
+    if (!handle) return false;
+    streamingReplies.delete(correlationId);
+    await handle.final(text);
+    return true;
+  }
+
+  async function abortStreamingReply(correlationId: string, text?: string): Promise<void> {
+    const handle = streamingReplies.get(correlationId);
+    if (!handle) return;
+    streamingReplies.delete(correlationId);
+    await handle.abort(text).catch((err) => {
+      log.debug(`[shell] Streaming reply abort failed: ${(err as Error).message}`);
+    });
+  }
+
+  function abortStreamingReplies(items: Array<{ correlationId: string }>, text?: string): void {
+    for (const item of items) {
+      void abortStreamingReply(item.correlationId, text);
+    }
+  }
 
   // --- In-memory metrics collector ---
   const metrics: MetricsCollector = {
@@ -470,6 +506,7 @@ async function main() {
   director.on('flush-drain-complete', () => {
     const orphaned = queue.clearAll();
     if (orphaned.length > 0) {
+      abortStreamingReplies(orphaned, '上下文刷新中断了本轮回复');
       console.log(`[shell] Cleared ${orphaned.length} orphaned queue items after flush drain`);
     }
   });
@@ -478,6 +515,7 @@ async function main() {
     const item = queue.resolveOldest();
     if (item) {
       queue.logAction('STEERED', item.messageId, `cid=${item.correlationId}`);
+      void abortStreamingReply(item.correlationId, '已并入上一轮处理');
     }
   });
 
@@ -486,8 +524,13 @@ async function main() {
   director.on('queue-desync', () => {
     const orphans = queue.clearAll();
     if (orphans.length > 0) {
+      abortStreamingReplies(orphans, 'Director 已重启，本轮回复已中断');
       console.warn(`[shell] Cleared ${orphans.length} orphaned queue items after crash`);
     }
+  });
+
+  director.on('stream-abort', () => {
+    abortStreamingReplies(Array.from(streamingReplies.keys()).map((correlationId) => ({ correlationId })), 'Director 流式输出已中断');
   });
 
   // 4.1: Alert notification — forward Director and system alerts to messaging
@@ -600,6 +643,7 @@ async function main() {
         const cancelled = poolEntry.queue.cancelOldest();
         if (cancelled) {
           console.log(`[shell] /esc (group ${poolEntry.groupName}): cancelling ${cancelled.messageId}`);
+          await pool.abortStreamingReply(cancelled.correlationId, '已取消');
           await poolEntry.bridge.interrupt();
           await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`).catch(() => {});
         } else {
@@ -609,6 +653,7 @@ async function main() {
         const cancelled = queue.cancelOldest();
         if (cancelled) {
           console.log(`[shell] /esc: cancelling message ${cancelled.messageId} (cid=${cancelled.correlationId})`);
+          await abortStreamingReply(cancelled.correlationId, '已取消');
           await director.interrupt();
           await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`).catch(() => {});
         } else {
@@ -928,10 +973,12 @@ async function main() {
       const correlationId = queue.enqueue({ text, messageId, chatId });
       queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
       try {
+        await startStreamingReplyFor(correlationId, messageId);
         await director.send(directorText);
       } catch (err) {
         // 3.3: All send errors must clean up queue state to prevent orphaned items
         queue.resolve(correlationId);
+        await abortStreamingReply(correlationId, '消息发送失败');
         if (String(err).includes('flushing')) {
           await messaging.reply(messageId, '正在刷新上下文，请稍后重试').catch(() => {});
         } else {
@@ -941,6 +988,10 @@ async function main() {
         }
       }
     }
+  });
+
+  director.on('chunk', (text: string) => {
+    appendStreamingReply(text);
   });
 
   // Director response → resolve oldest → reply to user
@@ -968,10 +1019,14 @@ async function main() {
     today.totalResponseMs += elapsedMs;
 
     try {
-      await messaging.reply(item.messageId, replyWithTiming);
+      const streamed = await finishStreamingReply(item.correlationId, replyWithTiming);
+      if (!streamed) {
+        await messaging.reply(item.messageId, replyWithTiming);
+      }
       queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s ${reply.slice(0, 100)}`);
       console.log(`[shell] Replied to ${item.messageId} (cid=${item.correlationId}, ${elapsedSec}s)`);
     } catch (err) {
+      streamingReplies.delete(item.correlationId);
       queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
       metrics.addError(`Reply failed: ${String(err).slice(0, 200)}`);
       console.error(`[shell] reply failed, trying sendMessage as fallback:`, err);
@@ -987,6 +1042,7 @@ async function main() {
     if (shuttingDown) return;
     console.error('[shell] Director closed unexpectedly');
     metrics.addError('Director closed unexpectedly');
+    await Promise.all(Array.from(streamingReplies.keys()).map((correlationId) => abortStreamingReply(correlationId, 'Director 已关闭，本轮回复已中断')));
     // 4.1: Notify before exit
     const lastChatId = messaging.getLastChatId();
     if (lastChatId) {

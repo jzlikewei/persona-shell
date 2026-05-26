@@ -21,6 +21,12 @@ export interface IncomingMessage {
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void> | void;
 
+export interface StreamingReplyHandle {
+  append(text: string): void;
+  final(text: string): Promise<void>;
+  abort(text?: string): Promise<void>;
+}
+
 /** 通讯层统一接口 — 飞书、Telegram、Slack 等平台的适配器需实现此接口 */
 export interface MessagingClient {
   start(): void;
@@ -28,6 +34,7 @@ export interface MessagingClient {
 
   reply(messageId: string, text: string): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<string | null>;
+  startStreamingReply?(messageId: string, initialText?: string): Promise<StreamingReplyHandle | null>;
   addReaction(messageId: string, emoji: string): Promise<void>;
 
   uploadAndReplyImage(messageId: string, filePath: string): Promise<void>;
