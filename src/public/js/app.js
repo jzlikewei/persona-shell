@@ -140,6 +140,7 @@
   var prevActivityState = 'idle'; // for detecting processing→idle transition
   var prevPoolActivityStates = {}; // label → previous activity state
   var streamRenderTimer = null; // debounce markdown rendering
+  var clearingStreams = {}; // director label → final message reload in progress
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -351,7 +352,7 @@
   function loadSessionMessages(sessionId) {
     var url = '/api/messages?limit=200';
     if (sessionId) url += '&sessionId=' + encodeURIComponent(sessionId);
-    fetch(url).then(function(r) { return r.json(); }).then(function(d) {
+    return fetch(url).then(function(r) { return r.json(); }).then(function(d) {
       sessionMessages = d || [];
       renderSessionView();
     }).catch(function() {
@@ -361,7 +362,7 @@
   }
 
   function loadAllMessages() {
-    fetch('/api/messages?limit=200').then(function(r) { return r.json(); }).then(function(d) {
+    return fetch('/api/messages?limit=200').then(function(r) { return r.json(); }).then(function(d) {
       sessionMessages = d || [];
       renderSessionView();
     }).catch(function() {
@@ -372,7 +373,7 @@
 
   // ── Pool session loading ──
   function loadPoolMessages(label) {
-    fetch('/api/messages?limit=200&director=' + encodeURIComponent(label))
+    return fetch('/api/messages?limit=200&director=' + encodeURIComponent(label))
       .then(function(r) { return r.json(); })
       .then(function(d) {
         sessionMessages = d || [];
@@ -450,18 +451,31 @@
 
   // ── Streaming helpers ──
   function clearStreaming(label) {
-    delete streamingChunks[label];
-    var bubble = document.getElementById('streaming-bubble-' + label);
-    if (bubble) bubble.remove();
+    if (clearingStreams[label]) return;
+    clearingStreams[label] = true;
     // Reload messages to get the final response
     if (viewMode === 'session' || viewMode === 'pool-session') {
+      var done;
       if (viewMode === 'pool-session' && selectedPoolLabel === label) {
-        loadPoolMessages(label);
+        done = loadPoolMessages(label);
       } else if (viewMode === 'session') {
-        if (selectedSessionId) loadSessionMessages(selectedSessionId);
-        else loadAllMessages();
+        done = selectedSessionId ? loadSessionMessages(selectedSessionId) : loadAllMessages();
       }
+      Promise.resolve(done).finally(function() {
+        delete streamingChunks[label];
+        delete clearingStreams[label];
+        removeStreamingBubble(label);
+      });
+      return;
     }
+    delete streamingChunks[label];
+    delete clearingStreams[label];
+    removeStreamingBubble(label);
+  }
+
+  function removeStreamingBubble(label) {
+    var bubble = document.getElementById('streaming-bubble-' + label);
+    if (bubble) bubble.remove();
   }
 
   function scheduleStreamRender(label) {
@@ -1071,6 +1085,16 @@
     }
     var streamLabel = viewMode === 'pool-session' ? selectedPoolLabel : 'main';
     var hasStreamingChunks = streamLabel && streamingChunks[streamLabel];
+    if (hasStreamingChunks) {
+      html += '<div class="chat-msg out streaming" id="streaming-bubble-' + streamLabel + '">' +
+        '<div class="chat-msg-header">' +
+        '<span class="chat-msg-role bot">Director</span>' +
+        '<div class="running-dot" style="margin-left:4px"></div>' +
+        '</div>' +
+        '<div class="chat-msg-body"><div class="md-content" id="streaming-content-' + streamLabel + '">' +
+        renderMd(streamingChunks[streamLabel] + ' \u258d') +
+        '</div></div></div>';
+    }
     if (isProcessing && !hasStreamingChunks) {
       html += '<div class="chat-processing"><div class="running-dot"></div><span>Processing...</span></div>';
     }

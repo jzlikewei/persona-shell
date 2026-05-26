@@ -106,6 +106,36 @@ describe('log-parser', () => {
       expect(outMsg?.sessionId).toBe('sess-001');
     });
 
+    test('deduplicates assistant stream text when result repeats the same response', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+      writeFileSync(inLog, inputLine('q1', 'main', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog, [
+        outputInit('sess-001'),
+        outputAssistant('answer body'),
+        JSON.stringify({ type: 'result', session_id: 'sess-001', result: 'answer body', _ts: '2026-04-15T10:00:01+08:00' }),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLog(inLog, outLog, 100);
+      const outMsg = msgs.find((m) => m.direction === 'out');
+      expect(outMsg?.content).toBe('answer body');
+    });
+
+    test('prefers complete result text when assistant stream is a prefix', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+      writeFileSync(inLog, inputLine('q1', 'main', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog, [
+        outputInit('sess-001'),
+        outputAssistant('answer'),
+        JSON.stringify({ type: 'result', session_id: 'sess-001', result: 'answer body', _ts: '2026-04-15T10:00:01+08:00' }),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLog(inLog, outLog, 100);
+      const outMsg = msgs.find((m) => m.direction === 'out');
+      expect(outMsg?.content).toBe('answer body');
+    });
+
     test('orphan outputs (more outputs than inputs)', () => {
       const inLog = join(TMP_DIR, 'input.log');
       const outLog = join(TMP_DIR, 'output.log');

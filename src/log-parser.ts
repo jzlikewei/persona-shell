@@ -113,11 +113,10 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
           const finalResult = typeof evt.result === 'string' ? evt.result.trim() : '';
           const intermediate = pendingText.trim();
           let resultText: string;
-          if (intermediate && finalResult && intermediate !== finalResult) {
-            // Show both: intermediate thinking + final result
+          if (intermediate && finalResult && intermediate !== finalResult && !finalResult.startsWith(intermediate) && !intermediate.startsWith(finalResult)) {
             resultText = intermediate + '\n\n---\n\n' + finalResult;
           } else {
-            resultText = finalResult || intermediate;
+            resultText = finalResult.length >= intermediate.length ? finalResult : intermediate;
           }
           if (resultText) {
             outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts });
