@@ -124,7 +124,7 @@ describe('config', () => {
         expect(cfg.agents.providers.claude.bare).toBe(true);
         expect(cfg.agents.providers.claude.effort).toBe('max');
         expect(cfg.agents.providers.codex).toBeDefined();
-        expect(cfg.agents.providers.codex.type).toBe('codex');
+        expect(cfg.agents.providers.codex.type).toBe('codex-app-server');
         expect(cfg.agents.providers.codex.sandbox).toBe('danger-full-access');
       });
 

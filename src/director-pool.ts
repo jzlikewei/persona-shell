@@ -5,7 +5,7 @@ import { join } from 'path';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import { ClaudeProcess } from './claude-process.js';
-import { loadConfig, type Config } from './config.js';
+import { loadConfig, type Config, isCodexFamily } from './config.js';
 import type { MessagingClient, StreamingReplyHandle } from './messaging/messaging.js';
 import { getState, setState } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
@@ -537,7 +537,7 @@ export class DirectorPool extends EventEmitter {
 
       const queue = new MessageQueue(`logs/queue-${item.label}.log`);
 
-      if (bridge.getDirectorAgentType() !== 'codex') {
+      if (!isCodexFamily(bridge.getDirectorAgentType())) {
         const pipeDir = join(pipeBaseDir, item.label);
         const pidFile = join(pipeDir, 'director.pid');
 

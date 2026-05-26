@@ -9,7 +9,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, openSync, closeSync, readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { getLogDir } from './logger.js';
-import type { AgentProviderConfig } from './config.js';
+import { isCodexFamily, type AgentProviderConfig } from './config.js';
 
 export interface AgentRuntimeConfig extends AgentProviderConfig {
   name: string;
@@ -281,7 +281,7 @@ function buildKimiMcpConfigWithEnv(mcpConfigPath: string, directorLabel: string)
 export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   const args: string[] = [];
 
-  if (options.agent.type === 'codex') {
+  if (isCodexFamily(options.agent.type)) {
     if (options.agent.model) {
       args.push('--model', options.agent.model);
     }
@@ -403,7 +403,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
       args.push(...buildClaudeAgentPromptArgs(options.agent, options.personaDir));
       args.push(...buildClaudeRoleArgs(options.role, options.personaDir));
       if (options.prompt) args.push('-p', options.prompt);
-    } else if (options.agent.type === 'codex') {
+    } else if (isCodexFamily(options.agent.type)) {
       args.push('exec');
       if (options.resumeSessionId) {
         args.push('resume', options.resumeSessionId);

@@ -10,6 +10,10 @@ export type CodexApproval = 'untrusted' | 'on-request' | 'never';
 export type CodexMcpMode = 'cli' | 'mcp' | 'off';
 export type CodexAppServerTransport = 'stdio';
 
+export function isCodexFamily(type: AgentProviderType): boolean {
+  return type === 'codex' || type === 'codex-app-server';
+}
+
 export interface AgentProviderConfig {
   type: AgentProviderType;
   command: string;
@@ -206,12 +210,13 @@ export function loadConfig(path?: string): Config {
 
   if (!providers.codex) {
     providers.codex = {
-      type: 'codex',
+      type: 'codex-app-server',
       command: 'codex',
       sandbox: 'danger-full-access',
       approval: 'never',
       search: false,
       mcp_mode: 'cli',
+      transport: 'stdio',
     };
   }
 

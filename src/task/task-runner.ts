@@ -4,7 +4,7 @@ import { mkdirSync, existsSync, appendFileSync, copyFileSync, rmSync } from 'fs'
 import { join } from 'path';
 import { createInterface } from 'readline';
 import { spawnPersona } from '../persona-process.js';
-import { resolveAgentProvider, loadConfig, type Config } from '../config.js';
+import { resolveAgentProvider, isCodexFamily, loadConfig, type Config } from '../config.js';
 import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
 import { localNow, getTaskTimeouts } from './task-store.js';
@@ -109,11 +109,12 @@ export class TaskRunner extends EventEmitter {
     if (!existsSync(outboxDir)) mkdirSync(outboxDir, { recursive: true });
     const fileName = `${input.taskId}.md`;
     const resultFile = join(outboxDir, fileName);
-    const outputPath = agent.type === 'codex'
+    const isCodex = isCodexFamily(agent.type);
+    const outputPath = isCodex
       ? join(CODEX_RESULT_STAGING_DIR, `${input.taskId}.md`)
       : resultFile;
 
-    if (agent.type === 'codex') {
+    if (isCodex) {
       if (!existsSync(CODEX_RESULT_STAGING_DIR)) mkdirSync(CODEX_RESULT_STAGING_DIR, { recursive: true });
       rmSync(outputPath, { force: true });
     }
@@ -133,7 +134,7 @@ export class TaskRunner extends EventEmitter {
       personaDir,
       agent,
       mode: 'background',
-      mcpConfigPath: agent.type === 'codex' && agent.mcp_mode !== 'mcp'
+      mcpConfigPath: isCodex && agent.mcp_mode !== 'mcp'
         ? undefined
         : join(personaDir, '.mcp.json'),
       prompt: fullPrompt,

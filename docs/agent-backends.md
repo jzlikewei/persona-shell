@@ -118,17 +118,32 @@ Shell 与 Claude Code 通过 FIFO 管道交换 JSON 行。
 
 ## Codex
 
-> 后台任务 + 群聊 Director 后端。按 turn spawn 进程，JSON 输出，session resume 保持上下文。
+> Director 默认使用 App Server 模式（长驻 JSON-RPC 进程，流式输出）；后台任务仍走 turn-based `codex exec`。
 
 ### 运行模式
 
-与 Claude Code 的长驻 daemon 不同，Codex 采用 **turn-based** 模式：
+Codex 有两种运行模式，Shell 根据场景自动选择：
 
-1. 每条消息 spawn 一个 `codex exec` 子进程
-2. 进程执行完毕后退出
-3. 下一条消息通过 `codex exec resume {thread_id}` 恢复上下文
+| 场景 | 模式 | 说明 |
+|------|------|------|
+| Director（对话） | **App Server**（默认） | 长驻 `codex app-server --listen stdio://` 进程，JSON-RPC 2.0 协议 |
+| 后台任务 | **Turn-based** | 每次 spawn `codex exec`，执行完退出 |
 
-优势：无需维护长连接，进程管理简单，适合并行群聊场景。
+默认 provider 配置：
+
+```yaml
+agents:
+  providers:
+    codex:
+      type: codex-app-server
+      command: codex
+      sandbox: danger-full-access
+      approval: never
+      mcp_mode: cli
+      transport: stdio
+```
+
+如需退回 turn-based 模式，将 `type` 改为 `codex` 即可。
 
 ### 身份注入
 
@@ -209,21 +224,23 @@ codex exec \
 
 转换逻辑在 `persona-process.ts` 的 `buildCodexMcpOverrideArgs()` 中实现。
 
-### App Server 模式（experimental）
+### App Server 模式（默认）
 
-`type: codex-app-server` 使用 `codex app-server --listen stdio://` 作为长驻 JSON-RPC runtime。它是可选后端，不替代默认的 `codex exec` turn-based 模式。
+`type: codex-app-server` 使用 `codex app-server --listen stdio://` 作为长驻 JSON-RPC runtime。这是 Director 的默认模式。
+
+如需为特定 Director 显式指定 app-server（与默认 `codex` 同名 provider 区分），可另起一个 provider 名：
 
 ```yaml
 agents:
   providers:
-    codex-live:
+    codex-custom:
       type: codex-app-server
       command: codex
-      sandbox: danger-full-access
-      approval: never
+      sandbox: workspace-write
+      approval: on-request
       transport: stdio
   defaults:
-    director: codex-live
+    director: codex-custom
 ```
 
 关键行为：
@@ -238,7 +255,7 @@ agents:
 
 注意事项：
 
-- Codex CLI 仍将 `app-server` 标为 experimental，生产默认仍建议保留 `codex` turn-based fallback。
+- 如需退回 turn-based 模式（每消息 spawn），将 provider `type` 改为 `codex`。后台任务始终使用 turn-based `codex exec`，不受此设置影响。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
 - 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。
@@ -346,9 +363,9 @@ Shell 与 Kimi 通过 stdin/stdout 交换 JSON 行。
 
 | 维度 | Claude Code | Codex | Kimi |
 |------|------------|-------|------|
-| 运行模式 | 长驻 daemon | 按 turn spawn | 长驻 daemon |
-| 通信方式 | FIFO named pipe | stdout pipe | stdin/stdout pipe |
-| 流式输出 | ✅ stream_event | ❌ 整段返回 | ⚠️ 整段 JSON 行（非 token 级） |
+| 运行模式 | 长驻 daemon | App Server（Director）/ 按 turn spawn（任务） | 长驻 daemon |
+| 通信方式 | FIFO named pipe | JSON-RPC stdio（Director）/ stdout pipe（任务） | stdin/stdout pipe |
+| 流式输出 | ✅ stream_event | ✅ agentMessage/delta（Director）/ ❌（任务） | ⚠️ 整段 JSON 行（非 token 级） |
 | 身份注入 | CLI 参数（plugin-dir 等） | Prompt 拼接 + --cd | `--agent-file` + `--skills-dir` |
 | MCP 注入 | --mcp-config 文件 | -c TOML 覆盖 | `--mcp-config-file` |
 | 会话恢复 | --resume session_id | exec resume thread_id | `--session` |

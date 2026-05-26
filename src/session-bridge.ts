@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
-import { resolveAgentProvider, type Config } from './config.js';
+import { resolveAgentProvider, isCodexFamily, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
 import { loadPrompt } from './prompt-loader.js';
 import { ClaudeDirectorRuntime } from './director-runtime/claude.js';
@@ -948,7 +948,7 @@ export class SessionBridge extends EventEmitter {
   private checkFlush(): void {
     if (this.flushing) return;
 
-    const trackedContextTokens = this.directorAgent.type === 'codex'
+    const trackedContextTokens = isCodexFamily(this.directorAgent.type)
       ? this.contextTokens
       : this.lastInputTokens;
     const contextOverLimit = trackedContextTokens > 0
