@@ -10,7 +10,7 @@
 | 飞书群聊（大群） | ✅ | — | ✅ | One-shot 无状态响应 |
 | Web 控制台 | ✅ | — | ✅ | localhost:3000，浏览器直接对话 |
 | **会话管理** | | | | |
-| 流式响应 | ✅ | ✅ | ⚠️ | Claude 实时 chunk 推送；飞书用 message.update 编辑回复；Kimi 整段 JSON 行 |
+| 流式响应 | ✅ | ✅ | ⚠️ | Claude 实时 chunk 推送；飞书用 interactive 卡片原地更新；Kimi 整段 JSON 行 |
 | 上下文保持 | ✅ daemon | ✅ resume | ✅ daemon | Claude/Kimi 常驻进程；Codex 按 turn spawn |
 | FLUSH（上下文刷新） | ✅ | ✅ | ✅ | checkpoint → kill → bootstrap |
 | /esc（取消请求） | ✅ | ✅ | ✅ | SIGINT 中断当前处理 |
@@ -183,7 +183,7 @@ agents:
 | | Claude Code | Codex | Kimi |
 |---|---|---|---|
 | 进程模型 | 常驻 daemon（FIFO pipe） | 按 turn spawn（每轮一次） | 常驻 daemon（stdin/stdout pipe） |
-| 流式响应 | ✅ 实时推送 chunk | ✅ message.update 编辑回复 | ⚠️ 整段 JSON 行返回 |
+| 流式响应 | ✅ 实时推送 chunk | ✅ interactive 卡片原地更新 | ⚠️ 整段 JSON 行返回 |
 | 身份注入 | `--append-system-prompt-file` `--plugin-dir` | Prompt 拼接 + `.agents/skills` | `--agent-file` `--skills-dir` |
 | 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |
 | 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 | 需要 Kimi 模型能力的场景 |

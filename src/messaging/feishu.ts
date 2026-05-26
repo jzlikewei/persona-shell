@@ -3,7 +3,11 @@ import { readFileSync, statSync, mkdirSync } from 'fs';
 import { extname, basename, join } from 'path';
 import type { Config } from '../config.js';
 import type { MessagingClient, MessageHandler, IncomingMessage, Attachment, StreamingReplyHandle } from './messaging.js';
-import { UpdatingTextStreamingReply } from './updating-text-stream.js';
+import {
+  FeishuCardStreamingReply,
+  buildStreamingCard,
+  type FeishuCard,
+} from './feishu-card-stream.js';
 import { getState, setState } from '../task/task-store.js';
 import { log } from '../logger.js';
 
@@ -181,7 +185,8 @@ const FEISHU_API_CHECK_TIMEOUT = 5_000; // 飞书 API 可达性检查超时
 const RETRY_DELAYS = [1000, 3000];
 const STREAM_UPDATE_DEBOUNCE_MS = 700;
 const STREAM_MIN_UPDATE_CHARS = 48;
-const STREAM_INITIAL_TEXT = '思考中...';
+const STREAM_INITIAL_TEXT = '思考中';
+const STREAM_BOT_NAME = 'Persona';
 
 // Chat info cache (name + member count + chat mode) for group chats
 const chatInfoCache = new Map<string, { name: string; memberCount: number; chatMode: 'group' | 'topic'; fetchedAt: number }>();
@@ -282,11 +287,24 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     return extractMessageId(res);
   }
 
-  async function updateMessageText(messageId: string, text: string): Promise<void> {
-    await withRetry('message.update', async () => {
-      await client.im.v1.message.update({
-        path: { message_id: messageId },
-        data: { content: JSON.stringify({ text }), msg_type: 'text' },
+  async function sendCard(chatId: string, card: FeishuCard): Promise<string | null> {
+    const res = await withRetry('sendCard', async () => {
+      const r = await client.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: { receive_id: chatId, content: JSON.stringify(card), msg_type: 'interactive' },
+      });
+      lastActiveTime = Date.now();
+      return r;
+    });
+    return extractMessageId(res);
+  }
+
+  async function updateCard(messageId: string, card: FeishuCard): Promise<void> {
+    await withRetry('card.update', async () => {
+      await (client as { request: (options: { method: string; url: string; data: unknown }) => Promise<unknown> }).request({
+        method: 'PATCH',
+        url: `/open-apis/im/v1/messages/${messageId}`,
+        data: { content: JSON.stringify(card) },
       });
       lastActiveTime = Date.now();
     });
@@ -720,16 +738,26 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
 
     async startStreamingReply(messageId: string, initialText = STREAM_INITIAL_TEXT): Promise<StreamingReplyHandle | null> {
       try {
-        const streamMessageId = await replyText(messageId, initialText);
-        if (!streamMessageId) return null;
-        return new UpdatingTextStreamingReply({
+        const sourceMessage = await client.im.v1.message.get({ path: { message_id: messageId } });
+        const chatId = ((sourceMessage?.data as { items?: Array<{ chat_id?: string }> } | undefined)?.items?.[0]?.chat_id)
+          ?? getState<string>('lastChatId');
+        if (!chatId) return null;
+        const initialCard = buildStreamingCard({
+          botName: STREAM_BOT_NAME,
+          status: 'thinking',
+          text: initialText,
+        });
+        const cardMessageId = await sendCard(chatId, initialCard);
+        if (!cardMessageId) return null;
+        return new FeishuCardStreamingReply({
           sourceMessageId: messageId,
-          streamMessageId,
-          updateText: updateMessageText,
+          cardMessageId,
+          updateCard,
           fallbackReply: replyText,
           logDebug: (message) => log.debug(`[feishu] ${message}`),
           debounceMs: STREAM_UPDATE_DEBOUNCE_MS,
           minUpdateChars: STREAM_MIN_UPDATE_CHARS,
+          botName: STREAM_BOT_NAME,
           completeText: '已完成',
           abortText: '处理已中断',
         });
