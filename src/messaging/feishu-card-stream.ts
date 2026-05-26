@@ -41,6 +41,7 @@ export function buildStreamingCard(opts: {
   botName: string;
   status: 'thinking' | 'streaming' | 'done' | 'aborted' | 'error';
   text: string;
+  showToolCall?: boolean;
 }): FeishuCard {
   const statusConfig = {
     thinking: {
@@ -81,6 +82,25 @@ export function buildStreamingCard(opts: {
   }[opts.status];
 
   const text = opts.text.trim();
+  const elements: FeishuCard['body']['elements'] = [];
+  if (opts.showToolCall) {
+    elements.push({
+      tag: 'div',
+      icon: { tag: 'standard_icon', token: 'loading_outlined', color: 'blue' },
+      text: { tag: 'plain_text', content: '正在调用工具...' },
+    });
+  }
+  if (text) {
+    elements.push({ tag: 'markdown', content: toFeishuMarkdown(text) });
+  }
+  if (elements.length === 0) {
+    elements.push({
+      tag: 'div',
+      icon: { tag: 'standard_icon', token: statusConfig.icon, color: statusConfig.color },
+      text: { tag: 'plain_text', content: statusConfig.tag },
+    });
+  }
+
   return {
     schema: '2.0',
     config: { wide_screen_mode: true },
@@ -98,15 +118,7 @@ export function buildStreamingCard(opts: {
       ],
     },
     body: {
-      elements: [
-        text
-          ? { tag: 'markdown', content: toFeishuMarkdown(text) }
-          : {
-              tag: 'div',
-              icon: { tag: 'standard_icon', token: statusConfig.icon, color: statusConfig.color },
-              text: { tag: 'plain_text', content: statusConfig.tag },
-            },
-      ],
+      elements,
     },
   };
 }
@@ -123,6 +135,8 @@ function toFeishuMarkdown(markdown: string): string {
 export class FeishuCardStreamingReply implements StreamingReplyHandle {
   private text = '';
   private lastSent = '';
+  private toolCallVisible = false;
+  private lastSentToolCallVisible = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private queue: Promise<void> = Promise.resolve();
   private closed = false;
@@ -139,10 +153,21 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.flushSoon();
   }
 
+  showToolCall(): void {
+    if (this.closed || this.toolCallVisible) return;
+    this.toolCallVisible = true;
+    this.clearTimer();
+    const text = this.text.trim();
+    void this.enqueueUpdate(text, 'streaming', false).catch((err) => {
+      this.options.logDebug(`[streaming-card] tool call update failed: ${(err as Error).message}`);
+    });
+  }
+
   async final(text: string): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     this.clearTimer();
+    this.toolCallVisible = false;
     const finalText = text.trim() || this.text.trim() || this.options.completeText;
     await this.enqueueUpdate(finalText, 'done', true);
   }
@@ -151,6 +176,7 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     if (this.closed) return;
     this.closed = true;
     this.clearTimer();
+    this.toolCallVisible = false;
     await this.enqueueUpdate(text, 'aborted', true).catch((err) => {
       this.options.logDebug(`[streaming-card] abort update failed: ${(err as Error).message}`);
     });
@@ -167,7 +193,8 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
   private flushSoon(): void {
     this.clearTimer();
     const text = this.text.trim();
-    if (!text || text === this.lastSent) return;
+    if (!text && !this.toolCallVisible) return;
+    if (text === this.lastSent && this.toolCallVisible === this.lastSentToolCallVisible) return;
     void this.enqueueUpdate(text, 'streaming', false).catch((err) => {
       this.options.logDebug(`[streaming-card] update failed: ${(err as Error).message}`);
     });
@@ -188,15 +215,19 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
       botName: this.options.botName,
       status,
       text,
+      showToolCall: status === 'streaming' && this.toolCallVisible,
     });
+    const sentToolCallVisible = status === 'streaming' && this.toolCallVisible;
     const run = this.queue.catch(() => undefined).then(async () => {
       await this.options.updateCard(this.options.cardMessageId, card);
       this.lastSent = text;
+      this.lastSentToolCallVisible = sentToolCallVisible;
     });
     this.queue = run.catch(async (err) => {
       if (allowFallback) {
         await this.options.fallbackReply(this.options.sourceMessageId, text);
         this.lastSent = text;
+        this.lastSentToolCallVisible = sentToolCallVisible;
         return;
       }
       this.options.logDebug(`[streaming-card] update skipped: ${(err as Error).message}`);

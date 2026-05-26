@@ -131,6 +131,9 @@ export class KimiSessionAdapter implements DirectorSessionAdapter {
           this.currentResponse += text;
           this.hooks.onChunk(text);
         }
+        if (msg.tool_calls) {
+          this.hooks.onToolCall();
+        }
         if (!msg.tool_calls) {
           this.collecting = false;
           this.hooks.onTurnComplete({

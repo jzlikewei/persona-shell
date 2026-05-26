@@ -1009,6 +1009,7 @@ export class SessionBridge extends EventEmitter {
       buildSessionName: () => this.buildSessionName(),
       logOutput: (line) => this.logOutputEvent(line),
       onChunk: (text) => this.handleStreamChunk(text),
+      onToolCall: () => this.handleToolCall(),
       onPartialAgentMessage: (text) => this.handlePartialAgentMessage(text),
       onMetrics: (update) => this.handleMetricsUpdate(update),
       onTurnComplete: (result) => this.handleTurnComplete(result),
@@ -1177,6 +1178,12 @@ export class SessionBridge extends EventEmitter {
     const headType = this.pendingTurns[0]?.type;
     const shouldStream = !this.flushing && !this.bootstrapping && headType === 'user' && !this.discardNextResponse;
     if (shouldStream) this.emit('chunk', text);
+  }
+
+  private handleToolCall(): void {
+    const headType = this.pendingTurns[0]?.type;
+    const shouldStream = !this.flushing && !this.bootstrapping && headType === 'user' && !this.discardNextResponse;
+    if (shouldStream) this.emit('tool-call');
   }
 
   private handlePartialAgentMessage(text: string): void {

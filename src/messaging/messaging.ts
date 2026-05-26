@@ -23,6 +23,7 @@ export type MessageHandler = (msg: IncomingMessage) => Promise<void> | void;
 
 export interface StreamingReplyHandle {
   append(text: string): void;
+  showToolCall?(): void;
   final(text: string): Promise<void>;
   abort(text?: string): Promise<void>;
 }

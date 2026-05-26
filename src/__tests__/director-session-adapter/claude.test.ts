@@ -14,6 +14,7 @@ import { ClaudeDirectorRuntime } from '../../director-runtime/claude.js';
 function buildCapturingHooks() {
   const turns: DirectorTurnResult[] = [];
   const chunks: string[] = [];
+  const toolCalls: number[] = [];
   const loggedLines: string[] = [];
   const metrics: Array<Record<string, unknown>> = [];
 
@@ -27,6 +28,7 @@ function buildCapturingHooks() {
     buildSessionName: () => 'test-session',
     logOutput: (line) => loggedLines.push(line),
     onChunk: (text) => chunks.push(text),
+    onToolCall: () => toolCalls.push(1),
     onPartialAgentMessage: () => {},
     onMetrics: (update) => metrics.push(update as Record<string, unknown>),
     onTurnComplete: (result) => turns.push(result),
@@ -34,7 +36,7 @@ function buildCapturingHooks() {
     onRuntimeClosed: () => {},
   };
 
-  return { hooks, turns, chunks, loggedLines, metrics };
+  return { hooks, turns, chunks, toolCalls, loggedLines, metrics };
 }
 
 /**
@@ -210,6 +212,24 @@ describe('ClaudeSessionAdapter.handleLine', () => {
     handleLine(streamEvent);
 
     expect(chunks).toEqual(['hello']);
+  });
+
+  test('dispatches generic tool call notifications from stream events', () => {
+    const streamEvent = JSON.stringify({
+      type: 'stream_event',
+      event: {
+        type: 'content_block_start',
+        content_block: { type: 'tool_use', name: 'bash', input: { command: 'pwd' } },
+      },
+    });
+
+    const { hooks, toolCalls } = buildCapturingHooks();
+    const adapter = createTestAdapter(hooks);
+    const handleLine = getHandleLine(adapter);
+
+    handleLine(streamEvent);
+
+    expect(toolCalls).toHaveLength(1);
   });
 
   test('extracts metrics from result event', () => {

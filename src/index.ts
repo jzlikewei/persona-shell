@@ -60,6 +60,12 @@ async function main() {
     streamingReplies.get(item.correlationId)?.append(text);
   }
 
+  function showToolCallInStreamingReply(): void {
+    const item = queue.peek();
+    if (!item) return;
+    streamingReplies.get(item.correlationId)?.showToolCall?.();
+  }
+
   async function finishStreamingReply(correlationId: string, text: string): Promise<boolean> {
     const handle = streamingReplies.get(correlationId);
     if (!handle) return false;
@@ -992,6 +998,10 @@ async function main() {
 
   director.on('chunk', (text: string) => {
     appendStreamingReply(text);
+  });
+
+  director.on('tool-call', () => {
+    showToolCallInStreamingReply();
   });
 
   // Director response → resolve oldest → reply to user

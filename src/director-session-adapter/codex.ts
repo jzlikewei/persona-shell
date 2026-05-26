@@ -44,6 +44,18 @@ function isUnrecoverableSessionFailure(event: CodexTurnCloseEvent): boolean {
   );
 }
 
+function isToolLikeItem(item: unknown): boolean {
+  if (!item || typeof item !== 'object') return false;
+  const type = (item as { type?: unknown }).type;
+  if (typeof type !== 'string') return false;
+  const normalized = type.toLowerCase();
+  return (
+    normalized.includes('tool') ||
+    normalized.includes('command') ||
+    normalized.includes('mcp')
+  );
+}
+
 export class CodexSessionAdapter implements DirectorSessionAdapter {
   private runtime: CodexDirectorRuntime;
   private readonly label: string;
@@ -140,6 +152,8 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
         this.hooks.persistSession(event.thread_id, sessionName);
       } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
         this.hooks.onPartialAgentMessage(event.item.text);
+      } else if (event.type === 'item.completed' && isToolLikeItem(event.item)) {
+        this.hooks.onToolCall();
       } else if (event.type === 'turn.completed') {
         const usage = event.usage;
         if (usage && typeof usage === 'object') {

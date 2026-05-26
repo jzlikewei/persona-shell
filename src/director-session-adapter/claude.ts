@@ -175,6 +175,8 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
             for (const block of content) {
               if (block?.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
                 this.assistantTexts.push(block.text.trim());
+              } else if (block?.type === 'tool_use') {
+                this.hooks.onToolCall();
               }
             }
           }
@@ -183,7 +185,9 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
 
         case 'stream_event': {
           const streamEvt = event.event;
-          if (streamEvt?.type === 'content_block_delta' && streamEvt.delta?.type === 'text_delta') {
+          if (streamEvt?.type === 'content_block_start' && streamEvt.content_block?.type === 'tool_use') {
+            this.hooks.onToolCall();
+          } else if (streamEvt?.type === 'content_block_delta' && streamEvt.delta?.type === 'text_delta') {
             const text = streamEvt.delta.text;
             if (text) this.hooks.onChunk(text);
           }

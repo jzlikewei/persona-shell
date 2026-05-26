@@ -16,6 +16,7 @@ function buildCapturingHooks() {
   const loggedLines: string[] = [];
   const persistedSessions: Array<{ id: string; name: string | null }> = [];
   const partialMessages: string[] = [];
+  const toolCalls: number[] = [];
   let clearSessionCalls = 0;
   let sessionId: string | null = null;
   let sessionName: string | null = null;
@@ -30,6 +31,7 @@ function buildCapturingHooks() {
     buildSessionName: () => 'test-codex-session',
     logOutput: (line) => loggedLines.push(line),
     onChunk: () => {},
+    onToolCall: () => toolCalls.push(1),
     onPartialAgentMessage: (text) => partialMessages.push(text),
     onMetrics: (update) => metrics.push(update),
     onTurnComplete: (result) => turns.push(result),
@@ -47,6 +49,7 @@ function buildCapturingHooks() {
     getClearSessionCalls: () => clearSessionCalls,
     setSessionId: (id: string | null) => { sessionId = id; },
     partialMessages,
+    toolCalls,
   };
 }
 
@@ -258,8 +261,8 @@ describe('CodexSessionAdapter', () => {
       expect(partialMessages).toEqual(['first reply', 'second reply']);
     });
 
-    test('does not call onPartialAgentMessage for non-agent_message items', () => {
-      const { hooks, partialMessages } = buildCapturingHooks();
+    test('reports generic tool calls for tool-like items', () => {
+      const { hooks, partialMessages, toolCalls } = buildCapturingHooks();
       const adapter = new CodexSessionAdapter(buildOptions(), hooks);
       const { handleLine } = getPrivateMethods(adapter);
 
@@ -269,6 +272,7 @@ describe('CodexSessionAdapter', () => {
       }), 'sess');
 
       expect(partialMessages).toHaveLength(0);
+      expect(toolCalls).toHaveLength(1);
     });
   });
 

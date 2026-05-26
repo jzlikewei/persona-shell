@@ -51,6 +51,7 @@ interface CodexAppServerRuntimeHooks {
   clearSession(): void;
   logOutput(line: string): void;
   onChunk(text: string): void;
+  onToolCall(): void;
   onPartialAgentMessage(text: string): void;
   onMetrics(update: { lastInputTokens?: number; contextTokens?: number; contextWindow?: number }): void;
   onTurnComplete(result: { responseText: string; durationMs: number | null }): void;
@@ -334,6 +335,9 @@ export class CodexAppServerRuntime {
 
   private handleNotification(msg: JsonRpcNotification): void {
     const params = this.asRecord(msg.params);
+    if (this.isToolLikeMethod(msg.method)) {
+      this.hooks.onToolCall();
+    }
     switch (msg.method) {
       case 'thread/started': {
         const threadId = this.getThreadId({ thread: params.thread });
@@ -360,6 +364,8 @@ export class CodexAppServerRuntime {
         const item = this.asRecord(params.item);
         if (item.type === 'agentMessage' && typeof item.text === 'string') {
           this.hooks.onPartialAgentMessage(item.text);
+        } else if (this.isToolLikeItem(item)) {
+          this.hooks.onToolCall();
         }
         break;
       }
@@ -386,6 +392,9 @@ export class CodexAppServerRuntime {
   private handleServerRequest(msg: JsonRpcNotification): void {
     const child = this.child;
     if (!child?.stdin || msg.id === undefined) return;
+    if (this.isToolLikeMethod(msg.method)) {
+      this.hooks.onToolCall();
+    }
 
     const response = {
       jsonrpc: '2.0',
@@ -546,6 +555,26 @@ export class CodexAppServerRuntime {
 
   private numberField(value: unknown): number {
     return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  }
+
+  private isToolLikeMethod(method: string): boolean {
+    const normalized = method.toLowerCase();
+    return (
+      normalized.includes('/tool') ||
+      normalized.includes('/commandexecution') ||
+      normalized.includes('/mcp')
+    );
+  }
+
+  private isToolLikeItem(item: Record<string, unknown>): boolean {
+    const type = item.type;
+    if (typeof type !== 'string') return false;
+    const normalized = type.toLowerCase();
+    return (
+      normalized.includes('tool') ||
+      normalized.includes('command') ||
+      normalized.includes('mcp')
+    );
   }
 
   private summarize(value: unknown): string {

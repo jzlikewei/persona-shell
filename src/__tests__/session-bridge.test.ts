@@ -509,6 +509,20 @@ describe('SessionBridge', () => {
     adapter.completeTurn({ responseText: 'done', durationMs: 1 });
   });
 
+  test('handleToolCall emits generic tool-call event for user turn', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    let count = 0;
+    bridge.on('tool-call', () => {
+      count += 1;
+    });
+    await bridge.start();
+    await bridge.send('hello');
+    adapter.hooks.onToolCall();
+    expect(count).toBe(1);
+    adapter.completeTurn({ responseText: 'done', durationMs: 1 });
+  });
+
   test('handleStreamChunk suppresses chunk during bootstrap', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;

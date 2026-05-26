@@ -267,6 +267,12 @@ export class DirectorPool extends EventEmitter {
     this.streamingReplies.get(item.correlationId)?.append(text);
   }
 
+  private showToolCallInStreamingReply(queue: MessageQueue): void {
+    const item = queue.peek();
+    if (!item) return;
+    this.streamingReplies.get(item.correlationId)?.showToolCall?.();
+  }
+
   private async finishStreamingReply(correlationId: string, text: string): Promise<boolean> {
     const handle = this.streamingReplies.get(correlationId);
     if (!handle) return false;
@@ -782,6 +788,9 @@ export class DirectorPool extends EventEmitter {
     bridge.on('chunk', (text: string) => {
       if (!isWeb) this.appendStreamingReply(queue, text);
       this.emit('chunk', bridge.label, text);
+    });
+    bridge.on('tool-call', () => {
+      if (!isWeb) this.showToolCallInStreamingReply(queue);
     });
     bridge.on('stream-abort', () => {
       const item = queue.peek();
