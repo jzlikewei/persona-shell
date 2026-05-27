@@ -81,6 +81,22 @@ describe('MessageQueue core operations', () => {
     expect(queue.cancelOldest()).toBeUndefined();
   });
 
+  test('cancel marks a specific queued item by correlation ID', () => {
+    const queue = new MessageQueue(`${LOG_DIR}/queue.log`);
+    const cid1 = queue.enqueue({ text: 'first', messageId: 'm1', chatId: 'c1' });
+    const cid2 = queue.enqueue({ text: 'second', messageId: 'm2', chatId: 'c1' });
+
+    const cancelled = queue.cancel(cid2);
+    expect(cancelled?.correlationId).toBe(cid2);
+    expect(cancelled?.cancelled).toBe(true);
+    expect(queue.cancel('missing')).toBeUndefined();
+
+    const resolved = queue.resolveOldest();
+    expect(resolved?.correlationId).toBe(cid1);
+    expect(queue.resolveOldest()).toBeUndefined();
+    expect(queue.length).toBe(0);
+  });
+
   test('resolveOldest skips cancelled items', () => {
     const queue = new MessageQueue(`${LOG_DIR}/queue.log`);
     const cid1 = queue.enqueue({ text: 'cancelled-one', messageId: 'm1', chatId: 'c1' });

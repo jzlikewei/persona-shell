@@ -151,6 +151,16 @@ export class MessageQueue {
     return oldest;
   }
 
+  /** Mark one queued message as cancelled by correlation ID. */
+  cancel(correlationId: string): QueueItem | undefined {
+    const item = this.items.get(correlationId);
+    if (!item || item.cancelled) return undefined;
+    item.cancelled = true;
+    this.persist();
+    this.log('CANCEL', item.messageId, `cid=${item.correlationId}`);
+    return item;
+  }
+
   /** Resolve the oldest message, skipping and discarding cancelled items */
   resolveOldest(): QueueItem | undefined {
     let modified = false;

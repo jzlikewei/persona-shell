@@ -1,4 +1,4 @@
-import type { MessagingClient, MessageHandler, IncomingMessage, StreamingReplyHandle } from './messaging.js';
+import type { MessagingClient, MessageHandler, IncomingMessage, StreamingReplyHandle, CardActionHandler } from './messaging.js';
 
 const MAX_ORIGIN_ENTRIES = 10_000;
 
@@ -10,6 +10,7 @@ export class MessagingRouter implements MessagingClient {
   private primary: MessagingClient;
   private clients: MessagingClient[] = [];
   private handler: MessageHandler | null = null;
+  private cardActionHandlers: CardActionHandler[] = [];
   private messageOrigin = new Map<string, MessagingClient>();
 
   constructor(primary: MessagingClient) {
@@ -28,6 +29,9 @@ export class MessagingRouter implements MessagingClient {
       }
       this.handler?.(msg);
     });
+    for (const handler of this.cardActionHandlers) {
+      client.onCardAction?.(handler);
+    }
   }
 
   start(): void {
@@ -38,6 +42,13 @@ export class MessagingRouter implements MessagingClient {
 
   onMessage(handler: MessageHandler): void {
     this.handler = handler;
+  }
+
+  onCardAction(handler: CardActionHandler): void {
+    this.cardActionHandlers.push(handler);
+    for (const client of this.clients) {
+      client.onCardAction?.(handler);
+    }
   }
 
   async reply(messageId: string, text: string): Promise<void> {

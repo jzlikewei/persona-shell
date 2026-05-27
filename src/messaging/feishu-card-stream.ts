@@ -14,10 +14,30 @@ export interface FeishuCardStreamOptions {
 }
 
 type CardTemplate = 'blue' | 'green' | 'red' | 'indigo';
+type ButtonType = 'default' | 'primary' | 'danger';
+type CardButton = {
+  tag: 'button';
+  text: { tag: 'plain_text'; content: string };
+  type: ButtonType;
+  value: Record<string, string>;
+};
+type CardElement =
+  | { tag: 'div'; text: { tag: 'plain_text'; content: string }; icon?: { tag: 'standard_icon'; token: string; color?: string } }
+  | { tag: 'markdown'; content: string }
+  | { tag: 'hr' }
+  | {
+      tag: 'column_set';
+      flex_mode: 'flow';
+      columns: Array<{
+        tag: 'column';
+        width: 'auto';
+        elements: CardButton[];
+      }>;
+    };
 
 export interface FeishuCard {
   schema: '2.0';
-  config: { wide_screen_mode: boolean };
+  config: { wide_screen_mode: boolean; update_multi?: boolean };
   header: {
     title: { tag: 'plain_text'; content: string };
     subtitle?: { tag: 'plain_text'; content: string };
@@ -30,12 +50,11 @@ export interface FeishuCard {
     }>;
   };
   body: {
-    elements: Array<
-      | { tag: 'div'; text: { tag: 'plain_text'; content: string }; icon?: { tag: 'standard_icon'; token: string; color?: string } }
-      | { tag: 'markdown'; content: string }
-    >;
+    elements: CardElement[];
   };
 }
+
+const STREAM_CANCEL_ACTION = 'persona_stream_cancel';
 
 export function buildStreamingCard(opts: {
   botName: string;
@@ -100,10 +119,31 @@ export function buildStreamingCard(opts: {
       text: { tag: 'plain_text', content: statusConfig.tag },
     });
   }
+  if (opts.status === 'thinking' || opts.status === 'streaming') {
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'flow',
+      columns: [
+        {
+          tag: 'column',
+          width: 'auto',
+          elements: [
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '取消' },
+              type: 'danger',
+              value: { action: STREAM_CANCEL_ACTION },
+            },
+          ],
+        },
+      ],
+    });
+  }
 
   return {
     schema: '2.0',
-    config: { wide_screen_mode: true },
+    config: { wide_screen_mode: true, update_multi: true },
     header: {
       title: { tag: 'plain_text', content: opts.botName },
       subtitle: { tag: 'plain_text', content: statusConfig.subtitle },
@@ -161,6 +201,10 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     void this.enqueueUpdate(text, 'streaming', false).catch((err) => {
       this.options.logDebug(`[streaming-card] tool call update failed: ${(err as Error).message}`);
     });
+  }
+
+  getMessageId(): string {
+    return this.options.cardMessageId;
   }
 
   async final(text: string): Promise<void> {

@@ -3,7 +3,7 @@ import { SessionBridge } from './session-bridge.js';
 import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
-import type { IncomingMessage, StreamingReplyHandle } from './messaging/messaging.js';
+import type { IncomingMessage, StreamingReplyHandle, CardAction } from './messaging/messaging.js';
 import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector } from './console.js';
 import { TaskRunner, type TaskResult } from './task/task-runner.js';
@@ -48,6 +48,10 @@ async function main() {
   const startTime = Date.now();
   const streamingReplies = new Map<string, StreamingReplyHandle>();
   const systemStreamingReplies = new Map<string, StreamingReplyHandle>();
+  const streamCardToCorrelationId = new Map<string, string>();
+  const systemCardToMessageId = new Map<string, string>();
+  const cancelledSystemMessageIds = new Set<string>();
+  const streamCancelAction = 'persona_stream_cancel';
 
   async function startStreamingReplyFor(correlationId: string, messageId: string): Promise<void> {
     if (!messaging.startStreamingReply) return;
@@ -55,7 +59,11 @@ async function main() {
     if (!head || head.correlationId !== correlationId) return;
     if (streamingReplies.has(correlationId)) return;
     const handle = await messaging.startStreamingReply(messageId);
-    if (handle) streamingReplies.set(correlationId, handle);
+    if (handle) {
+      streamingReplies.set(correlationId, handle);
+      const cardMessageId = handle.getMessageId?.();
+      if (cardMessageId) streamCardToCorrelationId.set(cardMessageId, correlationId);
+    }
   }
 
   async function startStreamingReplyForHead(): Promise<void> {
@@ -80,6 +88,8 @@ async function main() {
     const handle = streamingReplies.get(correlationId);
     if (!handle) return false;
     streamingReplies.delete(correlationId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) streamCardToCorrelationId.delete(cardMessageId);
     await handle.final(text);
     return true;
   }
@@ -88,6 +98,8 @@ async function main() {
     const handle = streamingReplies.get(correlationId);
     if (!handle) return;
     streamingReplies.delete(correlationId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) streamCardToCorrelationId.delete(cardMessageId);
     await handle.abort(text).catch((err) => {
       log.debug(`[shell] Streaming reply abort failed: ${(err as Error).message}`);
     });
@@ -102,7 +114,11 @@ async function main() {
   async function startSystemStreamingReply(messageId: string): Promise<void> {
     if (!messaging.startStreamingReply || systemStreamingReplies.has(messageId)) return;
     const handle = await messaging.startStreamingReply(messageId);
-    if (handle) systemStreamingReplies.set(messageId, handle);
+    if (handle) {
+      systemStreamingReplies.set(messageId, handle);
+      const cardMessageId = handle.getMessageId?.();
+      if (cardMessageId) systemCardToMessageId.set(cardMessageId, messageId);
+    }
   }
 
   function appendSystemStreamingReply(messageId: string, text: string): void {
@@ -117,6 +133,8 @@ async function main() {
     const handle = systemStreamingReplies.get(messageId);
     if (!handle) return false;
     systemStreamingReplies.delete(messageId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) systemCardToMessageId.delete(cardMessageId);
     await handle.final(text);
     return true;
   }
@@ -125,9 +143,34 @@ async function main() {
     const handle = systemStreamingReplies.get(messageId);
     if (!handle) return;
     systemStreamingReplies.delete(messageId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) systemCardToMessageId.delete(cardMessageId);
     await handle.abort(text).catch((err) => {
       log.debug(`[shell] System streaming reply abort failed: ${(err as Error).message}`);
     });
+  }
+
+  async function cancelStreamingReplyByCard(cardMessageId: string): Promise<boolean> {
+    const correlationId = streamCardToCorrelationId.get(cardMessageId);
+    if (correlationId) {
+      const cancelled = queue.cancel(correlationId);
+      await abortStreamingReply(correlationId, '已取消');
+      if (!cancelled) return false;
+      console.log(`[shell] Feishu card cancel: cancelling ${cancelled.messageId} (cid=${correlationId})`);
+      await director.interrupt();
+      return true;
+    }
+
+    const systemMessageId = systemCardToMessageId.get(cardMessageId);
+    if (systemMessageId) {
+      cancelledSystemMessageIds.add(systemMessageId);
+      await abortSystemStreamingReply(systemMessageId, '已取消');
+      console.log(`[shell] Feishu card cancel: cancelling system reply ${systemMessageId}`);
+      await director.interrupt();
+      return true;
+    }
+
+    return false;
   }
 
   // --- In-memory metrics collector ---
@@ -202,6 +245,14 @@ async function main() {
 
   // DirectorPool for multi-group chat support
   const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, configPath);
+
+  messaging.onCardAction?.(async (action: CardAction) => {
+    if (action.action !== streamCancelAction) return;
+    if (config.feishu.master_id && action.senderOpenId !== config.feishu.master_id) return;
+    const cancelled = await cancelStreamingReplyByCard(action.messageId);
+    if (cancelled) return;
+    await pool.cancelByCardMessageId(action.messageId);
+  });
 
   // Restore pool entries from previous Shell session + clean up orphans
   await pool.restoreEntries();
@@ -340,6 +391,7 @@ async function main() {
 
   // 7.3.5: Director's response to task notifications — reply to the notification message
   director.on('system-response', async (reply: string, replyToMessageId: string) => {
+    if (cancelledSystemMessageIds.delete(replyToMessageId)) return;
     try {
       const streamed = await finishSystemStreamingReply(replyToMessageId, reply);
       if (!streamed) {

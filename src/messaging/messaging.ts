@@ -21,9 +21,19 @@ export interface IncomingMessage {
 
 export type MessageHandler = (msg: IncomingMessage) => Promise<void> | void;
 
+export interface CardAction {
+  action: string;
+  messageId: string;
+  chatId?: string;
+  senderOpenId?: string;
+}
+
+export type CardActionHandler = (action: CardAction) => Promise<void> | void;
+
 export interface StreamingReplyHandle {
   append(text: string): void;
   showToolCall?(): void;
+  getMessageId?(): string;
   final(text: string): Promise<void>;
   abort(text?: string): Promise<void>;
 }
@@ -32,6 +42,7 @@ export interface StreamingReplyHandle {
 export interface MessagingClient {
   start(): void;
   onMessage(handler: MessageHandler): void;
+  onCardAction?(handler: CardActionHandler): void;
 
   reply(messageId: string, text: string): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<string | null>;

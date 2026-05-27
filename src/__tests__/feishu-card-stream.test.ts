@@ -41,6 +41,14 @@ describe('FeishuCardStreamingReply', () => {
     expect(card.body.elements[0]).toEqual({ tag: 'markdown', content: 'hello' });
   });
 
+  test('adds a cancel button only while the stream is active', () => {
+    const active = buildStreamingCard({ botName: 'Persona', status: 'streaming', text: 'hello' });
+    const done = buildStreamingCard({ botName: 'Persona', status: 'done', text: 'hello' });
+
+    expect(JSON.stringify(active.body.elements)).toContain('persona_stream_cancel');
+    expect(JSON.stringify(done.body.elements)).not.toContain('persona_stream_cancel');
+  });
+
   test('updates the card message when appended text reaches the update threshold', async () => {
     const { handle, updates } = createHarness();
 

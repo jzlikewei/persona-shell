@@ -67,6 +67,10 @@ export class DirectorPool extends EventEmitter {
   private configPath?: string;
   private streamingReplies = new Map<string, StreamingReplyHandle>();
   private systemStreamingReplies = new Map<string, StreamingReplyHandle>();
+  private streamCardToCorrelationId = new Map<string, string>();
+  private streamReplyRoutingKeys = new Map<string, string>();
+  private systemCardToMessageId = new Map<string, { label: string; messageId: string }>();
+  private cancelledSystemMessageIds = new Set<string>();
 
   constructor(
     mainBridge: SessionBridge,
@@ -235,7 +239,7 @@ export class DirectorPool extends EventEmitter {
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
-      await this.startStreamingReply(entry.queue, correlationId, messageId);
+      await this.startStreamingReply(entry.queue, correlationId, messageId, routingKey);
       await entry.bridge.send(text, { correlationId });
       entry.messagesSinceFlush++;
       const countKey = `pool:${routingKey}:msgCount`;
@@ -251,24 +255,32 @@ export class DirectorPool extends EventEmitter {
     const handle = this.streamingReplies.get(correlationId);
     if (!handle) return;
     this.streamingReplies.delete(correlationId);
+    this.streamReplyRoutingKeys.delete(correlationId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) this.streamCardToCorrelationId.delete(cardMessageId);
     await handle.abort(text).catch((err) => {
       log.debug(`[pool] Streaming reply abort failed: ${(err as Error).message}`);
     });
   }
 
-  private async startStreamingReply(queue: MessageQueue, correlationId: string, messageId: string): Promise<void> {
+  private async startStreamingReply(queue: MessageQueue, correlationId: string, messageId: string, routingKey: string): Promise<void> {
     if (!this.messaging.startStreamingReply) return;
     const head = queue.peek();
     if (!head || head.correlationId !== correlationId) return;
     if (this.streamingReplies.has(correlationId)) return;
     const handle = await this.messaging.startStreamingReply(messageId);
-    if (handle) this.streamingReplies.set(correlationId, handle);
+    if (handle) {
+      this.streamingReplies.set(correlationId, handle);
+      this.streamReplyRoutingKeys.set(correlationId, routingKey);
+      const cardMessageId = handle.getMessageId?.();
+      if (cardMessageId) this.streamCardToCorrelationId.set(cardMessageId, correlationId);
+    }
   }
 
-  private async startStreamingReplyForHead(queue: MessageQueue): Promise<void> {
+  private async startStreamingReplyForHead(queue: MessageQueue, routingKey: string): Promise<void> {
     const item = queue.peek();
     if (!item) return;
-    await this.startStreamingReply(queue, item.correlationId, item.messageId);
+    await this.startStreamingReply(queue, item.correlationId, item.messageId, routingKey);
   }
 
   private appendStreamingReply(queue: MessageQueue, text: string): void {
@@ -287,6 +299,9 @@ export class DirectorPool extends EventEmitter {
     const handle = this.streamingReplies.get(correlationId);
     if (!handle) return false;
     this.streamingReplies.delete(correlationId);
+    this.streamReplyRoutingKeys.delete(correlationId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) this.streamCardToCorrelationId.delete(cardMessageId);
     await handle.final(text);
     return true;
   }
@@ -297,10 +312,14 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  private async startSystemStreamingReply(messageId: string): Promise<void> {
+  private async startSystemStreamingReply(messageId: string, label: string): Promise<void> {
     if (!this.messaging.startStreamingReply || this.systemStreamingReplies.has(messageId)) return;
     const handle = await this.messaging.startStreamingReply(messageId);
-    if (handle) this.systemStreamingReplies.set(messageId, handle);
+    if (handle) {
+      this.systemStreamingReplies.set(messageId, handle);
+      const cardMessageId = handle.getMessageId?.();
+      if (cardMessageId) this.systemCardToMessageId.set(cardMessageId, { label, messageId });
+    }
   }
 
   private appendSystemStreamingReply(messageId: string, text: string): void {
@@ -315,6 +334,8 @@ export class DirectorPool extends EventEmitter {
     const handle = this.systemStreamingReplies.get(messageId);
     if (!handle) return false;
     this.systemStreamingReplies.delete(messageId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) this.systemCardToMessageId.delete(cardMessageId);
     await handle.final(text);
     return true;
   }
@@ -323,9 +344,37 @@ export class DirectorPool extends EventEmitter {
     const handle = this.systemStreamingReplies.get(messageId);
     if (!handle) return;
     this.systemStreamingReplies.delete(messageId);
+    const cardMessageId = handle.getMessageId?.();
+    if (cardMessageId) this.systemCardToMessageId.delete(cardMessageId);
     await handle.abort(text).catch((err) => {
       log.debug(`[pool] System streaming reply abort failed: ${(err as Error).message}`);
     });
+  }
+
+  async cancelByCardMessageId(cardMessageId: string): Promise<boolean> {
+    const correlationId = this.streamCardToCorrelationId.get(cardMessageId);
+    if (correlationId) {
+      const routingKey = this.streamReplyRoutingKeys.get(correlationId);
+      const entry = routingKey ? this.entries.get(routingKey) : undefined;
+      const cancelled = entry?.queue.cancel(correlationId);
+      await this.abortStreamingReply(correlationId, '已取消');
+      if (!entry || !cancelled) return false;
+      console.log(`[pool:${entry.groupName}] Feishu card cancel: cancelling ${cancelled.messageId} (cid=${correlationId})`);
+      await entry.bridge.interrupt();
+      return true;
+    }
+
+    const systemMeta = this.systemCardToMessageId.get(cardMessageId);
+    if (systemMeta) {
+      this.cancelledSystemMessageIds.add(systemMeta.messageId);
+      await this.abortSystemStreamingReply(systemMeta.messageId, '已取消');
+      const entry = this.findByLabel(systemMeta.label);
+      console.log(`[pool:${systemMeta.label}] Feishu card cancel: cancelling system reply ${systemMeta.messageId}`);
+      await entry?.bridge.interrupt();
+      return true;
+    }
+
+    return false;
   }
 
   /** Notify a specific pool Director that a task has completed.
@@ -360,7 +409,7 @@ export class DirectorPool extends EventEmitter {
     }
 
     if (notifyMsgId && entry.feishuChatId !== 'web-console') {
-      await this.startSystemStreamingReply(notifyMsgId);
+      await this.startSystemStreamingReply(notifyMsgId, entry.bridge.label);
     }
     await entry.bridge.notifyTaskDone(taskId, success, notifyMsgId);
   }
@@ -740,11 +789,12 @@ export class DirectorPool extends EventEmitter {
           console.error(`[pool:${groupName}] sendMessage fallback also failed:`, e);
         });
       }
-      await this.startStreamingReplyForHead(queue);
+      await this.startStreamingReplyForHead(queue, routingKey);
     });
 
     // system-response → reply to task notification message (web sessions: forward via WebSocket)
     bridge.on('system-response', async (reply: string, replyToMessageId: string) => {
+      if (this.cancelledSystemMessageIds.delete(replyToMessageId)) return;
       if (isWeb) {
         this.emit('web-reply', bridge.label, replyToMessageId, reply);
         return;

@@ -2,7 +2,7 @@ import * as Lark from '@larksuiteoapi/node-sdk';
 import { readFileSync, statSync, mkdirSync } from 'fs';
 import { extname, basename, join } from 'path';
 import type { Config } from '../config.js';
-import type { MessagingClient, MessageHandler, IncomingMessage, Attachment, StreamingReplyHandle } from './messaging.js';
+import type { MessagingClient, MessageHandler, IncomingMessage, Attachment, StreamingReplyHandle, CardAction, CardActionHandler } from './messaging.js';
 import {
   FeishuCardStreamingReply,
   buildStreamingCard,
@@ -238,6 +238,64 @@ function extractMessageId(response: unknown): string | null {
   return null;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function parseActionValue(value: unknown): Record<string, unknown> | null {
+  const record = asRecord(value);
+  if (record) return record;
+  if (typeof value !== 'string') return null;
+  try {
+    return asRecord(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function parseCardActionEvent(data: unknown): CardAction | null {
+  const root = asRecord(data);
+  if (!root) return null;
+
+  const payload = asRecord(root.payload);
+  const candidates = [
+    asRecord(root.event),
+    payload ? asRecord(payload.event) : null,
+    payload,
+    root,
+  ].filter((item): item is Record<string, unknown> => item !== null);
+
+  for (const candidate of candidates) {
+    const action = asRecord(candidate.action);
+    const value = parseActionValue(action?.value ?? candidate.action_value);
+    const actionName = stringValue(value?.action) ?? stringValue(value?.kind);
+    if (!actionName) continue;
+
+    const context = asRecord(candidate.context);
+    const operator = asRecord(candidate.operator);
+    const operatorId = operator ? asRecord(operator.operator_id) : null;
+    const senderId = operator ? asRecord(operator.sender_id) : null;
+    const messageId = stringValue(context?.open_message_id) ?? stringValue(candidate.open_message_id);
+    if (!messageId) continue;
+
+    return {
+      action: actionName,
+      messageId,
+      chatId: stringValue(context?.open_chat_id) ?? stringValue(candidate.open_chat_id),
+      senderOpenId: stringValue(operator?.open_id)
+        ?? stringValue(operatorId?.open_id)
+        ?? stringValue(senderId?.open_id)
+        ?? stringValue(candidate.open_id),
+    };
+  }
+
+  return null;
+}
+
 /** 检查飞书 API 是否可达（轻量 HTTP 请求） */
 async function isFeishuReachable(client: Lark.Client): Promise<boolean> {
   try {
@@ -311,6 +369,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
   }
 
   const handlers: MessageHandler[] = [];
+  const cardActionHandlers: CardActionHandler[] = [];
   let lastActiveTime = Date.now();
   let watchdogTimer: ReturnType<typeof setInterval> | null = null;
   let botOpenId: string | null = null;
@@ -381,6 +440,28 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
   }
 
   const eventDispatcher = new Lark.EventDispatcher({}).register({
+    'card.action.trigger': async (data: unknown) => {
+      lastActiveTime = Date.now();
+      const action = parseCardActionEvent(data);
+      if (!action) return {};
+      for (const handler of cardActionHandlers) {
+        try { await handler(action); } catch (err) {
+          console.error('[feishu] Card action handler error:', err);
+        }
+      }
+      return {};
+    },
+    'card.action.trigger_v1': async (data: unknown) => {
+      lastActiveTime = Date.now();
+      const action = parseCardActionEvent(data);
+      if (!action) return {};
+      for (const handler of cardActionHandlers) {
+        try { await handler(action); } catch (err) {
+          console.error('[feishu] Card action handler error:', err);
+        }
+      }
+      return {};
+    },
     'im.message.receive_v1': async (data) => {
       lastActiveTime = Date.now();
       const message = data.message;
@@ -718,6 +799,10 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
 
     onMessage(handler: MessageHandler) {
       handlers.push(handler);
+    },
+
+    onCardAction(handler: CardActionHandler) {
+      cardActionHandlers.push(handler);
     },
 
     async reply(messageId: string, text: string) {
