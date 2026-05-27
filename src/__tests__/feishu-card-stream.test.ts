@@ -42,10 +42,18 @@ describe('FeishuCardStreamingReply', () => {
   });
 
   test('adds a cancel button only while the stream is active', () => {
-    const active = buildStreamingCard({ botName: 'Persona', status: 'streaming', text: 'hello' });
+    const active = buildStreamingCard({
+      botName: 'Persona',
+      status: 'streaming',
+      text: 'hello',
+      actionSourceMessageId: 'source-msg',
+      actionCardMessageId: 'card-msg',
+    });
     const done = buildStreamingCard({ botName: 'Persona', status: 'done', text: 'hello' });
 
     expect(JSON.stringify(active.body.elements)).toContain('persona_stream_cancel');
+    expect(JSON.stringify(active.body.elements)).toContain('source-msg');
+    expect(JSON.stringify(active.body.elements)).toContain('card-msg');
     expect(JSON.stringify(done.body.elements)).not.toContain('persona_stream_cancel');
   });
 

@@ -49,7 +49,9 @@ async function main() {
   const streamingReplies = new Map<string, StreamingReplyHandle>();
   const systemStreamingReplies = new Map<string, StreamingReplyHandle>();
   const streamCardToCorrelationId = new Map<string, string>();
+  const streamSourceToCorrelationId = new Map<string, string>();
   const systemCardToMessageId = new Map<string, string>();
+  const systemSourceMessageIds = new Set<string>();
   const cancelledSystemMessageIds = new Set<string>();
   const streamCancelAction = 'persona_stream_cancel';
 
@@ -61,6 +63,7 @@ async function main() {
     const handle = await messaging.startStreamingReply(messageId);
     if (handle) {
       streamingReplies.set(correlationId, handle);
+      streamSourceToCorrelationId.set(messageId, correlationId);
       const cardMessageId = handle.getMessageId?.();
       if (cardMessageId) streamCardToCorrelationId.set(cardMessageId, correlationId);
     }
@@ -88,6 +91,9 @@ async function main() {
     const handle = streamingReplies.get(correlationId);
     if (!handle) return false;
     streamingReplies.delete(correlationId);
+    for (const [sourceMessageId, sourceCorrelationId] of streamSourceToCorrelationId.entries()) {
+      if (sourceCorrelationId === correlationId) streamSourceToCorrelationId.delete(sourceMessageId);
+    }
     const cardMessageId = handle.getMessageId?.();
     if (cardMessageId) streamCardToCorrelationId.delete(cardMessageId);
     await handle.final(text);
@@ -98,6 +104,9 @@ async function main() {
     const handle = streamingReplies.get(correlationId);
     if (!handle) return;
     streamingReplies.delete(correlationId);
+    for (const [sourceMessageId, sourceCorrelationId] of streamSourceToCorrelationId.entries()) {
+      if (sourceCorrelationId === correlationId) streamSourceToCorrelationId.delete(sourceMessageId);
+    }
     const cardMessageId = handle.getMessageId?.();
     if (cardMessageId) streamCardToCorrelationId.delete(cardMessageId);
     await handle.abort(text).catch((err) => {
@@ -116,6 +125,7 @@ async function main() {
     const handle = await messaging.startStreamingReply(messageId);
     if (handle) {
       systemStreamingReplies.set(messageId, handle);
+      systemSourceMessageIds.add(messageId);
       const cardMessageId = handle.getMessageId?.();
       if (cardMessageId) systemCardToMessageId.set(cardMessageId, messageId);
     }
@@ -133,6 +143,7 @@ async function main() {
     const handle = systemStreamingReplies.get(messageId);
     if (!handle) return false;
     systemStreamingReplies.delete(messageId);
+    systemSourceMessageIds.delete(messageId);
     const cardMessageId = handle.getMessageId?.();
     if (cardMessageId) systemCardToMessageId.delete(cardMessageId);
     await handle.final(text);
@@ -143,6 +154,7 @@ async function main() {
     const handle = systemStreamingReplies.get(messageId);
     if (!handle) return;
     systemStreamingReplies.delete(messageId);
+    systemSourceMessageIds.delete(messageId);
     const cardMessageId = handle.getMessageId?.();
     if (cardMessageId) systemCardToMessageId.delete(cardMessageId);
     await handle.abort(text).catch((err) => {
@@ -150,8 +162,9 @@ async function main() {
     });
   }
 
-  async function cancelStreamingReplyByCard(cardMessageId: string): Promise<boolean> {
-    const correlationId = streamCardToCorrelationId.get(cardMessageId);
+  async function cancelStreamingReplyByCard(action: CardAction): Promise<boolean> {
+    const correlationId = streamCardToCorrelationId.get(action.messageId)
+      ?? (action.sourceMessageId ? streamSourceToCorrelationId.get(action.sourceMessageId) : undefined);
     if (correlationId) {
       const cancelled = queue.cancel(correlationId);
       await abortStreamingReply(correlationId, '已取消');
@@ -161,7 +174,8 @@ async function main() {
       return true;
     }
 
-    const systemMessageId = systemCardToMessageId.get(cardMessageId);
+    const systemMessageId = systemCardToMessageId.get(action.messageId)
+      ?? (action.sourceMessageId && systemSourceMessageIds.has(action.sourceMessageId) ? action.sourceMessageId : undefined);
     if (systemMessageId) {
       cancelledSystemMessageIds.add(systemMessageId);
       await abortSystemStreamingReply(systemMessageId, '已取消');
@@ -249,9 +263,9 @@ async function main() {
   messaging.onCardAction?.(async (action: CardAction) => {
     if (action.action !== streamCancelAction) return;
     if (config.feishu.master_id && action.senderOpenId !== config.feishu.master_id) return;
-    const cancelled = await cancelStreamingReplyByCard(action.messageId);
+    const cancelled = await cancelStreamingReplyByCard(action);
     if (cancelled) return;
-    await pool.cancelByCardMessageId(action.messageId);
+    await pool.cancelByCardAction(action);
   });
 
   // Restore pool entries from previous Shell session + clean up orphans

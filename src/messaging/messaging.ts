@@ -24,6 +24,7 @@ export type MessageHandler = (msg: IncomingMessage) => Promise<void> | void;
 export interface CardAction {
   action: string;
   messageId: string;
+  sourceMessageId?: string;
   chatId?: string;
   senderOpenId?: string;
 }

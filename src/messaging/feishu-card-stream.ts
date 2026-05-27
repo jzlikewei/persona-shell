@@ -61,6 +61,8 @@ export function buildStreamingCard(opts: {
   status: 'thinking' | 'streaming' | 'done' | 'aborted' | 'error';
   text: string;
   showToolCall?: boolean;
+  actionSourceMessageId?: string;
+  actionCardMessageId?: string;
 }): FeishuCard {
   const statusConfig = {
     thinking: {
@@ -133,7 +135,11 @@ export function buildStreamingCard(opts: {
               tag: 'button',
               text: { tag: 'plain_text', content: '取消' },
               type: 'danger',
-              value: { action: STREAM_CANCEL_ACTION },
+              value: {
+                action: STREAM_CANCEL_ACTION,
+                ...(opts.actionSourceMessageId ? { sourceMessageId: opts.actionSourceMessageId } : {}),
+                ...(opts.actionCardMessageId ? { cardMessageId: opts.actionCardMessageId } : {}),
+              },
             },
           ],
         },
@@ -260,6 +266,8 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
       status,
       text,
       showToolCall: status === 'streaming' && this.toolCallVisible,
+      actionSourceMessageId: this.options.sourceMessageId,
+      actionCardMessageId: this.options.cardMessageId,
     });
     const sentToolCallVisible = status === 'streaming' && this.toolCallVisible;
     const run = this.queue.catch(() => undefined).then(async () => {

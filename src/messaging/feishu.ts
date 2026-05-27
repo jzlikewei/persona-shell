@@ -279,12 +279,17 @@ function parseCardActionEvent(data: unknown): CardAction | null {
     const operator = asRecord(candidate.operator);
     const operatorId = operator ? asRecord(operator.operator_id) : null;
     const senderId = operator ? asRecord(operator.sender_id) : null;
-    const messageId = stringValue(context?.open_message_id) ?? stringValue(candidate.open_message_id);
+    const sourceMessageId = stringValue(value?.sourceMessageId);
+    const messageId = stringValue(context?.open_message_id)
+      ?? stringValue(candidate.open_message_id)
+      ?? stringValue(value?.cardMessageId)
+      ?? sourceMessageId;
     if (!messageId) continue;
 
     return {
       action: actionName,
       messageId,
+      sourceMessageId,
       chatId: stringValue(context?.open_chat_id) ?? stringValue(candidate.open_chat_id),
       senderOpenId: stringValue(operator?.open_id)
         ?? stringValue(operatorId?.open_id)
@@ -294,6 +299,22 @@ function parseCardActionEvent(data: unknown): CardAction | null {
   }
 
   return null;
+}
+
+function dispatchCardAction(action: CardAction, handlers: CardActionHandler[]): void {
+  log.debug(`[feishu] card action received: action=${action.action} messageId=${action.messageId} sourceMessageId=${action.sourceMessageId ?? 'N/A'}`);
+  for (const handler of handlers) {
+    void Promise.resolve(handler(action)).catch((err) => {
+      console.error('[feishu] Card action handler error:', err);
+    });
+  }
+}
+
+function buildCardActionAck(action: CardAction): Record<string, unknown> {
+  if (action.action === 'persona_stream_cancel') {
+    return { toast: { type: 'info', content: '正在取消...' } };
+  }
+  return {};
 }
 
 /** 检查飞书 API 是否可达（轻量 HTTP 请求） */
@@ -444,23 +465,15 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       lastActiveTime = Date.now();
       const action = parseCardActionEvent(data);
       if (!action) return {};
-      for (const handler of cardActionHandlers) {
-        try { await handler(action); } catch (err) {
-          console.error('[feishu] Card action handler error:', err);
-        }
-      }
-      return {};
+      dispatchCardAction(action, cardActionHandlers);
+      return buildCardActionAck(action);
     },
     'card.action.trigger_v1': async (data: unknown) => {
       lastActiveTime = Date.now();
       const action = parseCardActionEvent(data);
       if (!action) return {};
-      for (const handler of cardActionHandlers) {
-        try { await handler(action); } catch (err) {
-          console.error('[feishu] Card action handler error:', err);
-        }
-      }
-      return {};
+      dispatchCardAction(action, cardActionHandlers);
+      return buildCardActionAck(action);
     },
     'im.message.receive_v1': async (data) => {
       lastActiveTime = Date.now();
@@ -831,6 +844,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
           botName: STREAM_BOT_NAME,
           status: 'thinking',
           text: initialText,
+          actionSourceMessageId: messageId,
         });
         const cardMessageId = await sendCard(chatId, initialCard);
         if (!cardMessageId) return null;
