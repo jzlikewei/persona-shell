@@ -4,6 +4,7 @@ export interface FeishuCardStreamOptions {
   sourceMessageId: string;
   cardMessageId: string;
   updateCard(messageId: string, card: FeishuCard): Promise<void>;
+  deleteCard?(messageId: string): Promise<void>;
   fallbackReply(messageId: string, text: string): Promise<unknown>;
   logDebug(message: string): void;
   debounceMs: number;
@@ -364,6 +365,11 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
       this.options.logDebug(`[streaming-card] update skipped: ${(err as Error).message}`);
       if (allowFallback) {
         try {
+          if (this.options.deleteCard) {
+            await this.options.deleteCard(this.options.cardMessageId).catch((deleteErr) => {
+              this.options.logDebug(`[streaming-card] delete stale card failed: ${(deleteErr as Error).message}`);
+            });
+          }
           await this.options.fallbackReply(this.options.sourceMessageId, text);
           this.lastSent = text;
           this.lastSentToolCallVisible = sentToolCallVisible;

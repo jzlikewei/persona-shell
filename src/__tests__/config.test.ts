@@ -126,6 +126,7 @@ describe('config', () => {
         expect(cfg.agents.providers.codex).toBeDefined();
         expect(cfg.agents.providers.codex.type).toBe('codex-app-server');
         expect(cfg.agents.providers.codex.sandbox).toBe('danger-full-access');
+        expect(cfg.agents.providers.codex.mcp_mode).toBe('mcp');
       });
 
       test('fills default agent defaults (director=claude, default=claude)', () => {
@@ -342,6 +343,36 @@ describe('config', () => {
         expect(p.search).toBe(true);
         expect(p.transport).toBe('stdio');
         expect(p.ephemeral).toBe(false);
+      });
+
+      test('parses provider and model flush context limits', () => {
+        writeMinimalConfig({
+          config: [
+            'feishu:',
+            '  app_id: id',
+            'agents:',
+            '  providers:',
+            '    codex-live:',
+            '      type: codex-app-server',
+            '      command: /usr/bin/codex',
+            '      model: gpt-5.5',
+            '      flush_context_limit: 210000',
+            '      flush_context_limits:',
+            '        gpt-5.5: 200000',
+            '        gpt-5.4: 850000',
+            '      disable_auto_flush: true',
+            '',
+          ].join('\n'),
+          secret: `feishu:\n  app_secret: s\n`,
+        });
+        const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
+        const p = cfg.agents.providers['codex-live'];
+        expect(p.flush_context_limit).toBe(210000);
+        expect(p.flush_context_limits).toEqual({
+          'gpt-5.5': 200000,
+          'gpt-5.4': 850000,
+        });
+        expect(p.disable_auto_flush).toBe(true);
       });
 
       test('skips provider with invalid type', () => {

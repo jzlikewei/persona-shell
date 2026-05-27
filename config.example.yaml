@@ -13,14 +13,20 @@ agents:
       bare: false                          # false = 保留完整工具集（含 Agent 等高级工具）; true = --bare 模式，工具限制为 Bash/Edit/Read
       dangerously_skip_permissions: true
       effort: "max"
+      flush_context_limit: 850000          # 可选：覆盖 director.flush_context_limit
+      disable_auto_flush: false            # 可选：true 时禁用该 provider 的自动压缩/自动 FLUSH
     codex:
       type: "codex-app-server"
       command: "codex"
       sandbox: "danger-full-access"
       approval: "never"
       search: false
-      mcp_mode: "cli"
+      mcp_mode: "mcp"
       transport: "stdio"
+      flush_context_limit: 210000          # 可选：Codex provider 默认上下文刷新阈值
+      flush_context_limits:                # 可选：按 model 进一步覆盖
+        gpt-5.5: 200000
+      disable_auto_flush: false            # 可选：true 时禁用该 provider 的自动压缩/自动 FLUSH
     # system_prompt_file: "prompts/codex.md"  # Per-agent system prompt (relative to persona_dir)
     kimi:
       type: "kimi"

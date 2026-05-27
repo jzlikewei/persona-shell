@@ -56,6 +56,31 @@ export interface TaskLogEntry {
   meta?: Record<string, unknown>;
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function getCodexLiveThreadId(evt: Record<string, unknown>): string | undefined {
+  const params = asRecord(evt.params);
+  const result = asRecord(evt.result);
+  const thread = asRecord(params.thread);
+  const resultThread = asRecord(result.thread);
+  const direct = params.threadId ?? result.threadId ?? thread.id ?? resultThread.id;
+  return typeof direct === 'string' && direct.trim() ? direct : undefined;
+}
+
+function extractCodexLiveAgentTextFromItem(item: Record<string, unknown>): string {
+  return item.type === 'agentMessage' && typeof item.text === 'string' ? item.text : '';
+}
+
+function extractCodexLiveAgentTextFromTurn(turn: Record<string, unknown>): string {
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  return items
+    .map((item) => extractCodexLiveAgentTextFromItem(asRecord(item)))
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 /** Parse director logs to reconstruct conversation messages */
 export function parseConversationLog(inputLog: string, outputLog: string, limit: number, sessionFilter?: string): ConversationMessage[] {
   // Parse input log — new format has timestamp + director fields
@@ -108,6 +133,24 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
           }
           pendingText = '';
           codexTurnTimestamp = evt._ts || evt.timestamp;
+        } else if (evt.method === 'thread/started' || evt.method === 'thread/resumed') {
+          lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
+        } else if (evt.result?.thread || evt.result?.threadId) {
+          lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
+        } else if (evt.method === 'item/completed') {
+          const params = asRecord(evt.params);
+          lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
+          const itemText = extractCodexLiveAgentTextFromItem(asRecord(params.item));
+          if (itemText) pendingText += itemText;
+        } else if (evt.method === 'turn/completed') {
+          const params = asRecord(evt.params);
+          lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
+          const turnText = extractCodexLiveAgentTextFromTurn(asRecord(params.turn));
+          const responseText = pendingText || turnText;
+          if (responseText) {
+            outputs.push({ text: responseText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts });
+          }
+          pendingText = '';
         } else if (evt.type === 'result') {
           if (evt.session_id) lastSessionId = evt.session_id;
           const finalResult = typeof evt.result === 'string' ? evt.result.trim() : '';
@@ -199,6 +242,9 @@ export function parseSessions(outputLog: string): SessionInfo[] {
         if (evt.type === 'thread.started' && evt.thread_id) {
           currentSession = evt.thread_id;
         }
+        if (evt.method === 'thread/started' || evt.method === 'thread/resumed' || evt.result?.thread || evt.result?.threadId) {
+          currentSession = getCodexLiveThreadId(evt) ?? currentSession;
+        }
         if (evt.type === 'result') {
           const sid = evt.session_id || currentSession;
           if (!sid) continue;
@@ -214,6 +260,18 @@ export function parseSessions(outputLog: string): SessionInfo[] {
         if (evt.type === 'turn.completed') {
           const sid = currentSession;
           if (!sid) continue;
+
+          const entry = sessionMap.get(sid) || { count: 0 };
+          entry.count++;
+          const timestamp = evt._ts || evt.timestamp || new Date().toISOString();
+          if (!entry.first) entry.first = timestamp;
+          entry.last = timestamp;
+          sessionMap.set(sid, entry);
+        }
+        if (evt.method === 'turn/completed') {
+          const sid = getCodexLiveThreadId(evt) ?? currentSession;
+          if (!sid) continue;
+          currentSession = sid;
 
           const entry = sessionMap.get(sid) || { count: 0 };
           entry.count++;

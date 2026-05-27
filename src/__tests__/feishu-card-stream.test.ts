@@ -5,9 +5,10 @@ import {
   type FeishuCard,
 } from '../messaging/feishu-card-stream.js';
 
-function createHarness(opts?: { failUpdates?: boolean }) {
+function createHarness(opts?: { failUpdates?: boolean; failDeletes?: boolean }) {
   const updates: Array<{ messageId: string; card: FeishuCard }> = [];
   const fallbackReplies: Array<{ messageId: string; text: string }> = [];
+  const deletes: string[] = [];
   const logs: string[] = [];
   const handle = new FeishuCardStreamingReply({
     sourceMessageId: 'source-msg',
@@ -15,6 +16,10 @@ function createHarness(opts?: { failUpdates?: boolean }) {
     updateCard: async (messageId, card) => {
       if (opts?.failUpdates) throw new Error('update failed');
       updates.push({ messageId, card });
+    },
+    deleteCard: async (messageId) => {
+      if (opts?.failDeletes) throw new Error('delete failed');
+      deletes.push(messageId);
     },
     fallbackReply: async (messageId, text) => {
       fallbackReplies.push({ messageId, text });
@@ -27,7 +32,7 @@ function createHarness(opts?: { failUpdates?: boolean }) {
     completeText: 'done',
     abortText: 'aborted',
   });
-  return { handle, updates, fallbackReplies, logs };
+  return { handle, updates, fallbackReplies, deletes, logs };
 }
 
 async function drainStreamUpdate(): Promise<void> {
@@ -124,14 +129,25 @@ describe('FeishuCardStreamingReply', () => {
   });
 
   test('final falls back to replying to the source message when card update fails', async () => {
-    const { handle, updates, fallbackReplies, logs } = createHarness({ failUpdates: true });
+    const { handle, updates, fallbackReplies, deletes, logs } = createHarness({ failUpdates: true });
 
     handle.append('hello');
     await handle.final('final text');
 
     expect(updates).toEqual([]);
+    expect(deletes).toEqual(['card-msg']);
     expect(fallbackReplies).toEqual([{ messageId: 'source-msg', text: 'final text' }]);
     expect(logs.some((line) => line.includes('update skipped'))).toBe(true);
+  });
+
+  test('final still falls back when stale card delete fails', async () => {
+    const { handle, fallbackReplies, deletes, logs } = createHarness({ failUpdates: true, failDeletes: true });
+
+    await handle.final('final text');
+
+    expect(deletes).toEqual([]);
+    expect(fallbackReplies).toEqual([{ messageId: 'source-msg', text: 'final text' }]);
+    expect(logs.some((line) => line.includes('delete stale card failed'))).toBe(true);
   });
 
   test('abort updates the card with interruption text and closes the handle', async () => {

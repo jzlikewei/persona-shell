@@ -79,14 +79,20 @@ agents:
       bare: false                 # false = 完整工具集（含 Agent）; true = --bare（仅 Bash/Edit/Read）
       dangerously_skip_permissions: true
       effort: "max"
+      flush_context_limit: 850000  # 可选：覆盖 director.flush_context_limit
+      disable_auto_flush: false    # 可选：true 时禁用该 provider 的自动压缩/自动 FLUSH
     codex:
       type: "codex-app-server"
       command: "codex"
       sandbox: "danger-full-access"
       approval: "never"
       search: false
-      mcp_mode: "cli"          # cli(默认): 在 prompt 注入 task CLI 用法；mcp: 注入 MCP tools；off: 关闭 task 注入
+      mcp_mode: "mcp"          # mcp: 注入 MCP tools；cli: turn-based Codex 的 task CLI 提示；off: 关闭 task 注入
       transport: "stdio"
+      flush_context_limit: 210000  # 可选：provider 默认上下文刷新阈值
+      flush_context_limits:        # 可选：按 model 进一步覆盖
+        gpt-5.5: 200000
+      disable_auto_flush: false    # 可选：true 时禁用该 provider 的自动压缩/自动 FLUSH
     kimi:
       type: "kimi"
       command: "kimi"
@@ -118,6 +124,10 @@ pool:
 ```
 
 **Agent 解析优先级**：`roles[role].agent` → `defaults[role]` → `defaults.default` → `"claude"`
+
+**上下文刷新阈值优先级**：`agents.providers.<name>.flush_context_limits[model]` → `agents.providers.<name>.flush_context_limit` → `director.flush_context_limit`。如果 role 覆写了 model，会按覆写后的 model 匹配。
+
+**禁止自动压缩**：在 provider 下配置 `disable_auto_flush: true` 后，该 provider 不会因为 token 阈值或时间阈值触发自动 FLUSH；手动 `/flush` 仍然可用。
 
 **Model 解析优先级**：`roles[role].model` → `providers[agent].model` → 不传（用 CLI 默认）
 

@@ -27,6 +27,12 @@ export interface AgentProviderConfig {
   transport?: CodexAppServerTransport;
   ephemeral?: boolean;
   model?: string;
+  /** Override director.flush_context_limit for this provider. */
+  flush_context_limit?: number;
+  /** Per-model flush thresholds for this provider; keyed by model name. */
+  flush_context_limits?: Record<string, number>;
+  /** Disable automatic context compression/flush for this provider. Manual flush is still allowed. */
+  disable_auto_flush?: boolean;
   /** Per-agent system prompt file, relative to persona_dir (e.g. "prompts/gemini.md") */
   system_prompt_file?: string;
   /** Kimi: custom agent specification file (e.g. "kimi-agent.yaml") */
@@ -93,6 +99,11 @@ function expandHome(p: string): string {
   return p.startsWith('~/') || p === '~' ? homedir() + p.slice(1) : p;
 }
 
+function positiveNumber(value: unknown): number | undefined {
+  const parsed = typeof value === 'number' || typeof value === 'string' ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function getDefaultAgentName(agents: AgentsConfig, role: string): string {
   return agents.roles?.[role]?.agent ?? agents.defaults[role] ?? agents.defaults.default ?? 'claude';
 }
@@ -108,6 +119,14 @@ export function resolveAgentProvider(agents: AgentsConfig, role: string, agentNa
     return { name, ...provider, model: roleModel };
   }
   return { name, ...provider };
+}
+
+export function resolveFlushContextLimit(
+  director: Config['director'],
+  agent: Pick<AgentProviderConfig, 'model' | 'flush_context_limit' | 'flush_context_limits'>,
+): number {
+  const modelLimit = agent.model ? agent.flush_context_limits?.[agent.model] : undefined;
+  return modelLimit ?? agent.flush_context_limit ?? director.flush_context_limit;
 }
 
 export function defaultConfigPath(): string {
@@ -147,6 +166,9 @@ export function loadConfig(path?: string): Config {
     transport?: unknown;
     ephemeral?: unknown;
     model?: unknown;
+    flush_context_limit?: unknown;
+    flush_context_limits?: unknown;
+    disable_auto_flush?: unknown;
     system_prompt_file?: unknown;
     agent_file?: unknown;
     skills_dir?: unknown;
@@ -159,6 +181,16 @@ export function loadConfig(path?: string): Config {
     const type = provider?.type;
     const command = provider?.command;
     if ((type === 'claude' || type === 'codex' || type === 'codex-app-server' || type === 'kimi') && typeof command === 'string' && command.trim()) {
+      const providerFlushContextLimit = positiveNumber(provider?.flush_context_limit);
+      const providerFlushContextLimits = provider?.flush_context_limits
+        && typeof provider.flush_context_limits === 'object'
+        && !Array.isArray(provider.flush_context_limits)
+        ? Object.fromEntries(
+            Object.entries(provider.flush_context_limits as Record<string, unknown>)
+              .map(([model, value]) => [model.trim(), positiveNumber(value)] as const)
+              .filter((entry): entry is readonly [string, number] => entry[0] !== '' && entry[1] !== undefined),
+          ) as Record<string, number>
+        : undefined;
       providers[name] = {
         type,
         command: command.trim(),
@@ -182,6 +214,9 @@ export function loadConfig(path?: string): Config {
         ...(provider?.transport === 'stdio' ? { transport: provider.transport } : {}),
         ...(typeof provider?.ephemeral === 'boolean' ? { ephemeral: provider.ephemeral } : {}),
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
+        ...(providerFlushContextLimit ? { flush_context_limit: providerFlushContextLimit } : {}),
+        ...(providerFlushContextLimits ? { flush_context_limits: providerFlushContextLimits } : {}),
+        ...(typeof provider?.disable_auto_flush === 'boolean' ? { disable_auto_flush: provider.disable_auto_flush } : {}),
         ...(typeof provider?.system_prompt_file === 'string' && provider.system_prompt_file.trim()
           ? { system_prompt_file: provider.system_prompt_file.trim() }
           : {}),
@@ -215,7 +250,7 @@ export function loadConfig(path?: string): Config {
       sandbox: 'danger-full-access',
       approval: 'never',
       search: false,
-      mcp_mode: 'cli',
+      mcp_mode: 'mcp',
       transport: 'stdio',
     };
   }

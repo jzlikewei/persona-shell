@@ -402,6 +402,13 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     });
   }
 
+  async function deleteCard(messageId: string): Promise<void> {
+    await withRetry('card.delete', async () => {
+      await client.im.v1.message.delete({ path: { message_id: messageId } });
+      lastActiveTime = Date.now();
+    });
+  }
+
   const handlers: MessageHandler[] = [];
   const cardActionHandlers: CardActionHandler[] = [];
   let lastActiveTime = Date.now();
@@ -865,6 +872,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
           sourceMessageId: messageId,
           cardMessageId,
           updateCard,
+          deleteCard,
           fallbackReply: replyText,
           logDebug: (message) => log.debug(`[feishu] ${message}`),
           debounceMs: STREAM_UPDATE_DEBOUNCE_MS,

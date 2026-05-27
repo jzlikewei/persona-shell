@@ -137,7 +137,7 @@ function tomlBareKey(value: string): string | null {
   return /^[A-Za-z0-9_-]+$/.test(value) ? value : null;
 }
 
-function buildCodexMcpOverrideArgs(mcpConfigPath?: string, mcpEnvOverrides?: Record<string, string>): string[] {
+export function buildCodexMcpOverrideArgs(mcpConfigPath?: string, mcpEnvOverrides?: Record<string, string>): string[] {
   if (!mcpConfigPath || !existsSync(mcpConfigPath)) return [];
 
   try {

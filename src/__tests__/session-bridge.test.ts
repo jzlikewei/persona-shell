@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'fs';
 import { SessionBridge } from '../session-bridge.js';
 import { initTaskStore, setState } from '../task/task-store.js';
 import { initLogDir } from '../logger.js';
+import type { AgentProviderConfig } from '../config.js';
 import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
@@ -256,6 +257,64 @@ describe('SessionBridge', () => {
 
     expect(onEmit).toHaveBeenCalledWith('system-response', 'task report', 'msg-123');
     expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+  });
+
+  test('notifyTaskDone waits for active turn instead of steering into it', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const responses: Array<{ text: string; replyToMessageId: string }> = [];
+    bridge.on('system-response', (text: string, replyToMessageId: string) => {
+      responses.push({ text, replyToMessageId });
+    });
+
+    await bridge.start();
+    await bridge.send('user message');
+    adapter.activeTurn = true;
+
+    await bridge.notifyTaskDone('task-1', true, 'msg-1');
+    await bridge.notifyTaskDone('task-2', true, 'msg-2');
+
+    expect(adapter.sent).toHaveLength(1);
+    expect(adapter.sent[0]?.endsWith('user message')).toBe(true);
+
+    adapter.activeTurn = false;
+    adapter.completeTurn({ responseText: 'user response', durationMs: 10 });
+    await Promise.resolve();
+
+    expect(adapter.sent).toHaveLength(2);
+    expect(adapter.sent[1]).toContain('task-1');
+    expect(adapter.sent[1]).not.toContain('task-2');
+
+    adapter.completeTurn({ responseText: 'task one report', durationMs: 10 });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(responses).toEqual([{ text: 'task one report', replyToMessageId: 'msg-1' }]);
+    expect(adapter.sent).toHaveLength(3);
+    expect(adapter.sent[2]).toContain('task-2');
+
+    adapter.completeTurn({ responseText: 'task two report', durationMs: 10 });
+    expect(responses).toEqual([
+      { text: 'task one report', replyToMessageId: 'msg-1' },
+      { text: 'task two report', replyToMessageId: 'msg-2' },
+    ]);
+  });
+
+  test('steered system-reply aborts its streaming card instead of leaving it pending', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const aborts: Array<{ replyToMessageId: string; text?: string }> = [];
+    bridge.on('system-stream-abort', (replyToMessageId: string, text?: string) => {
+      aborts.push({ replyToMessageId, text });
+    });
+
+    await bridge.start();
+    adapter.nextSendResult = 'steered';
+    await bridge.notifyTaskDone('task-1', true, 'msg-1');
+    await Promise.resolve();
+
+    expect(aborts).toEqual([{ replyToMessageId: 'msg-1', text: '已并入当前处理中' }]);
+    expect(bridge.getStatus().pendingCount).toBe(0);
   });
 
   test('notifyTaskDone emits system-tool-call with tool name', async () => {
@@ -565,6 +624,39 @@ describe('SessionBridge', () => {
     expect(s.totalCostUsd).toBe(0.05);
   });
 
+  test('getStatus uses provider flush context limit override', () => {
+    const bridge = createBridgeWithOptions({ directorAgentName: 'fake', providerFlushContextLimit: 210000 });
+    expect(bridge.getStatus().flushContextLimit).toBe(210000);
+  });
+
+  test('getStatus uses model flush context limit override before provider override', () => {
+    const bridge = createBridgeWithOptions({
+      directorAgentName: 'fake',
+      providerModel: 'gpt-5.5',
+      providerFlushContextLimit: 210000,
+      providerFlushContextLimits: { 'gpt-5.5': 200000 },
+    });
+    expect(bridge.getStatus().flushContextLimit).toBe(200000);
+  });
+
+  test('provider can disable automatic context flush', async () => {
+    const bridge = createBridgeWithOptions({
+      directorAgentName: 'fake',
+      providerFlushContextLimit: 1000,
+      providerDisableAutoFlush: true,
+    });
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const flushSpy = spyOn(bridge, 'flush');
+
+    await bridge.start();
+    await bridge.send('hello');
+    adapter.hooks.onMetrics({ lastInputTokens: 2000, contextTokens: 2000 });
+    adapter.completeTurn({ responseText: 'ok', durationMs: 1 });
+
+    expect(bridge.getStatus().autoFlushDisabled).toBe(true);
+    expect(flushSpy).not.toHaveBeenCalled();
+  });
+
   test('restoreState keeps restored context metrics marked as stale until a live turn updates them', () => {
     setState('director:main', {
       lastFlushAt: Date.now() - 1_000,
@@ -580,6 +672,26 @@ describe('SessionBridge', () => {
     expect(status.lastInputTokens).toBe(138000);
     expect(status.contextTokens).toBe(138000);
     expect(status.contextMetricsLive).toBe(false);
+  });
+
+  test('stale restored context metrics do not trigger auto-flush', async () => {
+    setState('director:main', {
+      lastFlushAt: Date.now(),
+      lastInputTokens: 2_000_000,
+      contextTokens: 2_000_000,
+      contextWindow: 258_400,
+    });
+
+    const bridge = createBridgeWithOptions({ isMain: true, label: 'main' });
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const flushSpy = spyOn(bridge, 'flush');
+
+    bridge.restoreState();
+    await bridge.start();
+    await bridge.send('hello');
+    adapter.completeTurn({ responseText: 'ok', durationMs: 1 });
+
+    expect(flushSpy).not.toHaveBeenCalled();
   });
 
   test('handleMetricsUpdate accumulates cost across calls', async () => {
@@ -903,13 +1015,25 @@ function createBridgeWithOptions(overrides: {
   timeSyncIntervalMs?: number;
   providerName?: string;
   directorAgentName?: string;
+  providerModel?: string;
+  providerFlushContextLimit?: number;
+  providerFlushContextLimits?: Record<string, number>;
+  providerDisableAutoFlush?: boolean;
 } = {}): SessionBridge {
   const hasGroupName = 'groupName' in overrides;
+  const fakeProvider: AgentProviderConfig = {
+    type: 'codex',
+    command: 'fake-codex',
+    ...(overrides.providerModel ? { model: overrides.providerModel } : {}),
+    ...(overrides.providerFlushContextLimit ? { flush_context_limit: overrides.providerFlushContextLimit } : {}),
+    ...(overrides.providerFlushContextLimits ? { flush_context_limits: overrides.providerFlushContextLimits } : {}),
+    ...(typeof overrides.providerDisableAutoFlush === 'boolean' ? { disable_auto_flush: overrides.providerDisableAutoFlush } : {}),
+  };
   return new SessionBridge({
     agents: {
       defaults: { director: overrides.providerName ?? 'fake', default: overrides.providerName ?? 'fake' },
       providers: {
-        fake: { type: 'codex', command: 'fake-codex' },
+        fake: fakeProvider,
         'fake-codex': { type: 'codex', command: 'fake-codex' },
         'fake-claude': { type: 'claude', command: 'fake-claude' },
       },

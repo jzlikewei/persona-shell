@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
-import { resolveAgentProvider, isCodexFamily, type Config } from './config.js';
+import { resolveAgentProvider, resolveFlushContextLimit, isCodexFamily, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
 import type { DirectorSendResult } from './director-runtime/index.js';
 import { loadPrompt } from './prompt-loader.js';
@@ -50,6 +50,12 @@ type PendingType =
   | { type: 'bootstrap' }
   | { type: 'flush-checkpoint' }
   | { type: 'flush-bootstrap' };
+
+interface TaskNotification {
+  taskId: string;
+  success: boolean;
+  replyToMessageId?: string;
+}
 
 export interface SessionBridgeOptions {
   agents: Config['agents'];
@@ -102,6 +108,8 @@ export class SessionBridge extends EventEmitter {
   private discardNextResponse = false;
   private personaRole: string = 'director';
   private partialSystemReplyText: string | null = null;
+  private taskNotificationQueue: TaskNotification[] = [];
+  private taskNotificationDispatching = false;
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
   private static readonly FLUSH_STEP_TIMEOUT = 90_000;
@@ -180,6 +188,10 @@ export class SessionBridge extends EventEmitter {
 
   private get pendingCount(): number {
     return this.pendingTurns.length;
+  }
+
+  private get flushContextLimit(): number {
+    return resolveFlushContextLimit(this.config, this.directorAgent);
   }
 
   get inputLogPath(): string {
@@ -493,6 +505,7 @@ export class SessionBridge extends EventEmitter {
     flushContextLimit: number;
     contextWindow: number;
     contextMetricsLive: boolean;
+    autoFlushDisabled: boolean;
     activityState: 'idle' | 'processing' | 'flushing' | 'restarting';
     currentMessagePreview: string | null;
     currentMessageStartedAt: number | null;
@@ -527,9 +540,10 @@ export class SessionBridge extends EventEmitter {
       lastInputTokens: this.lastInputTokens,
       contextTokens: this.contextTokens,
       lastFlushAt: this.lastFlushAt,
-      flushContextLimit: this.config.flush_context_limit,
+      flushContextLimit: this.flushContextLimit,
       contextWindow: this.contextWindow,
       contextMetricsLive: this.contextMetricsLive,
+      autoFlushDisabled: this.directorAgent.disable_auto_flush === true,
       activityState,
       currentMessagePreview: this.currentMessagePreview,
       currentMessageStartedAt: this.currentMessageStartedAt,
@@ -835,34 +849,59 @@ export class SessionBridge extends EventEmitter {
       const steeredTurn = this.pendingTurns.pop();
       if (steeredTurn?.type === 'user') {
         this.emit('message-steered', steeredTurn.correlationId);
+      } else if (steeredTurn?.type === 'system-reply') {
+        this.systemReplyQueue.pop();
+        this.partialSystemReplyText = null;
+        this.emit('system-stream-abort', steeredTurn.replyToMessageId, '已并入当前处理中');
       } else if (steeredTurn) {
-        this.pendingTurns.push(steeredTurn);
+        log.debug(`[bridge:${this.label}] Non-user turn was steered and absorbed: ${steeredTurn.type}`);
       }
+      this.resolveDrainIfNeeded();
     }
     return result;
   }
 
   async notifyTaskDone(taskId: string, success: boolean, replyToMessageId?: string): Promise<void> {
     if (!this.adapter.isReady() || this.flushing) return;
+    this.taskNotificationQueue.push({ taskId, success, replyToMessageId });
+    this.drainTaskNotifications();
+  }
+
+  private drainTaskNotifications(): void {
+    if (this.taskNotificationDispatching) return;
+    if (!this.adapter.isReady() || this.flushing || this.bootstrapping || this.discardNextResponse) return;
+    if (this.adapter.hasActiveTurn() || this.pendingCount > 0) return;
+
+    const next = this.taskNotificationQueue.shift();
+    if (!next) return;
+
+    this.taskNotificationDispatching = true;
+    void this.dispatchTaskNotification(next).finally(() => {
+      this.taskNotificationDispatching = false;
+      this.drainTaskNotifications();
+    });
+  }
+
+  private async dispatchTaskNotification(notification: TaskNotification): Promise<void> {
     let pendingTurn: PendingType;
-    if (replyToMessageId) {
-      pendingTurn = this.enqueuePendingTurn({ type: 'system-reply', replyToMessageId });
-      this.systemReplyQueue.push(replyToMessageId);
+    if (notification.replyToMessageId) {
+      pendingTurn = this.enqueuePendingTurn({ type: 'system-reply', replyToMessageId: notification.replyToMessageId });
+      this.systemReplyQueue.push(notification.replyToMessageId);
     } else {
       pendingTurn = this.enqueuePendingTurn({ type: 'system-absorbed' });
     }
 
-    const tag = success ? 'TASK_DONE' : 'TASK_FAILED';
+    const tag = notification.success ? 'TASK_DONE' : 'TASK_FAILED';
     const stopLoss = '回复协议：先读取报告，立即给用户一段简短结论；如需后续任务可 create_task 派发，但不要在本轮等待后续任务完成。';
-    const msg = success
-      ? `[${tag}] 后台任务 ${taskId} 已完成。调用 get_task MCP 工具查看详情。${stopLoss}`
-      : `[${tag}] 后台任务 ${taskId} 失败。调用 get_task MCP 工具查看错误信息。${stopLoss}`;
+    const msg = notification.success
+      ? `[${tag}] 后台任务 ${notification.taskId} 已完成。调用 get_task MCP 工具查看详情。${stopLoss}`
+      : `[${tag}] 后台任务 ${notification.taskId} 失败。调用 get_task MCP 工具查看错误信息。${stopLoss}`;
 
     try {
       await this.writeRaw(msg);
     } catch {
       this.removePendingTurn(pendingTurn);
-      if (replyToMessageId) this.systemReplyQueue.pop();
+      if (notification.replyToMessageId) this.systemReplyQueue.pop();
       this.resolveDrainIfNeeded();
     }
   }
@@ -944,22 +983,24 @@ export class SessionBridge extends EventEmitter {
   }
 
   private shouldAutoFlushAfterTurn(turnType: 'user' | 'system' | 'bootstrap' | 'discarded'): boolean {
-    return turnType === 'user';
+    return turnType === 'user' && this.directorAgent.disable_auto_flush !== true;
   }
 
   private checkFlush(): void {
     if (this.flushing) return;
+    if (this.directorAgent.disable_auto_flush === true) return;
 
     const trackedContextTokens = isCodexFamily(this.directorAgent.type)
       ? this.contextTokens
       : this.lastInputTokens;
-    const contextOverLimit = trackedContextTokens > 0
-      && trackedContextTokens > this.config.flush_context_limit;
+    const contextOverLimit = this.contextMetricsLive
+      && trackedContextTokens > 0
+      && trackedContextTokens > this.flushContextLimit;
     const timeOverLimit = Date.now() - this.lastFlushAt > this.config.flush_interval_ms;
 
     if (contextOverLimit || timeOverLimit) {
       const reason = contextOverLimit
-        ? `context tokens ${trackedContextTokens} > ${this.config.flush_context_limit}`
+        ? `context tokens ${trackedContextTokens} > ${this.flushContextLimit}`
         : `time since last flush exceeded ${this.config.flush_interval_ms}ms`;
       console.log(`[bridge:${this.label}] Auto-flush triggered: ${reason}`);
       this.flush().then((success) => {
@@ -1283,6 +1324,7 @@ export class SessionBridge extends EventEmitter {
     }
 
     this.resolveDrainIfNeeded();
+    this.drainTaskNotifications();
     if (!this.flushing && resolvedTurnType && this.shouldAutoFlushAfterTurn(resolvedTurnType)) {
       this.checkFlush();
     }
@@ -1318,6 +1360,7 @@ export class SessionBridge extends EventEmitter {
     }
 
     this.resolveDrainIfNeeded();
+    this.drainTaskNotifications();
   }
 
   private async handleRuntimeClosed(): Promise<void> {

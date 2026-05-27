@@ -50,6 +50,39 @@ function codexTurnCompleted(ts = '2026-04-15T10:00:01+08:00'): string {
   return JSON.stringify({ type: 'turn.completed', _ts: ts });
 }
 
+function codexLiveThreadStarted(threadId: string, director = 'main'): string {
+  return JSON.stringify({
+    method: 'thread/started',
+    params: { thread: { id: threadId } },
+    _ts: '2026-04-15T10:00:00+08:00',
+    _director: director,
+  });
+}
+
+function codexLiveItemCompleted(text: string, threadId = 'thread-live-001', director = 'main'): string {
+  return JSON.stringify({
+    method: 'item/completed',
+    params: {
+      threadId,
+      item: { type: 'agentMessage', text },
+    },
+    _ts: '2026-04-15T10:00:01+08:00',
+    _director: director,
+  });
+}
+
+function codexLiveTurnCompleted(threadId = 'thread-live-001', ts = '2026-04-15T10:00:02+08:00', director = 'main'): string {
+  return JSON.stringify({
+    method: 'turn/completed',
+    params: {
+      threadId,
+      turn: { id: 'turn-live-001', status: 'completed' },
+    },
+    _ts: ts,
+    _director: director,
+  });
+}
+
 describe('log-parser', () => {
   beforeEach(() => {
     rmSync(TMP_DIR, { recursive: true, force: true });
@@ -251,6 +284,52 @@ describe('log-parser', () => {
       expect(outMsg?.content).toBe('codex response');
       expect(outMsg?.sessionId).toBe('thread-001');
     });
+
+    test('codex-live JSON-RPC format — item/completed agentMessage + turn/completed', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+
+      writeFileSync(inLog, inputLine('codex-live-q', 'pool-a', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog, [
+        codexLiveThreadStarted('thread-live-001', 'pool-a'),
+        codexLiveItemCompleted('codex-live response', 'thread-live-001', 'pool-a'),
+        codexLiveTurnCompleted('thread-live-001', '2026-04-15T10:00:02+08:00', 'pool-a'),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLog(inLog, outLog, 100);
+      expect(msgs.length).toBe(2);
+      const outMsg = msgs.find((m) => m.direction === 'out');
+      expect(outMsg?.content).toBe('codex-live response');
+      expect(outMsg?.sessionId).toBe('thread-live-001');
+    });
+
+    test('codex-live JSON-RPC format falls back to turn items when item/completed text is absent', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+
+      writeFileSync(inLog, inputLine('codex-live-q', 'pool-a', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog, [
+        codexLiveThreadStarted('thread-live-001', 'pool-a'),
+        JSON.stringify({
+          method: 'turn/completed',
+          params: {
+            threadId: 'thread-live-001',
+            turn: {
+              id: 'turn-live-001',
+              status: 'completed',
+              items: [{ type: 'agentMessage', text: 'turn item response' }],
+            },
+          },
+          _ts: '2026-04-15T10:00:02+08:00',
+          _director: 'pool-a',
+        }),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLog(inLog, outLog, 100);
+      const outMsg = msgs.find((m) => m.direction === 'out');
+      expect(outMsg?.content).toBe('turn item response');
+      expect(outMsg?.sessionId).toBe('thread-live-001');
+    });
   });
 
   // ── parseSessions ──
@@ -327,6 +406,20 @@ describe('log-parser', () => {
       const sessions = parseSessions(outLog);
       expect(sessions.length).toBe(1);
       expect(sessions[0].sessionId).toBe('thread-001');
+      expect(sessions[0].messageCount).toBe(1);
+    });
+
+    test('codex-live thread/started + turn/completed counted as session', () => {
+      const outLog = join(TMP_DIR, 'output.log');
+      writeFileSync(outLog, [
+        codexLiveThreadStarted('thread-live-001', 'pool-a'),
+        codexLiveItemCompleted('resp', 'thread-live-001', 'pool-a'),
+        codexLiveTurnCompleted('thread-live-001', '2026-04-15T10:00:02+08:00', 'pool-a'),
+      ].join('\n') + '\n');
+
+      const sessions = parseSessions(outLog);
+      expect(sessions.length).toBe(1);
+      expect(sessions[0].sessionId).toBe('thread-live-001');
       expect(sessions[0].messageCount).toBe(1);
     });
 

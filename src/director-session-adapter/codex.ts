@@ -83,6 +83,8 @@ function getToolNameFromItem(item: unknown): string | undefined {
 export class CodexSessionAdapter implements DirectorSessionAdapter {
   private runtime: CodexDirectorRuntime;
   private readonly label: string;
+  private lastUsageInputTokens: number | null = null;
+  private seedRestoredUsageBaseline = false;
 
   constructor(
     options: DirectorSessionAdapterOptions,
@@ -111,6 +113,8 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
   async start(): Promise<boolean> {
     const restored = this.hooks.restorePersistedSession();
     if (restored.sessionName) this.hooks.setSessionName(restored.sessionName);
+    this.lastUsageInputTokens = null;
+    this.seedRestoredUsageBaseline = Boolean(restored.sessionId);
     return !restored.sessionId;
   }
 
@@ -173,6 +177,10 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
     try {
       const event = JSON.parse(line);
       if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+        if (this.hooks.getSessionId() !== event.thread_id) {
+          this.lastUsageInputTokens = null;
+          this.seedRestoredUsageBaseline = false;
+        }
         this.hooks.persistSession(event.thread_id, sessionName);
       } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
         this.hooks.onPartialAgentMessage(event.item.text);
@@ -183,16 +191,19 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
         if (usage && typeof usage === 'object') {
           const usageRecord = usage as Record<string, unknown>;
           const inputTokens = getNumericField(usageRecord, 'input_tokens', 'inputTokens');
-          const cachedInputTokens = getNumericField(
-            usageRecord,
-            'cached_input_tokens',
-            'cachedInputTokens',
-            'cache_read_input_tokens',
-            'cacheReadInputTokens',
-            'cache_creation_input_tokens',
-            'cacheCreationInputTokens',
-          );
-          const contextInput = inputTokens + cachedInputTokens;
+          let contextInput = 0;
+          if (inputTokens > 0) {
+            if (this.seedRestoredUsageBaseline && this.lastUsageInputTokens === null) {
+              this.lastUsageInputTokens = inputTokens;
+              this.seedRestoredUsageBaseline = false;
+            } else {
+              contextInput = this.lastUsageInputTokens !== null && inputTokens >= this.lastUsageInputTokens
+                ? inputTokens - this.lastUsageInputTokens
+                : inputTokens;
+              this.lastUsageInputTokens = inputTokens;
+              this.seedRestoredUsageBaseline = false;
+            }
+          }
           const contextWindow = getNumericField(
             usageRecord,
             'model_context_window',

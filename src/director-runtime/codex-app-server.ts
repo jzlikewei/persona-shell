@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, openSync, closeSync, readFileSync } from 'fs';
 import { dirname, join } from 'path';
 import type { DirectorRuntimeStatus, DirectorSendResult } from './index.js';
 import type { Config } from '../config.js';
-import type { AgentRuntimeConfig } from '../persona-process.js';
+import { buildCodexMcpOverrideArgs, type AgentRuntimeConfig } from '../persona-process.js';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -249,7 +249,7 @@ export class CodexAppServerRuntime {
     if (!existsSync(stderrDir)) mkdirSync(stderrDir, { recursive: true });
     const stderrFd = openSync(stderrPath, 'a');
 
-    const args = ['app-server', '--listen', 'stdio://'];
+    const args = this.buildSpawnArgs();
     const child = spawn(this.options.agent.command, args, {
       detached: true,
       stdio: ['pipe', 'pipe', stderrFd],
@@ -277,6 +277,18 @@ export class CodexAppServerRuntime {
     });
 
     console.log(`[bridge:${this.options.label}] Spawned codex app-server (pid: ${child.pid ?? 'unknown'})`);
+  }
+
+  private buildSpawnArgs(): string[] {
+    const mcpEnvOverrides: Record<string, string> = { DIRECTOR_LABEL: this.options.label };
+    return [
+      'app-server',
+      ...(this.options.agent.mcp_mode === 'mcp'
+        ? buildCodexMcpOverrideArgs(join(this.options.config.persona_dir, '.mcp.json'), mcpEnvOverrides)
+        : []),
+      '--listen',
+      'stdio://',
+    ];
   }
 
   private request(method: string, params: unknown, timeoutMs = 180_000): Promise<unknown> {
@@ -461,14 +473,14 @@ export class CodexAppServerRuntime {
 
   private handleTokenUsage(params: Record<string, unknown>): void {
     const tokenUsage = this.asRecord(params.tokenUsage);
-    const total = this.asRecord(tokenUsage.total);
     const last = this.asRecord(tokenUsage.last);
-    const totalInput = this.numberField(total.inputTokens) + this.numberField(total.cachedInputTokens);
-    const lastInput = this.numberField(last.inputTokens) + this.numberField(last.cachedInputTokens);
+    // `total` is cumulative thread usage; `last.inputTokens` is the current request
+    // size and already includes cached input tokens.
+    const lastInput = this.numberField(last.inputTokens);
     const contextWindow = this.numberField(tokenUsage.modelContextWindow);
     this.hooks.onMetrics({
       ...(lastInput > 0 ? { lastInputTokens: lastInput } : {}),
-      ...(totalInput > 0 ? { contextTokens: totalInput } : {}),
+      ...(lastInput > 0 ? { contextTokens: lastInput } : {}),
       ...(contextWindow > 0 ? { contextWindow } : {}),
     });
   }

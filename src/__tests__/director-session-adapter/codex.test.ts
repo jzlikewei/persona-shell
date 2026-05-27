@@ -180,7 +180,7 @@ describe('CodexSessionAdapter', () => {
       expect(persistedSessions[0]).toEqual({ id: 'thread-abc', name: 'my-session' });
     });
 
-    test('reports context metrics on turn.completed event', () => {
+    test('reports Codex input tokens without double-counting cached input', () => {
       const { hooks, metrics } = buildCapturingHooks();
       const adapter = new CodexSessionAdapter(buildOptions(), hooks);
       const { handleLine } = getPrivateMethods(adapter);
@@ -192,8 +192,31 @@ describe('CodexSessionAdapter', () => {
 
       expect(metrics).toHaveLength(1);
       expect(metrics[0]).toEqual({
-        lastInputTokens: 7000,
-        contextTokens: 7000,
+        lastInputTokens: 5000,
+        contextTokens: 5000,
+      });
+    });
+
+    test('uses usage delta after seeding a restored Codex session baseline', async () => {
+      const { hooks, metrics, setSessionId } = buildCapturingHooks();
+      setSessionId('existing-thread');
+      const adapter = new CodexSessionAdapter(buildOptions(), hooks);
+      const { handleLine } = getPrivateMethods(adapter);
+
+      await adapter.start();
+      handleLine(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 24_114_926, cached_input_tokens: 22_712_960 },
+      }), 'my-session');
+      handleLine(JSON.stringify({
+        type: 'turn.completed',
+        usage: { input_tokens: 24_770_045, cached_input_tokens: 23_303_936 },
+      }), 'my-session');
+
+      expect(metrics).toHaveLength(1);
+      expect(metrics[0]).toEqual({
+        lastInputTokens: 655_119,
+        contextTokens: 655_119,
       });
     });
 
