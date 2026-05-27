@@ -30,7 +30,7 @@ export interface DirectorSessionAdapterHooks {
   buildSessionName(): string;
   logOutput(line: string): void;
   onChunk(text: string): void;
-  onToolCall(): void;
+  onToolCall(toolName?: string): void;
   onMetrics(update: DirectorSessionMetricsUpdate): void;
   onPartialAgentMessage(text: string): void;
   onTurnComplete(result: DirectorTurnResult): void;

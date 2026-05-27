@@ -33,7 +33,7 @@ export type CardActionHandler = (action: CardAction) => Promise<void> | void;
 
 export interface StreamingReplyHandle {
   append(text: string): void;
-  showToolCall?(): void;
+  showToolCall?(toolName?: string): void;
   getMessageId?(): string;
   final(text: string): Promise<void>;
   abort(text?: string): Promise<void>;

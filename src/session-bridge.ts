@@ -1011,7 +1011,7 @@ export class SessionBridge extends EventEmitter {
       buildSessionName: () => this.buildSessionName(),
       logOutput: (line) => this.logOutputEvent(line),
       onChunk: (text) => this.handleStreamChunk(text),
-      onToolCall: () => this.handleToolCall(),
+      onToolCall: (toolName) => this.handleToolCall(toolName),
       onPartialAgentMessage: (text) => this.handlePartialAgentMessage(text),
       onMetrics: (update) => this.handleMetricsUpdate(update),
       onTurnComplete: (result) => this.handleTurnComplete(result),
@@ -1183,11 +1183,11 @@ export class SessionBridge extends EventEmitter {
     if (shouldStream && head?.type === 'system-reply') this.emit('system-chunk', text, head.replyToMessageId);
   }
 
-  private handleToolCall(): void {
+  private handleToolCall(toolName?: string): void {
     const head = this.pendingTurns[0];
     const shouldStream = !this.flushing && !this.bootstrapping && !this.discardNextResponse;
-    if (shouldStream && head?.type === 'user') this.emit('tool-call');
-    if (shouldStream && head?.type === 'system-reply') this.emit('system-tool-call', head.replyToMessageId);
+    if (shouldStream && head?.type === 'user') this.emit('tool-call', toolName);
+    if (shouldStream && head?.type === 'system-reply') this.emit('system-tool-call', head.replyToMessageId, toolName);
   }
 
   private handlePartialAgentMessage(text: string): void {

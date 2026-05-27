@@ -132,7 +132,7 @@ export class KimiSessionAdapter implements DirectorSessionAdapter {
           this.hooks.onChunk(text);
         }
         if (msg.tool_calls) {
-          this.hooks.onToolCall();
+          this.hooks.onToolCall(this.getToolCallName(msg.tool_calls));
         }
         if (!msg.tool_calls) {
           this.collecting = false;
@@ -146,6 +146,19 @@ export class KimiSessionAdapter implements DirectorSessionAdapter {
     } catch {
       // ignore malformed or non-JSON lines
     }
+  }
+
+  private getToolCallName(toolCalls: unknown): string | undefined {
+    const first = Array.isArray(toolCalls) ? toolCalls[0] : toolCalls;
+    if (!first || typeof first !== 'object') return undefined;
+    const record = first as Record<string, unknown>;
+    if (typeof record.name === 'string' && record.name.trim()) return record.name.trim();
+    const fn = record.function;
+    if (fn && typeof fn === 'object') {
+      const name = (fn as Record<string, unknown>).name;
+      if (typeof name === 'string' && name.trim()) return name.trim();
+    }
+    return undefined;
   }
 
   private extractText(msg: unknown): string {

@@ -61,6 +61,7 @@ type PendingCardUpdate = {
   status: StreamUpdateStatus;
   allowFallback: boolean;
   sentToolCallVisible: boolean;
+  sentToolCallName: string | null;
   resolve(): void;
   reject(err: unknown): void;
 };
@@ -70,6 +71,7 @@ export function buildStreamingCard(opts: {
   status: 'thinking' | 'streaming' | 'done' | 'aborted' | 'error';
   text: string;
   showToolCall?: boolean;
+  toolCallName?: string | null;
   actionSourceMessageId?: string;
   actionCardMessageId?: string;
 }): FeishuCard {
@@ -117,7 +119,7 @@ export function buildStreamingCard(opts: {
     elements.push({
       tag: 'div',
       icon: { tag: 'standard_icon', token: 'loading_outlined', color: 'blue' },
-      text: { tag: 'plain_text', content: '正在调用工具...' },
+      text: { tag: 'plain_text', content: formatToolCallText(opts.toolCallName) },
     });
   }
   if (text) {
@@ -187,11 +189,24 @@ function toFeishuMarkdown(markdown: string): string {
     .trim();
 }
 
+function normalizeToolCallName(toolName?: string): string | null {
+  const normalized = toolName?.replace(/\s+/g, ' ').trim();
+  if (!normalized) return null;
+  return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
+function formatToolCallText(toolName?: string | null): string {
+  const normalized = normalizeToolCallName(toolName ?? undefined);
+  return normalized ? `正在调用工具：${normalized}` : '正在调用工具...';
+}
+
 export class FeishuCardStreamingReply implements StreamingReplyHandle {
   private text = '';
   private lastSent = '';
   private toolCallVisible = false;
   private lastSentToolCallVisible = false;
+  private toolCallName: string | null = null;
+  private lastSentToolCallName: string | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private inFlight: Promise<void> | null = null;
   private pendingUpdate: PendingCardUpdate | null = null;
@@ -215,12 +230,15 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.flushSoon('min-chars-met');
   }
 
-  showToolCall(): void {
-    if (this.closed || this.toolCallVisible) return;
+  showToolCall(toolName?: string): void {
+    if (this.closed) return;
+    const nextToolName = normalizeToolCallName(toolName);
+    if (this.toolCallVisible && (!nextToolName || nextToolName === this.toolCallName)) return;
     this.toolCallVisible = true;
+    this.toolCallName = nextToolName ?? this.toolCallName;
     this.clearTimer();
     const text = this.text.trim();
-    this.options.logDebug(`[streaming-card] tool call flush chars=${text.length}`);
+    this.options.logDebug(`[streaming-card] tool call flush chars=${text.length} tool_name=${this.toolCallName ?? ''}`);
     void this.enqueueUpdate(text, 'streaming', false).catch((err) => {
       this.options.logDebug(`[streaming-card] tool call update failed: ${(err as Error).message}`);
     });
@@ -235,6 +253,7 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.closed = true;
     this.clearTimer();
     this.toolCallVisible = false;
+    this.toolCallName = null;
     const finalText = text.trim() || this.text.trim() || this.options.completeText;
     this.options.logDebug(`[streaming-card] final chars=${finalText.length}`);
     await this.enqueueUpdate(finalText, 'done', true);
@@ -245,6 +264,7 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.closed = true;
     this.clearTimer();
     this.toolCallVisible = false;
+    this.toolCallName = null;
     this.options.logDebug(`[streaming-card] abort chars=${text.length}`);
     await this.enqueueUpdate(text, 'aborted', true).catch((err) => {
       this.options.logDebug(`[streaming-card] abort update failed: ${(err as Error).message}`);
@@ -264,9 +284,13 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.clearTimer();
     const text = this.text.trim();
     if (!text && !this.toolCallVisible) return;
-    if (text === this.lastSent && this.toolCallVisible === this.lastSentToolCallVisible) return;
+    if (
+      text === this.lastSent &&
+      this.toolCallVisible === this.lastSentToolCallVisible &&
+      this.toolCallName === this.lastSentToolCallName
+    ) return;
     this.options.logDebug(
-      `[streaming-card] flush reason=${reason} chars=${text.length} since_last=${text.length - this.lastSent.length} tool=${this.toolCallVisible}`,
+      `[streaming-card] flush reason=${reason} chars=${text.length} since_last=${text.length - this.lastSent.length} tool=${this.toolCallVisible} tool_name=${this.toolCallName ?? ''}`,
     );
     void this.enqueueUpdate(text, 'streaming', false).catch((err) => {
       this.options.logDebug(`[streaming-card] update failed: ${(err as Error).message}`);
@@ -286,13 +310,14 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const sentToolCallVisible = status === 'streaming' && this.toolCallVisible;
+      const sentToolCallName = sentToolCallVisible ? this.toolCallName : null;
       if (this.pendingUpdate) {
         this.options.logDebug(
           `[streaming-card] coalesce drop status=${this.pendingUpdate.status} chars=${this.pendingUpdate.text.length} next_status=${status}`,
         );
         this.pendingUpdate.resolve();
       }
-      this.pendingUpdate = { text, status, allowFallback, sentToolCallVisible, resolve, reject };
+      this.pendingUpdate = { text, status, allowFallback, sentToolCallVisible, sentToolCallName, resolve, reject };
       this.schedulePump();
     });
   }
@@ -317,7 +342,7 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
   }
 
   private async runUpdate(update: PendingCardUpdate): Promise<void> {
-    const { text, status, allowFallback, sentToolCallVisible } = update;
+    const { text, status, allowFallback, sentToolCallVisible, sentToolCallName } = update;
     let failed = false;
     try {
       const card = buildStreamingCard({
@@ -325,14 +350,16 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
         status,
         text,
         showToolCall: sentToolCallVisible,
+        toolCallName: sentToolCallName,
         actionSourceMessageId: this.options.sourceMessageId,
         actionCardMessageId: this.options.cardMessageId,
       });
-      this.options.logDebug(`[streaming-card] patch start status=${status} chars=${text.length} tool=${sentToolCallVisible}`);
+      this.options.logDebug(`[streaming-card] patch start status=${status} chars=${text.length} tool=${sentToolCallVisible} tool_name=${sentToolCallName ?? ''}`);
       await this.options.updateCard(this.options.cardMessageId, card);
       this.lastSent = text;
       this.lastSentToolCallVisible = sentToolCallVisible;
-      this.options.logDebug(`[streaming-card] patch done status=${status} chars=${text.length} tool=${sentToolCallVisible}`);
+      this.lastSentToolCallName = sentToolCallName;
+      this.options.logDebug(`[streaming-card] patch done status=${status} chars=${text.length} tool=${sentToolCallVisible} tool_name=${sentToolCallName ?? ''}`);
     } catch (err) {
       this.options.logDebug(`[streaming-card] update skipped: ${(err as Error).message}`);
       if (allowFallback) {
@@ -340,6 +367,7 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
           await this.options.fallbackReply(this.options.sourceMessageId, text);
           this.lastSent = text;
           this.lastSentToolCallVisible = sentToolCallVisible;
+          this.lastSentToolCallName = sentToolCallName;
         } catch (fallbackErr) {
           update.reject(fallbackErr);
           failed = true;

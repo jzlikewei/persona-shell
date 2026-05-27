@@ -14,7 +14,7 @@ import { ClaudeDirectorRuntime } from '../../director-runtime/claude.js';
 function buildCapturingHooks() {
   const turns: DirectorTurnResult[] = [];
   const chunks: string[] = [];
-  const toolCalls: number[] = [];
+  const toolCalls: Array<string | undefined> = [];
   const loggedLines: string[] = [];
   const metrics: Array<Record<string, unknown>> = [];
 
@@ -28,7 +28,7 @@ function buildCapturingHooks() {
     buildSessionName: () => 'test-session',
     logOutput: (line) => loggedLines.push(line),
     onChunk: (text) => chunks.push(text),
-    onToolCall: () => toolCalls.push(1),
+    onToolCall: (toolName) => toolCalls.push(toolName),
     onPartialAgentMessage: () => {},
     onMetrics: (update) => metrics.push(update as Record<string, unknown>),
     onTurnComplete: (result) => turns.push(result),
@@ -214,7 +214,7 @@ describe('ClaudeSessionAdapter.handleLine', () => {
     expect(chunks).toEqual(['hello']);
   });
 
-  test('dispatches generic tool call notifications from stream events', () => {
+  test('dispatches tool call notifications with tool names from stream events', () => {
     const streamEvent = JSON.stringify({
       type: 'stream_event',
       event: {
@@ -229,7 +229,7 @@ describe('ClaudeSessionAdapter.handleLine', () => {
 
     handleLine(streamEvent);
 
-    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls).toEqual(['bash']);
   });
 
   test('extracts metrics from result event', () => {

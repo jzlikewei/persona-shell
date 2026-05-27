@@ -81,10 +81,10 @@ async function main() {
     streamingReplies.get(item.correlationId)?.append(text);
   }
 
-  function showToolCallInStreamingReply(): void {
+  function showToolCallInStreamingReply(toolName?: string): void {
     const item = queue.peek();
     if (!item) return;
-    streamingReplies.get(item.correlationId)?.showToolCall?.();
+    streamingReplies.get(item.correlationId)?.showToolCall?.(toolName);
   }
 
   async function finishStreamingReply(correlationId: string, text: string): Promise<boolean> {
@@ -135,8 +135,8 @@ async function main() {
     systemStreamingReplies.get(messageId)?.append(text);
   }
 
-  function showSystemToolCall(messageId: string): void {
-    systemStreamingReplies.get(messageId)?.showToolCall?.();
+  function showSystemToolCall(messageId: string, toolName?: string): void {
+    systemStreamingReplies.get(messageId)?.showToolCall?.(toolName);
   }
 
   async function finishSystemStreamingReply(messageId: string, text: string): Promise<boolean> {
@@ -421,8 +421,8 @@ async function main() {
     appendSystemStreamingReply(replyToMessageId, text);
   });
 
-  director.on('system-tool-call', (replyToMessageId: string) => {
-    showSystemToolCall(replyToMessageId);
+  director.on('system-tool-call', (replyToMessageId: string, toolName?: string) => {
+    showSystemToolCall(replyToMessageId, toolName);
   });
 
   director.on('system-stream-abort', (replyToMessageId: string, text?: string) => {
@@ -1125,8 +1125,8 @@ async function main() {
     appendStreamingReply(text);
   });
 
-  director.on('tool-call', () => {
-    showToolCallInStreamingReply();
+  director.on('tool-call', (toolName?: string) => {
+    showToolCallInStreamingReply(toolName);
   });
 
   // Director response → resolve oldest → reply to user

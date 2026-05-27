@@ -293,10 +293,10 @@ export class DirectorPool extends EventEmitter {
     this.streamingReplies.get(item.correlationId)?.append(text);
   }
 
-  private showToolCallInStreamingReply(queue: MessageQueue): void {
+  private showToolCallInStreamingReply(queue: MessageQueue, toolName?: string): void {
     const item = queue.peek();
     if (!item) return;
-    this.streamingReplies.get(item.correlationId)?.showToolCall?.();
+    this.streamingReplies.get(item.correlationId)?.showToolCall?.(toolName);
   }
 
   private async finishStreamingReply(correlationId: string, text: string): Promise<boolean> {
@@ -332,8 +332,8 @@ export class DirectorPool extends EventEmitter {
     this.systemStreamingReplies.get(messageId)?.append(text);
   }
 
-  private showSystemToolCall(messageId: string): void {
-    this.systemStreamingReplies.get(messageId)?.showToolCall?.();
+  private showSystemToolCall(messageId: string, toolName?: string): void {
+    this.systemStreamingReplies.get(messageId)?.showToolCall?.(toolName);
   }
 
   private async finishSystemStreamingReply(messageId: string, text: string): Promise<boolean> {
@@ -841,8 +841,8 @@ export class DirectorPool extends EventEmitter {
       if (!isWeb) this.appendSystemStreamingReply(replyToMessageId, text);
     });
 
-    bridge.on('system-tool-call', (replyToMessageId: string) => {
-      if (!isWeb) this.showSystemToolCall(replyToMessageId);
+    bridge.on('system-tool-call', (replyToMessageId: string, toolName?: string) => {
+      if (!isWeb) this.showSystemToolCall(replyToMessageId, toolName);
     });
 
     bridge.on('system-stream-abort', (replyToMessageId: string, text?: string) => {
@@ -926,8 +926,8 @@ export class DirectorPool extends EventEmitter {
       if (!isWeb) this.appendStreamingReply(queue, text);
       this.emit('chunk', bridge.label, text);
     });
-    bridge.on('tool-call', () => {
-      if (!isWeb) this.showToolCallInStreamingReply(queue);
+    bridge.on('tool-call', (toolName?: string) => {
+      if (!isWeb) this.showToolCallInStreamingReply(queue, toolName);
     });
     bridge.on('stream-abort', () => {
       const item = queue.peek();

@@ -75,20 +75,32 @@ describe('FeishuCardStreamingReply', () => {
     expect(updates[1]?.card.body.elements[0]).toEqual({ tag: 'markdown', content: 'hello world' });
   });
 
-  test('shows a generic tool call indicator without tool details', async () => {
+  test('shows a tool call indicator with the tool name', async () => {
     const { handle, updates } = createHarness();
 
-    handle.showToolCall();
+    handle.showToolCall('bash');
     await drainStreamUpdate();
     await handle.final('all done');
 
     expect(updates[0]?.card.body.elements[0]).toEqual({
       tag: 'div',
       icon: { tag: 'standard_icon', token: 'loading_outlined', color: 'blue' },
+      text: { tag: 'plain_text', content: '正在调用工具：bash' },
+    });
+    expect(updates.at(-1)?.card.body.elements).toEqual([{ tag: 'markdown', content: 'all done' }]);
+  });
+
+  test('falls back to a generic tool call indicator without a tool name', async () => {
+    const { handle, updates } = createHarness();
+
+    handle.showToolCall();
+    await drainStreamUpdate();
+
+    expect(updates[0]?.card.body.elements[0]).toEqual({
+      tag: 'div',
+      icon: { tag: 'standard_icon', token: 'loading_outlined', color: 'blue' },
       text: { tag: 'plain_text', content: '正在调用工具...' },
     });
-    expect(JSON.stringify(updates[0]?.card)).not.toContain('bash');
-    expect(updates.at(-1)?.card.body.elements).toEqual([{ tag: 'markdown', content: 'all done' }]);
   });
 
   test('final uses accumulated text when final text is blank', async () => {

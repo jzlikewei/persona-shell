@@ -51,7 +51,7 @@ interface CodexAppServerRuntimeHooks {
   clearSession(): void;
   logOutput(line: string): void;
   onChunk(text: string): void;
-  onToolCall(): void;
+  onToolCall(toolName?: string): void;
   onPartialAgentMessage(text: string): void;
   onMetrics(update: { lastInputTokens?: number; contextTokens?: number; contextWindow?: number }): void;
   onTurnComplete(result: { responseText: string; durationMs: number | null }): void;
@@ -339,7 +339,7 @@ export class CodexAppServerRuntime {
   private handleNotification(msg: JsonRpcNotification): void {
     const params = this.asRecord(msg.params);
     if (this.isToolLikeMethod(msg.method)) {
-      this.hooks.onToolCall();
+      this.hooks.onToolCall(this.extractToolName(params) ?? this.extractToolNameFromMethod(msg.method));
     }
     switch (msg.method) {
       case 'thread/started': {
@@ -375,7 +375,7 @@ export class CodexAppServerRuntime {
         if (item.type === 'agentMessage' && typeof item.text === 'string') {
           this.hooks.onPartialAgentMessage(item.text);
         } else if (this.isToolLikeItem(item)) {
-          this.hooks.onToolCall();
+          this.hooks.onToolCall(this.extractToolName(item));
         }
         break;
       }
@@ -404,7 +404,7 @@ export class CodexAppServerRuntime {
     const child = this.child;
     if (!child?.stdin || msg.id === undefined) return;
     if (this.isToolLikeMethod(msg.method)) {
-      this.hooks.onToolCall();
+      this.hooks.onToolCall(this.extractToolName(this.asRecord(msg.params)) ?? this.extractToolNameFromMethod(msg.method));
     }
 
     const response = {
@@ -571,6 +571,37 @@ export class CodexAppServerRuntime {
 
   private numberField(value: unknown): number {
     return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  }
+
+  private extractToolName(value: unknown): string | undefined {
+    const record = this.asRecord(value);
+    const direct = this.stringField(record, 'name', 'tool_name', 'toolName', 'command', 'method');
+    if (direct) return direct;
+    const nestedKeys = ['tool', 'function', 'call', 'item'];
+    for (const key of nestedKeys) {
+      const nested = record[key];
+      if (nested && typeof nested === 'object') {
+        const nestedName = this.stringField(nested as Record<string, unknown>, 'name', 'tool_name', 'toolName');
+        if (nestedName) return nestedName;
+      }
+    }
+    return undefined;
+  }
+
+  private extractToolNameFromMethod(method: string): string | undefined {
+    const parts = method.split('/').filter(Boolean);
+    for (let idx = parts.length - 1; idx >= 0; idx -= 1) {
+      if (/tool|command|mcp/i.test(parts[idx])) return parts[idx];
+    }
+    return undefined;
+  }
+
+  private stringField(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+    return undefined;
   }
 
   private isToolLikeMethod(method: string): boolean {

@@ -16,7 +16,7 @@ function buildCapturingHooks() {
   const loggedLines: string[] = [];
   const persistedSessions: Array<{ id: string; name: string | null }> = [];
   const partialMessages: string[] = [];
-  const toolCalls: number[] = [];
+  const toolCalls: Array<string | undefined> = [];
   let clearSessionCalls = 0;
   let sessionId: string | null = null;
   let sessionName: string | null = null;
@@ -31,7 +31,7 @@ function buildCapturingHooks() {
     buildSessionName: () => 'test-codex-session',
     logOutput: (line) => loggedLines.push(line),
     onChunk: () => {},
-    onToolCall: () => toolCalls.push(1),
+    onToolCall: (toolName) => toolCalls.push(toolName),
     onPartialAgentMessage: (text) => partialMessages.push(text),
     onMetrics: (update) => metrics.push(update),
     onTurnComplete: (result) => turns.push(result),
@@ -261,18 +261,18 @@ describe('CodexSessionAdapter', () => {
       expect(partialMessages).toEqual(['first reply', 'second reply']);
     });
 
-    test('reports generic tool calls for tool-like items', () => {
+    test('reports tool calls with tool names for tool-like items', () => {
       const { hooks, partialMessages, toolCalls } = buildCapturingHooks();
       const adapter = new CodexSessionAdapter(buildOptions(), hooks);
       const { handleLine } = getPrivateMethods(adapter);
 
       handleLine(JSON.stringify({
         type: 'item.completed',
-        item: { type: 'tool_call', text: 'tool output' },
+        item: { type: 'tool_call', name: 'shell', text: 'tool output' },
       }), 'sess');
 
       expect(partialMessages).toHaveLength(0);
-      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls).toEqual(['shell']);
     });
   });
 

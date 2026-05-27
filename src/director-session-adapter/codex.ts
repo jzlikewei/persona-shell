@@ -56,6 +56,30 @@ function isToolLikeItem(item: unknown): boolean {
   );
 }
 
+function getStringField(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function getToolNameFromItem(item: unknown): string | undefined {
+  if (!item || typeof item !== 'object') return undefined;
+  const record = item as Record<string, unknown>;
+  const direct = getStringField(record, 'name', 'tool_name', 'toolName', 'command', 'method');
+  if (direct) return direct;
+  const nestedCandidates = ['tool', 'function', 'call'];
+  for (const key of nestedCandidates) {
+    const nested = record[key];
+    if (nested && typeof nested === 'object') {
+      const nestedName = getStringField(nested as Record<string, unknown>, 'name', 'tool_name', 'toolName');
+      if (nestedName) return nestedName;
+    }
+  }
+  return undefined;
+}
+
 export class CodexSessionAdapter implements DirectorSessionAdapter {
   private runtime: CodexDirectorRuntime;
   private readonly label: string;
@@ -153,7 +177,7 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
       } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') {
         this.hooks.onPartialAgentMessage(event.item.text);
       } else if (event.type === 'item.completed' && isToolLikeItem(event.item)) {
-        this.hooks.onToolCall();
+        this.hooks.onToolCall(getToolNameFromItem(event.item));
       } else if (event.type === 'turn.completed') {
         const usage = event.usage;
         if (usage && typeof usage === 'object') {

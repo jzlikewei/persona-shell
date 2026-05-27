@@ -258,6 +258,22 @@ describe('SessionBridge', () => {
     expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
   });
 
+  test('notifyTaskDone emits system-tool-call with tool name', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances[0]!;
+    const toolCalls: Array<{ replyToMessageId: string; toolName?: string }> = [];
+    bridge.on('system-tool-call', (replyToMessageId: string, toolName?: string) => {
+      toolCalls.push({ replyToMessageId, toolName });
+    });
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-1', true, 'msg-123');
+    adapter.hooks.onToolCall('read_file');
+
+    expect(toolCalls).toEqual([{ replyToMessageId: 'msg-123', toolName: 'read_file' }]);
+    adapter.completeTurn({ responseText: 'task report', durationMs: 20 });
+  });
+
   test('handleTurnFailure emits error response for user turn', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances[0]!;
@@ -509,17 +525,15 @@ describe('SessionBridge', () => {
     adapter.completeTurn({ responseText: 'done', durationMs: 1 });
   });
 
-  test('handleToolCall emits generic tool-call event for user turn', async () => {
+  test('handleToolCall emits tool-call event with tool name for user turn', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
-    let count = 0;
-    bridge.on('tool-call', () => {
-      count += 1;
-    });
+    const toolCalls: Array<string | undefined> = [];
+    bridge.on('tool-call', (toolName?: string) => toolCalls.push(toolName));
     await bridge.start();
     await bridge.send('hello');
-    adapter.hooks.onToolCall();
-    expect(count).toBe(1);
+    adapter.hooks.onToolCall('bash');
+    expect(toolCalls).toEqual(['bash']);
     adapter.completeTurn({ responseText: 'done', durationMs: 1 });
   });
 
