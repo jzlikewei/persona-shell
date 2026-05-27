@@ -166,6 +166,19 @@ async function fetchMessageText(client: Lark.Client, messageId: string, attachme
       }
       return '[语音]';
     }
+    if (msgType === 'interactive') {
+      const body = parsed.body as { elements?: unknown[] } | undefined;
+      const elements = body?.elements;
+      if (!elements?.length) return '';
+      return elements
+        .filter((element): element is { tag: 'markdown'; content: string } => {
+          const record = element as Record<string, unknown>;
+          return record.tag === 'markdown' && typeof record.content === 'string';
+        })
+        .map((element) => element.content)
+        .join('\n')
+        .trim();
+    }
     return '';
   } catch (err) {
     console.error(`[feishu] fetchMessageText ${messageId} failed:`, err);

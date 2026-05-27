@@ -14,11 +14,13 @@ agents:
       dangerously_skip_permissions: true
       effort: "max"
     codex:
-      type: "codex"
+      type: "codex-app-server"
       command: "codex"
       sandbox: "danger-full-access"
       approval: "never"
       search: false
+      mcp_mode: "cli"
+      transport: "stdio"
     # system_prompt_file: "prompts/codex.md"  # Per-agent system prompt (relative to persona_dir)
     kimi:
       type: "kimi"

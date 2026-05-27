@@ -57,10 +57,10 @@ launchctl stop  com.persona.shell                                # 停止
 | Session ID | `/tmp/persona/director-session` |
 | FIFO 管道 | `/tmp/persona/director-in`, `director-out` |
 | Pool Director（Claude） | `/tmp/persona/{label}/`（群聊 Director，含 session / PID / FIFO） |
-| Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`，但无常驻 PID/FIFO |
+| Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`；app-server stderr 在 `codex-app-server-stderr.log` |
 | Pool Director（Kimi） | `logs/{label}-kimi-stderr.log`；stdin/stdout pipe，无 FIFO |
 
-当前 Codex pool Director 是 turn-based transport：群会话常驻，但底层 `codex` 进程不会常驻；每次处理消息时会短暂拉起一次。
+当前默认 Codex pool Director 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`，后台任务继续使用 `codex exec`。
 
 ## Web 控制台
 

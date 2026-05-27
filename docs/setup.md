@@ -80,12 +80,13 @@ agents:
       dangerously_skip_permissions: true
       effort: "max"
     codex:
-      type: "codex"
+      type: "codex-app-server"
       command: "codex"
       sandbox: "danger-full-access"
       approval: "never"
       search: false
       mcp_mode: "cli"          # cli(默认): 在 prompt 注入 task CLI 用法；mcp: 注入 MCP tools；off: 关闭 task 注入
+      transport: "stdio"
     kimi:
       type: "kimi"
       command: "kimi"

@@ -182,7 +182,7 @@ agents:
 
 | | Claude Code | Codex | Kimi |
 |---|---|---|---|
-| 进程模型 | 常驻 daemon（FIFO pipe） | 按 turn spawn（每轮一次） | 常驻 daemon（stdin/stdout pipe） |
+| 进程模型 | 常驻 daemon（FIFO pipe） | Director 默认 app-server/live；后台任务按 turn spawn | 常驻 daemon（stdin/stdout pipe） |
 | 流式响应 | ✅ 实时推送 chunk | ✅ interactive 卡片原地更新 | ⚠️ 整段 JSON 行返回 |
 | 身份注入 | `--append-system-prompt-file` `--plugin-dir` | Prompt 拼接 + `.agents/skills` | `--agent-file` `--skills-dir` |
 | 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |
