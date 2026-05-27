@@ -30,6 +30,11 @@ function createHarness(opts?: { failUpdates?: boolean }) {
   return { handle, updates, fallbackReplies, logs };
 }
 
+async function drainStreamUpdate(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe('FeishuCardStreamingReply', () => {
   test('builds Feishu interactive card payloads', () => {
     const card = buildStreamingCard({ botName: 'Persona', status: 'thinking', text: 'hello' });
@@ -61,6 +66,7 @@ describe('FeishuCardStreamingReply', () => {
     const { handle, updates } = createHarness();
 
     handle.append('hello');
+    await drainStreamUpdate();
     await handle.final('hello world');
 
     expect(updates.map((item) => item.messageId)).toEqual(['card-msg', 'card-msg']);
@@ -73,6 +79,7 @@ describe('FeishuCardStreamingReply', () => {
     const { handle, updates } = createHarness();
 
     handle.showToolCall();
+    await drainStreamUpdate();
     await handle.final('all done');
 
     expect(updates[0]?.card.body.elements[0]).toEqual({
@@ -93,6 +100,17 @@ describe('FeishuCardStreamingReply', () => {
     expect(updates.at(-1)?.card.body.elements[0]).toEqual({ tag: 'markdown', content: 'hello' });
   });
 
+  test('final coalesces pending streaming updates', async () => {
+    const { handle, updates, logs } = createHarness();
+
+    handle.append('hello');
+    await handle.final('hello world');
+
+    expect(updates.map((item) => item.card.header.text_tag_list?.[0]?.text.content)).toEqual(['完成']);
+    expect(updates[0]?.card.body.elements[0]).toEqual({ tag: 'markdown', content: 'hello world' });
+    expect(logs.some((line) => line.includes('coalesce drop status=streaming'))).toBe(true);
+  });
+
   test('final falls back to replying to the source message when card update fails', async () => {
     const { handle, updates, fallbackReplies, logs } = createHarness({ failUpdates: true });
 
@@ -108,6 +126,7 @@ describe('FeishuCardStreamingReply', () => {
     const { handle, updates } = createHarness();
 
     handle.append('hello');
+    await drainStreamUpdate();
     await handle.abort('cancelled');
     handle.append(' ignored');
     await handle.final('ignored final');
@@ -117,5 +136,15 @@ describe('FeishuCardStreamingReply', () => {
       '已中断',
     ]);
     expect(updates.at(-1)?.card.body.elements[0]).toEqual({ tag: 'markdown', content: 'cancelled' });
+  });
+
+  test('abort coalesces pending streaming updates', async () => {
+    const { handle, updates } = createHarness();
+
+    handle.append('hello');
+    await handle.abort('cancelled');
+
+    expect(updates.map((item) => item.card.header.text_tag_list?.[0]?.text.content)).toEqual(['已中断']);
+    expect(updates[0]?.card.body.elements[0]).toEqual({ tag: 'markdown', content: 'cancelled' });
   });
 });

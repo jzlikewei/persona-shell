@@ -55,6 +55,15 @@ export interface FeishuCard {
 }
 
 const STREAM_CANCEL_ACTION = 'persona_stream_cancel';
+type StreamUpdateStatus = 'streaming' | 'done' | 'aborted' | 'error';
+type PendingCardUpdate = {
+  text: string;
+  status: StreamUpdateStatus;
+  allowFallback: boolean;
+  sentToolCallVisible: boolean;
+  resolve(): void;
+  reject(err: unknown): void;
+};
 
 export function buildStreamingCard(opts: {
   botName: string;
@@ -184,7 +193,9 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
   private toolCallVisible = false;
   private lastSentToolCallVisible = false;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private queue: Promise<void> = Promise.resolve();
+  private inFlight: Promise<void> | null = null;
+  private pendingUpdate: PendingCardUpdate | null = null;
+  private pumpScheduled = false;
   private closed = false;
 
   constructor(private readonly options: FeishuCardStreamOptions) {}
@@ -270,34 +281,73 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
 
   private enqueueUpdate(
     text: string,
-    status: 'streaming' | 'done' | 'aborted' | 'error',
+    status: StreamUpdateStatus,
     allowFallback: boolean,
   ): Promise<void> {
-    const card = buildStreamingCard({
-      botName: this.options.botName,
-      status,
-      text,
-      showToolCall: status === 'streaming' && this.toolCallVisible,
-      actionSourceMessageId: this.options.sourceMessageId,
-      actionCardMessageId: this.options.cardMessageId,
+    return new Promise((resolve, reject) => {
+      const sentToolCallVisible = status === 'streaming' && this.toolCallVisible;
+      if (this.pendingUpdate) {
+        this.options.logDebug(
+          `[streaming-card] coalesce drop status=${this.pendingUpdate.status} chars=${this.pendingUpdate.text.length} next_status=${status}`,
+        );
+        this.pendingUpdate.resolve();
+      }
+      this.pendingUpdate = { text, status, allowFallback, sentToolCallVisible, resolve, reject };
+      this.schedulePump();
     });
-    const sentToolCallVisible = status === 'streaming' && this.toolCallVisible;
-    const run = this.queue.catch(() => undefined).then(async () => {
+  }
+
+  private schedulePump(): void {
+    if (this.pumpScheduled) return;
+    this.pumpScheduled = true;
+    queueMicrotask(() => {
+      this.pumpScheduled = false;
+      this.pumpUpdates();
+    });
+  }
+
+  private pumpUpdates(): void {
+    if (this.inFlight || !this.pendingUpdate) return;
+    const update = this.pendingUpdate;
+    this.pendingUpdate = null;
+    this.inFlight = this.runUpdate(update).finally(() => {
+      this.inFlight = null;
+      if (this.pendingUpdate) this.schedulePump();
+    });
+  }
+
+  private async runUpdate(update: PendingCardUpdate): Promise<void> {
+    const { text, status, allowFallback, sentToolCallVisible } = update;
+    let failed = false;
+    try {
+      const card = buildStreamingCard({
+        botName: this.options.botName,
+        status,
+        text,
+        showToolCall: sentToolCallVisible,
+        actionSourceMessageId: this.options.sourceMessageId,
+        actionCardMessageId: this.options.cardMessageId,
+      });
       this.options.logDebug(`[streaming-card] patch start status=${status} chars=${text.length} tool=${sentToolCallVisible}`);
       await this.options.updateCard(this.options.cardMessageId, card);
       this.lastSent = text;
       this.lastSentToolCallVisible = sentToolCallVisible;
       this.options.logDebug(`[streaming-card] patch done status=${status} chars=${text.length} tool=${sentToolCallVisible}`);
-    });
-    this.queue = run.catch(async (err) => {
-      if (allowFallback) {
-        await this.options.fallbackReply(this.options.sourceMessageId, text);
-        this.lastSent = text;
-        this.lastSentToolCallVisible = sentToolCallVisible;
-        return;
-      }
+    } catch (err) {
       this.options.logDebug(`[streaming-card] update skipped: ${(err as Error).message}`);
-    });
-    return this.queue;
+      if (allowFallback) {
+        try {
+          await this.options.fallbackReply(this.options.sourceMessageId, text);
+          this.lastSent = text;
+          this.lastSentToolCallVisible = sentToolCallVisible;
+        } catch (fallbackErr) {
+          update.reject(fallbackErr);
+          failed = true;
+        }
+      }
+    }
+    if (!failed) {
+      update.resolve();
+    }
   }
 }
