@@ -66,6 +66,7 @@ export class DirectorPool extends EventEmitter {
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private configPath?: string;
   private streamingReplies = new Map<string, StreamingReplyHandle>();
+  private systemStreamingReplies = new Map<string, StreamingReplyHandle>();
 
   constructor(
     mainBridge: SessionBridge,
@@ -296,6 +297,37 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
+  private async startSystemStreamingReply(messageId: string): Promise<void> {
+    if (!this.messaging.startStreamingReply || this.systemStreamingReplies.has(messageId)) return;
+    const handle = await this.messaging.startStreamingReply(messageId);
+    if (handle) this.systemStreamingReplies.set(messageId, handle);
+  }
+
+  private appendSystemStreamingReply(messageId: string, text: string): void {
+    this.systemStreamingReplies.get(messageId)?.append(text);
+  }
+
+  private showSystemToolCall(messageId: string): void {
+    this.systemStreamingReplies.get(messageId)?.showToolCall?.();
+  }
+
+  private async finishSystemStreamingReply(messageId: string, text: string): Promise<boolean> {
+    const handle = this.systemStreamingReplies.get(messageId);
+    if (!handle) return false;
+    this.systemStreamingReplies.delete(messageId);
+    await handle.final(text);
+    return true;
+  }
+
+  private async abortSystemStreamingReply(messageId: string, text?: string): Promise<void> {
+    const handle = this.systemStreamingReplies.get(messageId);
+    if (!handle) return;
+    this.systemStreamingReplies.delete(messageId);
+    await handle.abort(text).catch((err) => {
+      log.debug(`[pool] System streaming reply abort failed: ${(err as Error).message}`);
+    });
+  }
+
   /** Notify a specific pool Director that a task has completed.
    *  If the Director is dead, revive it first.
    *  @returns the feishuChatId for sending the notification message */
@@ -327,6 +359,9 @@ export class DirectorPool extends EventEmitter {
       entry = newEntry;
     }
 
+    if (notifyMsgId && entry.feishuChatId !== 'web-console') {
+      await this.startSystemStreamingReply(notifyMsgId);
+    }
     await entry.bridge.notifyTaskDone(taskId, success, notifyMsgId);
   }
 
@@ -715,11 +750,26 @@ export class DirectorPool extends EventEmitter {
         return;
       }
       try {
-        await this.messaging.reply(replyToMessageId, reply);
+        const streamed = await this.finishSystemStreamingReply(replyToMessageId, reply);
+        if (!streamed) {
+          await this.messaging.reply(replyToMessageId, reply);
+        }
         log.debug(`[pool:${groupName}] System response replied to ${replyToMessageId}`);
       } catch (err) {
         console.warn(`[pool:${groupName}] Failed to reply system response:`, err);
       }
+    });
+
+    bridge.on('system-chunk', (text: string, replyToMessageId: string) => {
+      if (!isWeb) this.appendSystemStreamingReply(replyToMessageId, text);
+    });
+
+    bridge.on('system-tool-call', (replyToMessageId: string) => {
+      if (!isWeb) this.showSystemToolCall(replyToMessageId);
+    });
+
+    bridge.on('system-stream-abort', (replyToMessageId: string, text?: string) => {
+      if (!isWeb) void this.abortSystemStreamingReply(replyToMessageId, text);
     });
 
     // close → remove from pool

@@ -1177,15 +1177,17 @@ export class SessionBridge extends EventEmitter {
   }
 
   private handleStreamChunk(text: string): void {
-    const headType = this.pendingTurns[0]?.type;
-    const shouldStream = !this.flushing && !this.bootstrapping && headType === 'user' && !this.discardNextResponse;
-    if (shouldStream) this.emit('chunk', text);
+    const head = this.pendingTurns[0];
+    const shouldStream = !this.flushing && !this.bootstrapping && !this.discardNextResponse;
+    if (shouldStream && head?.type === 'user') this.emit('chunk', text);
+    if (shouldStream && head?.type === 'system-reply') this.emit('system-chunk', text, head.replyToMessageId);
   }
 
   private handleToolCall(): void {
-    const headType = this.pendingTurns[0]?.type;
-    const shouldStream = !this.flushing && !this.bootstrapping && headType === 'user' && !this.discardNextResponse;
-    if (shouldStream) this.emit('tool-call');
+    const head = this.pendingTurns[0];
+    const shouldStream = !this.flushing && !this.bootstrapping && !this.discardNextResponse;
+    if (shouldStream && head?.type === 'user') this.emit('tool-call');
+    if (shouldStream && head?.type === 'system-reply') this.emit('system-tool-call', head.replyToMessageId);
   }
 
   private handlePartialAgentMessage(text: string): void {
@@ -1194,8 +1196,8 @@ export class SessionBridge extends EventEmitter {
     const head = this.pendingTurns[0];
     if (!head || head.type !== 'system-reply') return;
     this.partialSystemReplyText = text;
-    log.debug(`[bridge:${this.label}] Partial system-reply forwarded (${text.length} chars, replyTo=${head.replyToMessageId})`);
-    this.emit('system-response', text, head.replyToMessageId);
+    log.debug(`[bridge:${this.label}] Partial system-reply streamed (${text.length} chars, replyTo=${head.replyToMessageId})`);
+    this.emit('system-chunk', text, head.replyToMessageId);
   }
 
   private handleMetricsUpdate(update: DirectorSessionMetricsUpdate): void {
@@ -1261,18 +1263,8 @@ export class SessionBridge extends EventEmitter {
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
         if (responseText) {
-          if (this.partialSystemReplyText !== null) {
-            const remainder = responseText.startsWith(this.partialSystemReplyText)
-              ? responseText.slice(this.partialSystemReplyText.length).replace(/^\n+/, '').trim()
-              : '';
-            if (remainder) {
-              log.debug(`[bridge:${this.label}] Task notification remainder (replyTo=${pending.replyToMessageId}): ${remainder.slice(0, 100)}`);
-              this.emit('system-response', remainder, pending.replyToMessageId);
-            }
-          } else {
-            log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${responseText.slice(0, 100)}`);
-            this.emit('system-response', responseText, pending.replyToMessageId);
-          }
+          log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${responseText.slice(0, 100)}`);
+          this.emit('system-response', responseText, pending.replyToMessageId);
         }
         this.partialSystemReplyText = null;
         resolvedTurnType = 'system';
@@ -1320,6 +1312,7 @@ export class SessionBridge extends EventEmitter {
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
         this.partialSystemReplyText = null;
+        this.emit('system-stream-abort', pending.replyToMessageId, 'Director 调用失败');
       }
       this.emit('alert', `⚠️ Director 调用失败: ${message}`);
     }

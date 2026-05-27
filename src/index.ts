@@ -47,6 +47,7 @@ async function main() {
   const messaging = new MessagingRouter(feishu);
   const startTime = Date.now();
   const streamingReplies = new Map<string, StreamingReplyHandle>();
+  const systemStreamingReplies = new Map<string, StreamingReplyHandle>();
 
   async function startStreamingReplyFor(correlationId: string, messageId: string): Promise<void> {
     if (!messaging.startStreamingReply) return;
@@ -96,6 +97,37 @@ async function main() {
     for (const item of items) {
       void abortStreamingReply(item.correlationId, text);
     }
+  }
+
+  async function startSystemStreamingReply(messageId: string): Promise<void> {
+    if (!messaging.startStreamingReply || systemStreamingReplies.has(messageId)) return;
+    const handle = await messaging.startStreamingReply(messageId);
+    if (handle) systemStreamingReplies.set(messageId, handle);
+  }
+
+  function appendSystemStreamingReply(messageId: string, text: string): void {
+    systemStreamingReplies.get(messageId)?.append(text);
+  }
+
+  function showSystemToolCall(messageId: string): void {
+    systemStreamingReplies.get(messageId)?.showToolCall?.();
+  }
+
+  async function finishSystemStreamingReply(messageId: string, text: string): Promise<boolean> {
+    const handle = systemStreamingReplies.get(messageId);
+    if (!handle) return false;
+    systemStreamingReplies.delete(messageId);
+    await handle.final(text);
+    return true;
+  }
+
+  async function abortSystemStreamingReply(messageId: string, text?: string): Promise<void> {
+    const handle = systemStreamingReplies.get(messageId);
+    if (!handle) return;
+    systemStreamingReplies.delete(messageId);
+    await handle.abort(text).catch((err) => {
+      log.debug(`[shell] System streaming reply abort failed: ${(err as Error).message}`);
+    });
   }
 
   // --- In-memory metrics collector ---
@@ -220,7 +252,10 @@ async function main() {
       chatId: messaging.getLastChatId(),
       isWeb: false,
       webLabel: null,
-      notifyDirector: (taskId, success, msgId) => director.notifyTaskDone(taskId, success, msgId),
+      notifyDirector: async (taskId, success, msgId) => {
+        if (msgId) await startSystemStreamingReply(msgId);
+        await director.notifyTaskDone(taskId, success, msgId);
+      },
     };
   }
 
@@ -306,11 +341,26 @@ async function main() {
   // 7.3.5: Director's response to task notifications — reply to the notification message
   director.on('system-response', async (reply: string, replyToMessageId: string) => {
     try {
-      await messaging.reply(replyToMessageId, reply);
+      const streamed = await finishSystemStreamingReply(replyToMessageId, reply);
+      if (!streamed) {
+        await messaging.reply(replyToMessageId, reply);
+      }
       log.debug(`[shell] System response replied to ${replyToMessageId}`);
     } catch (err) {
       console.warn('[shell] Failed to reply system response:', err);
     }
+  });
+
+  director.on('system-chunk', (text: string, replyToMessageId: string) => {
+    appendSystemStreamingReply(replyToMessageId, text);
+  });
+
+  director.on('system-tool-call', (replyToMessageId: string) => {
+    showSystemToolCall(replyToMessageId);
+  });
+
+  director.on('system-stream-abort', (replyToMessageId: string, text?: string) => {
+    void abortSystemStreamingReply(replyToMessageId, text);
   });
 
 

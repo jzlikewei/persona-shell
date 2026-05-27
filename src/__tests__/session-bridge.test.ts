@@ -736,30 +736,32 @@ describe('SessionBridge', () => {
     adapter.send = orig;
   });
 
-  // ---- 11. Codex partial system-reply forwarding ----
+  // ---- 11. Codex partial system-reply streaming ----
 
-  test('codex system-reply partial agent message triggers immediate system-response', async () => {
+  test('codex system-reply partial agent message streams system chunk before final response', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
-    const emitted: Array<{ event: string; args: unknown[] }> = [];
-    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+    const chunks: Array<{ text: string; replyToMessageId: string }> = [];
+    const responses: Array<{ text: string; replyToMessageId: string }> = [];
+    bridge.on('system-chunk', (text: string, replyToMessageId: string) => chunks.push({ text, replyToMessageId }));
+    bridge.on('system-response', (text: string, replyToMessageId: string) => responses.push({ text, replyToMessageId }));
 
     await bridge.start();
     await bridge.notifyTaskDone('task-1', true, 'msg-100');
 
     adapter.hooks.onPartialAgentMessage('任务已完成，报告如下…');
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0].args[0]).toBe('任务已完成，报告如下…');
-    expect(emitted[0].args[1]).toBe('msg-100');
+    expect(chunks).toEqual([{ text: '任务已完成，报告如下…', replyToMessageId: 'msg-100' }]);
+    expect(responses).toHaveLength(0);
 
     adapter.completeTurn({ responseText: '任务已完成，报告如下…', durationMs: 10 });
+    expect(responses).toEqual([{ text: '任务已完成，报告如下…', replyToMessageId: 'msg-100' }]);
   });
 
-  test('partial system-reply forwarding only fires once per turn', async () => {
+  test('partial system-reply streaming only fires once per turn', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
-    const emitted: Array<{ event: string; args: unknown[] }> = [];
-    bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
+    const chunks: string[] = [];
+    bridge.on('system-chunk', (text: string) => chunks.push(text));
 
     await bridge.start();
     await bridge.notifyTaskDone('task-2', true, 'msg-200');
@@ -767,13 +769,12 @@ describe('SessionBridge', () => {
     adapter.hooks.onPartialAgentMessage('first segment');
     adapter.hooks.onPartialAgentMessage('second segment');
 
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0].args[0]).toBe('first segment');
+    expect(chunks).toEqual(['first segment']);
 
     adapter.completeTurn({ responseText: 'first segment\nsecond segment', durationMs: 10 });
   });
 
-  test('turn completion after partial forward emits only remainder', async () => {
+  test('turn completion after partial stream emits full response once', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
     const emitted: Array<{ event: string; args: unknown[] }> = [];
@@ -785,13 +786,12 @@ describe('SessionBridge', () => {
     adapter.hooks.onPartialAgentMessage('结论：已完成');
     adapter.completeTurn({ responseText: '结论：已完成\n后续已派发 task-4', durationMs: 10 });
 
-    expect(emitted).toHaveLength(2);
-    expect(emitted[0].args[0]).toBe('结论：已完成');
-    expect(emitted[1].args[0]).toBe('后续已派发 task-4');
-    expect(emitted[1].args[1]).toBe('msg-300');
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].args[0]).toBe('结论：已完成\n后续已派发 task-4');
+    expect(emitted[0].args[1]).toBe('msg-300');
   });
 
-  test('turn completion after partial forward skips emission when no remainder', async () => {
+  test('turn completion after partial stream emits final response', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
     const emitted: Array<{ event: string; args: unknown[] }> = [];
