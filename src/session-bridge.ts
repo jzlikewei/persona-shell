@@ -4,6 +4,7 @@ import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, isCodexFamily, type Config } from './config.js';
 import type { AgentRuntimeConfig } from './persona-process.js';
+import type { DirectorSendResult } from './director-runtime/index.js';
 import { loadPrompt } from './prompt-loader.js';
 import { ClaudeDirectorRuntime } from './director-runtime/claude.js';
 import { KimiDirectorRuntime } from './director-runtime/kimi.js';
@@ -42,7 +43,7 @@ interface BridgePersistedState {
 }
 
 type PendingType =
-  | { type: 'user' }
+  | { type: 'user'; correlationId?: string }
   | { type: 'system-absorbed' }
   | { type: 'system-reply'; replyToMessageId: string }
   | { type: 'system-forward' }
@@ -760,7 +761,7 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  async send(message: string): Promise<void> {
+  async send(message: string, options?: { correlationId?: string }): Promise<DirectorSendResult | void> {
     if (!this.adapter.isReady()) {
       throw new Error('SessionBridge not started');
     }
@@ -779,9 +780,9 @@ export class SessionBridge extends EventEmitter {
       this.lastTimeSyncAt = now;
     }
 
-    const pendingTurn = this.enqueuePendingTurn({ type: 'user' });
+    const pendingTurn = this.enqueuePendingTurn({ type: 'user', correlationId: options?.correlationId });
     try {
-      await this.writeRaw(content);
+      return await this.writeRaw(content);
     } catch (err) {
       this.removePendingTurn(pendingTurn);
       this.resolveDrainIfNeeded();
@@ -811,7 +812,7 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  private async writeRaw(content: string): Promise<void> {
+  private async writeRaw(content: string): Promise<DirectorSendResult | void> {
     if (!this.adapter.isReady()) {
       throw new Error('transport not ready');
     }
@@ -833,11 +834,12 @@ export class SessionBridge extends EventEmitter {
     if (result === 'steered') {
       const steeredTurn = this.pendingTurns.pop();
       if (steeredTurn?.type === 'user') {
-        this.emit('message-steered');
+        this.emit('message-steered', steeredTurn.correlationId);
       } else if (steeredTurn) {
         this.pendingTurns.push(steeredTurn);
       }
     }
+    return result;
   }
 
   async notifyTaskDone(taskId: string, success: boolean, replyToMessageId?: string): Promise<void> {

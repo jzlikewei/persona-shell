@@ -50,8 +50,17 @@ async function main() {
 
   async function startStreamingReplyFor(correlationId: string, messageId: string): Promise<void> {
     if (!messaging.startStreamingReply) return;
+    const head = queue.peek();
+    if (!head || head.correlationId !== correlationId) return;
+    if (streamingReplies.has(correlationId)) return;
     const handle = await messaging.startStreamingReply(messageId);
     if (handle) streamingReplies.set(correlationId, handle);
+  }
+
+  async function startStreamingReplyForHead(): Promise<void> {
+    const item = queue.peek();
+    if (!item) return;
+    await startStreamingReplyFor(item.correlationId, item.messageId);
   }
 
   function appendStreamingReply(text: string): void {
@@ -517,8 +526,8 @@ async function main() {
     }
   });
 
-  director.on('message-steered', () => {
-    const item = queue.resolveOldest();
+  director.on('message-steered', (correlationId?: string) => {
+    const item = correlationId ? queue.resolve(correlationId) : queue.resolveOldest();
     if (item) {
       queue.logAction('STEERED', item.messageId, `cid=${item.correlationId}`);
       void abortStreamingReply(item.correlationId, '已并入上一轮处理');
@@ -980,7 +989,7 @@ async function main() {
       queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
       try {
         await startStreamingReplyFor(correlationId, messageId);
-        await director.send(directorText);
+        await director.send(directorText, { correlationId });
       } catch (err) {
         // 3.3: All send errors must clean up queue state to prevent orphaned items
         queue.resolve(correlationId);
@@ -1044,6 +1053,7 @@ async function main() {
         console.error(`[shell] sendMessage fallback also failed:`, e);
       });
     }
+    await startStreamingReplyForHead();
   });
 
   let shuttingDown = false;

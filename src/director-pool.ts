@@ -234,8 +234,8 @@ export class DirectorPool extends EventEmitter {
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
-      await this.startStreamingReply(correlationId, messageId);
-      await entry.bridge.send(text);
+      await this.startStreamingReply(entry.queue, correlationId, messageId);
+      await entry.bridge.send(text, { correlationId });
       entry.messagesSinceFlush++;
       const countKey = `pool:${routingKey}:msgCount`;
       setState(countKey, entry.messagesSinceFlush);
@@ -255,10 +255,19 @@ export class DirectorPool extends EventEmitter {
     });
   }
 
-  private async startStreamingReply(correlationId: string, messageId: string): Promise<void> {
+  private async startStreamingReply(queue: MessageQueue, correlationId: string, messageId: string): Promise<void> {
     if (!this.messaging.startStreamingReply) return;
+    const head = queue.peek();
+    if (!head || head.correlationId !== correlationId) return;
+    if (this.streamingReplies.has(correlationId)) return;
     const handle = await this.messaging.startStreamingReply(messageId);
     if (handle) this.streamingReplies.set(correlationId, handle);
+  }
+
+  private async startStreamingReplyForHead(queue: MessageQueue): Promise<void> {
+    const item = queue.peek();
+    if (!item) return;
+    await this.startStreamingReply(queue, item.correlationId, item.messageId);
   }
 
   private appendStreamingReply(queue: MessageQueue, text: string): void {
@@ -696,6 +705,7 @@ export class DirectorPool extends EventEmitter {
           console.error(`[pool:${groupName}] sendMessage fallback also failed:`, e);
         });
       }
+      await this.startStreamingReplyForHead(queue);
     });
 
     // system-response → reply to task notification message (web sessions: forward via WebSocket)
@@ -767,8 +777,8 @@ export class DirectorPool extends EventEmitter {
       }
     });
 
-    bridge.on('message-steered', () => {
-      const item = queue.resolveOldest();
+    bridge.on('message-steered', (correlationId?: string) => {
+      const item = correlationId ? queue.resolve(correlationId) : queue.resolveOldest();
       if (item) {
         queue.logAction('STEERED', item.messageId, `cid=${item.correlationId}`);
         void this.abortStreamingReply(item.correlationId, '已并入上一轮处理');

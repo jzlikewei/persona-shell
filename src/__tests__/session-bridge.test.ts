@@ -349,18 +349,18 @@ describe('SessionBridge', () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances[0]!;
     const responses: string[] = [];
-    const steered: string[] = [];
+    const steered: Array<string | undefined> = [];
     bridge.on('response', (reply: string) => responses.push(reply));
-    bridge.on('message-steered', () => steered.push('yes'));
+    bridge.on('message-steered', (correlationId?: string) => steered.push(correlationId));
 
     await bridge.start();
     await bridge.send('first');
     adapter.nextSendResult = 'steered';
-    await bridge.send('second');
+    await bridge.send('second', { correlationId: 'cid-second' });
     adapter.nextSendResult = undefined;
 
     expect(bridge.getStatus().pendingCount).toBe(1);
-    expect(steered).toEqual(['yes']);
+    expect(steered).toEqual(['cid-second']);
 
     adapter.completeTurn({ responseText: 'combined reply', durationMs: 5 });
 
