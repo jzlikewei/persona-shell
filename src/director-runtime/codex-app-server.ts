@@ -76,6 +76,7 @@ export class CodexAppServerRuntime {
   private threadReady = false;
   private activeTurnId: string | null = null;
   private activeResponse = '';
+  private activeDeltaCount = 0;
   private currentTurnStartedAt: number | null = null;
   private starting: Promise<boolean> | null = null;
 
@@ -128,6 +129,7 @@ export class CodexAppServerRuntime {
     }
 
     this.activeResponse = '';
+    this.activeDeltaCount = 0;
     this.currentTurnStartedAt = Date.now();
     const result = await this.request('turn/start', {
       threadId,
@@ -189,6 +191,7 @@ export class CodexAppServerRuntime {
     this.threadReady = false;
     this.activeTurnId = null;
     this.activeResponse = '';
+    this.activeDeltaCount = 0;
     this.currentTurnStartedAt = null;
 
     const restoredSession = this.hooks.getSessionId();
@@ -348,13 +351,20 @@ export class CodexAppServerRuntime {
         const turnId = this.getTurnId(params);
         if (turnId) {
           this.activeTurnId = turnId;
+          this.activeDeltaCount = 0;
           this.currentTurnStartedAt = Date.now();
+          console.log(`[codex-live:${this.options.label}] turn started id=${turnId}`);
         }
         break;
       }
       case 'item/agentMessage/delta': {
         const delta = typeof params.delta === 'string' ? params.delta : '';
         if (delta) {
+          const nextTotal = this.activeResponse.length + delta.length;
+          this.activeDeltaCount += 1;
+          console.log(
+            `[codex-live:${this.options.label}] delta #${this.activeDeltaCount} chars=${delta.length} total=${nextTotal} preview="${this.preview(delta)}"`,
+          );
           this.activeResponse += delta;
           this.hooks.onChunk(delta);
         }
@@ -381,6 +391,7 @@ export class CodexAppServerRuntime {
         this.hooks.onTurnFailure(this.summarize(params.error ?? params));
         this.activeTurnId = null;
         this.activeResponse = '';
+        this.activeDeltaCount = 0;
         this.currentTurnStartedAt = null;
         break;
       }
@@ -433,6 +444,8 @@ export class CodexAppServerRuntime {
 
     this.activeTurnId = null;
     this.activeResponse = '';
+    const deltaCount = this.activeDeltaCount;
+    this.activeDeltaCount = 0;
     this.currentTurnStartedAt = null;
 
     if (turn.status === 'failed') {
@@ -440,6 +453,9 @@ export class CodexAppServerRuntime {
       return;
     }
 
+    console.log(
+      `[codex-live:${this.options.label}] turn completed chars=${responseText.length} deltas=${deltaCount} duration_ms=${durationMs ?? 'N/A'}`,
+    );
     this.hooks.onTurnComplete({ responseText: responseText.trim(), durationMs });
   }
 
@@ -589,5 +605,9 @@ export class CodexAppServerRuntime {
     } catch {
       return String(value);
     }
+  }
+
+  private preview(text: string): string {
+    return text.replace(/\s+/g, ' ').trim().slice(0, 80).replace(/"/g, '\\"');
   }
 }

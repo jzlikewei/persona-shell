@@ -191,12 +191,17 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
 
   append(delta: string): void {
     if (this.closed || !delta) return;
+    const nextLength = this.text.length + delta.length;
+    const nextSinceLast = nextLength - this.lastSent.length;
+    this.options.logDebug(
+      `[streaming-card] append chars=${delta.length} total=${nextLength} since_last=${nextSinceLast} min_chars=${this.options.minUpdateChars}`,
+    );
     this.text += delta;
     if (this.text.length - this.lastSent.length < this.options.minUpdateChars) {
-      this.scheduleFlush();
+      this.scheduleFlush('below-min-chars');
       return;
     }
-    this.flushSoon();
+    this.flushSoon('min-chars-met');
   }
 
   showToolCall(): void {
@@ -204,6 +209,7 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.toolCallVisible = true;
     this.clearTimer();
     const text = this.text.trim();
+    this.options.logDebug(`[streaming-card] tool call flush chars=${text.length}`);
     void this.enqueueUpdate(text, 'streaming', false).catch((err) => {
       this.options.logDebug(`[streaming-card] tool call update failed: ${(err as Error).message}`);
     });
@@ -219,6 +225,7 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.clearTimer();
     this.toolCallVisible = false;
     const finalText = text.trim() || this.text.trim() || this.options.completeText;
+    this.options.logDebug(`[streaming-card] final chars=${finalText.length}`);
     await this.enqueueUpdate(finalText, 'done', true);
   }
 
@@ -227,24 +234,29 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     this.closed = true;
     this.clearTimer();
     this.toolCallVisible = false;
+    this.options.logDebug(`[streaming-card] abort chars=${text.length}`);
     await this.enqueueUpdate(text, 'aborted', true).catch((err) => {
       this.options.logDebug(`[streaming-card] abort update failed: ${(err as Error).message}`);
     });
   }
 
-  private scheduleFlush(): void {
+  private scheduleFlush(reason: string): void {
     if (this.timer) return;
+    this.options.logDebug(`[streaming-card] schedule flush reason=${reason} debounce_ms=${this.options.debounceMs}`);
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.flushSoon();
+      this.flushSoon('debounce');
     }, this.options.debounceMs);
   }
 
-  private flushSoon(): void {
+  private flushSoon(reason: string): void {
     this.clearTimer();
     const text = this.text.trim();
     if (!text && !this.toolCallVisible) return;
     if (text === this.lastSent && this.toolCallVisible === this.lastSentToolCallVisible) return;
+    this.options.logDebug(
+      `[streaming-card] flush reason=${reason} chars=${text.length} since_last=${text.length - this.lastSent.length} tool=${this.toolCallVisible}`,
+    );
     void this.enqueueUpdate(text, 'streaming', false).catch((err) => {
       this.options.logDebug(`[streaming-card] update failed: ${(err as Error).message}`);
     });
@@ -271,9 +283,11 @@ export class FeishuCardStreamingReply implements StreamingReplyHandle {
     });
     const sentToolCallVisible = status === 'streaming' && this.toolCallVisible;
     const run = this.queue.catch(() => undefined).then(async () => {
+      this.options.logDebug(`[streaming-card] patch start status=${status} chars=${text.length} tool=${sentToolCallVisible}`);
       await this.options.updateCard(this.options.cardMessageId, card);
       this.lastSent = text;
       this.lastSentToolCallVisible = sentToolCallVisible;
+      this.options.logDebug(`[streaming-card] patch done status=${status} chars=${text.length} tool=${sentToolCallVisible}`);
     });
     this.queue = run.catch(async (err) => {
       if (allowFallback) {
