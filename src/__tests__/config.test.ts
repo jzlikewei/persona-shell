@@ -94,6 +94,8 @@ describe('config', () => {
       const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
       expect(cfg.feishu.app_id).toBe('test_id');
       expect(cfg.feishu.app_secret).toBe('test_secret');
+      expect(cfg.feishu.stream_update_debounce_ms).toBe(2000);
+      expect(cfg.feishu.stream_min_update_chars).toBe(64);
     });
 
     test('throws when app_id is missing', () => {
@@ -195,6 +197,36 @@ describe('config', () => {
         });
         const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
         expect(cfg.director.time_sync_interval_ms).toBe(5 * 3600_000);
+      });
+
+      test('feishu stream update settings override defaults', () => {
+        writeMinimalConfig({
+          config: [
+            'feishu:',
+            '  app_id: id',
+            '  stream_update_debounce_ms: 5000',
+            '  stream_min_update_chars: 160',
+          ].join('\n'),
+          secret: `feishu:\n  app_secret: s\n`,
+        });
+        const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
+        expect(cfg.feishu.stream_update_debounce_ms).toBe(5000);
+        expect(cfg.feishu.stream_min_update_chars).toBe(160);
+      });
+
+      test('feishu stream update settings fall back when invalid', () => {
+        writeMinimalConfig({
+          config: [
+            'feishu:',
+            '  app_id: id',
+            '  stream_update_debounce_ms: 0',
+            '  stream_min_update_chars: -1',
+          ].join('\n'),
+          secret: `feishu:\n  app_secret: s\n`,
+        });
+        const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
+        expect(cfg.feishu.stream_update_debounce_ms).toBe(2000);
+        expect(cfg.feishu.stream_min_update_chars).toBe(64);
       });
 
       test('director flush_interval_days converts to ms', () => {

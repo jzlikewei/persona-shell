@@ -39,7 +39,9 @@ agents:
 # 配置模板 — 复制到 config.yaml 并填入实际值
 # 飞书凭据（app_id + app_secret）放 im_secret.yaml，不在此文件中
 feishu:
-  master_id: ""               # 本体的飞书 open_id（配置后仅本体可执行 /restart 等命令）
+  master_id: ""                       # 本体的飞书 open_id（配置后仅本体可执行 /restart 等命令）
+  stream_update_debounce_ms: 2000     # 飞书流式卡片最小刷新间隔兜底，小 chunk 最多等待 2s
+  stream_min_update_chars: 64         # 飞书流式卡片累计新增字符达到该值时刷新
 
 director:
   persona_dir: "~/.persona"

@@ -60,6 +60,8 @@ export interface Config {
     app_id: string;
     app_secret: string;
     master_id?: string;
+    stream_update_debounce_ms: number;
+    stream_min_update_chars: number;
   };
   director: {
     persona_dir: string;
@@ -150,6 +152,9 @@ export function loadConfig(path?: string): Config {
   if (!feishu.app_id || !feishu.app_secret) {
     throw new Error('feishu.app_id is required in config.yaml, feishu.app_secret is required in im_secret.yaml (or config.yaml for compatibility)');
   }
+
+  feishu.stream_update_debounce_ms = positiveNumber(feishu.stream_update_debounce_ms) ?? 2_000;
+  feishu.stream_min_update_chars = positiveNumber(feishu.stream_min_update_chars) ?? 64;
 
   const dir = yaml.director ?? {};
   const con = yaml.console ?? {};

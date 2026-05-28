@@ -102,6 +102,8 @@ agents:
 
 feishu:
   master_id: "ou_xxxx"                       # 本体的飞书 open_id（可选）
+  stream_update_debounce_ms: 2000            # 飞书流式卡片小 chunk 兜底刷新间隔
+  stream_min_update_chars: 64                # 飞书流式卡片累计新增字符刷新阈值
 
 director:
   persona_dir: "~/.persona"               # 身份/记忆仓库路径

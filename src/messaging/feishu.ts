@@ -196,8 +196,6 @@ const SDK_SELF_HEAL_WINDOW = 30_000;   // 给 SDK 30s 自行重连的窗口
 const FEISHU_API_CHECK_TIMEOUT = 5_000; // 飞书 API 可达性检查超时
 
 const RETRY_DELAYS = [1000, 3000];
-const STREAM_UPDATE_DEBOUNCE_MS = 2_000;
-const STREAM_MIN_UPDATE_CHARS = 64;
 const STREAM_INITIAL_TEXT = '思考中';
 const STREAM_BOT_NAME = 'Persona';
 
@@ -875,8 +873,8 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
           deleteCard,
           fallbackReply: replyText,
           logDebug: (message) => log.debug(`[feishu] ${message}`),
-          debounceMs: STREAM_UPDATE_DEBOUNCE_MS,
-          minUpdateChars: STREAM_MIN_UPDATE_CHARS,
+          debounceMs: config.stream_update_debounce_ms,
+          minUpdateChars: config.stream_min_update_chars,
           botName: STREAM_BOT_NAME,
           completeText: '已完成',
           abortText: '处理已中断',
