@@ -237,16 +237,27 @@ export class DirectorPool extends EventEmitter {
     if (!entry) throw new Error(`No Director for routingKey ${routingKey}`);
 
     entry.lastActiveAt = Date.now();
+    if (entry.bridge.getStatus().pendingCount > 0) {
+      await entry.bridge.send(text, { expectResponse: false });
+      entry.queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));
+      console.log(`[pool:${entry.groupName}] Inserted message into active turn: ${messageId}`);
+      return;
+    }
+
     const correlationId = entry.queue.enqueue({ text, messageId, chatId: entry.feishuChatId });
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
       await this.startStreamingReply(entry.queue, correlationId, messageId, routingKey);
+      entry.queue.markDispatching(correlationId);
       await entry.bridge.send(text, { correlationId });
+      entry.queue.markDispatched(correlationId);
+      await this.startStreamingReply(entry.queue, correlationId, messageId, routingKey);
       entry.messagesSinceFlush++;
       const countKey = `pool:${routingKey}:msgCount`;
       setState(countKey, entry.messagesSinceFlush);
     } catch (err) {
+      entry.queue.markDispatched(correlationId);
       entry.queue.resolve(correlationId);
       await this.abortStreamingReply(correlationId, '消息发送失败');
       throw err;
@@ -270,6 +281,8 @@ export class DirectorPool extends EventEmitter {
     if (!this.messaging.startStreamingReply) return;
     const head = queue.peek();
     if (!head || head.correlationId !== correlationId) return;
+    if (head.cancelled) return;
+    if (queue.isDispatching(correlationId)) return;
     if (this.streamingReplies.has(correlationId)) return;
     const handle = await this.messaging.startStreamingReply(messageId);
     if (handle) {

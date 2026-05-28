@@ -59,6 +59,8 @@ async function main() {
     if (!messaging.startStreamingReply) return;
     const head = queue.peek();
     if (!head || head.correlationId !== correlationId) return;
+    if (head.cancelled) return;
+    if (queue.isDispatching(correlationId)) return;
     if (streamingReplies.has(correlationId)) return;
     const handle = await messaging.startStreamingReply(messageId);
     if (handle) {
@@ -1088,13 +1090,34 @@ async function main() {
       }
     } else {
       // 私聊 → 主 Director
-      const correlationId = queue.enqueue({ text, messageId, chatId });
+      if (director.getStatus().pendingCount > 0) {
+        try {
+          await director.send(directorText, { expectResponse: false });
+          queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));
+          console.log(`[shell] Inserted message into active turn: ${messageId}`);
+        } catch (err) {
+          if (String(err).includes('flushing')) {
+            await messaging.reply(messageId, '正在刷新上下文，请稍后重试').catch(() => {});
+          } else {
+            console.error(`[shell] insert failed:`, err);
+            metrics.addError(`Insert failed: ${String(err).slice(0, 200)}`);
+            await messaging.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
+          }
+        }
+        return;
+      }
+
+      const correlationId = queue.enqueue({ text, directorText, messageId, chatId });
       queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
       try {
         await startStreamingReplyFor(correlationId, messageId);
+        queue.markDispatching(correlationId);
         await director.send(directorText, { correlationId });
+        queue.markDispatched(correlationId);
+        await startStreamingReplyFor(correlationId, messageId);
       } catch (err) {
         // 3.3: All send errors must clean up queue state to prevent orphaned items
+        queue.markDispatched(correlationId);
         queue.resolve(correlationId);
         await abortStreamingReply(correlationId, '消息发送失败');
         if (String(err).includes('flushing')) {

@@ -139,6 +139,37 @@ describe('MessageQueue core operations', () => {
     expect(queue.clearAll()).toEqual([]);
   });
 
+  test('dispatching state is in-memory and cleared on resolve', () => {
+    const queue = new MessageQueue(`${LOG_DIR}/queue.log`);
+    const cid = queue.enqueue({ text: 'in-flight', messageId: 'm1', chatId: 'c1' });
+
+    expect(queue.isDispatching(cid)).toBe(false);
+    queue.markDispatching(cid);
+    expect(queue.isDispatching(cid)).toBe(true);
+
+    const restored = new MessageQueue(`${LOG_DIR}/queue.log`);
+    restored.restoreFromState();
+    expect(restored.isDispatching(cid)).toBe(false);
+
+    queue.resolve(cid);
+    expect(queue.isDispatching(cid)).toBe(false);
+  });
+
+  test('dispatching state is cleared on cancel and clearAll', () => {
+    const queue = new MessageQueue(`${LOG_DIR}/queue.log`);
+    const cid1 = queue.enqueue({ text: 'first', messageId: 'm1', chatId: 'c1' });
+    const cid2 = queue.enqueue({ text: 'second', messageId: 'm2', chatId: 'c1' });
+
+    queue.markDispatching(cid1);
+    queue.markDispatching(cid2);
+    queue.cancelOldest();
+    expect(queue.isDispatching(cid1)).toBe(false);
+    expect(queue.isDispatching(cid2)).toBe(true);
+
+    queue.clearAll();
+    expect(queue.isDispatching(cid2)).toBe(false);
+  });
+
   test('getSnapshot returns items with text truncated to 50 chars', () => {
     const queue = new MessageQueue(`${LOG_DIR}/queue.log`);
     const longText = 'a'.repeat(100);

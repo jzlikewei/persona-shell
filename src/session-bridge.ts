@@ -775,7 +775,7 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  async send(message: string, options?: { correlationId?: string }): Promise<DirectorSendResult | void> {
+  async send(message: string, options?: { correlationId?: string; expectResponse?: boolean }): Promise<DirectorSendResult | void> {
     if (!this.adapter.isReady()) {
       throw new Error('SessionBridge not started');
     }
@@ -792,6 +792,10 @@ export class SessionBridge extends EventEmitter {
       const timeStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
       content = `[${timeStr}] ${message}`;
       this.lastTimeSyncAt = now;
+    }
+
+    if (options?.expectResponse === false) {
+      return await this.writeRaw(content, { handleSteeredPending: false });
     }
 
     const pendingTurn = this.enqueuePendingTurn({ type: 'user', correlationId: options?.correlationId });
@@ -826,7 +830,10 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  private async writeRaw(content: string): Promise<DirectorSendResult | void> {
+  private async writeRaw(
+    content: string,
+    options: { handleSteeredPending?: boolean } = {},
+  ): Promise<DirectorSendResult | void> {
     if (!this.adapter.isReady()) {
       throw new Error('transport not ready');
     }
@@ -845,7 +852,7 @@ export class SessionBridge extends EventEmitter {
     }
 
     const result = await this.adapter.send(content);
-    if (result === 'steered') {
+    if (result === 'steered' && options.handleSteeredPending !== false) {
       const steeredTurn = this.pendingTurns.pop();
       if (steeredTurn?.type === 'user') {
         this.emit('message-steered', steeredTurn.correlationId);

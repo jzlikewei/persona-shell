@@ -5,6 +5,7 @@ import { getState, setState, deleteState } from './task/task-store.js';
 
 export interface QueueItem {
   text: string;
+  directorText?: string;
   messageId: string;
   chatId: string;
   timestamp: number;
@@ -20,6 +21,7 @@ export function generateCorrelationId(): string {
 
 export class MessageQueue {
   private items: Map<string, QueueItem> = new Map();
+  private dispatching: Set<string> = new Set();
   private logPath: string;
   private stateKey: string;
   private restorable: boolean;
@@ -129,6 +131,7 @@ export class MessageQueue {
     const item = this.items.get(correlationId);
     if (item) {
       this.items.delete(correlationId);
+      this.dispatching.delete(correlationId);
       this.persist();
       this.log('RESOLVE', item.messageId, `cid=${correlationId}`);
     }
@@ -144,6 +147,7 @@ export class MessageQueue {
       }
     }
     if (oldest) {
+      this.dispatching.delete(oldest.correlationId);
       oldest.cancelled = true;
       this.persist();
       this.log('CANCEL', oldest.messageId, `cid=${oldest.correlationId}`);
@@ -155,6 +159,7 @@ export class MessageQueue {
   cancel(correlationId: string): QueueItem | undefined {
     const item = this.items.get(correlationId);
     if (!item || item.cancelled) return undefined;
+    this.dispatching.delete(correlationId);
     item.cancelled = true;
     this.persist();
     this.log('CANCEL', item.messageId, `cid=${item.correlationId}`);
@@ -174,6 +179,7 @@ export class MessageQueue {
       if (!oldest) break;
 
       this.items.delete(oldest.correlationId);
+      this.dispatching.delete(oldest.correlationId);
       modified = true;
 
       if (oldest.cancelled) {
@@ -205,10 +211,26 @@ export class MessageQueue {
     const items = Array.from(this.items.values());
     if (items.length > 0) {
       this.items.clear();
+      this.dispatching.clear();
       this.persist();
       this.log('CLEAR_ALL', '-', `cleared ${items.length} orphaned items`);
     }
     return items;
+  }
+
+  markDispatching(correlationId: string): void {
+    if (!this.items.has(correlationId)) return;
+    this.dispatching.add(correlationId);
+    this.log('DISPATCHING', this.items.get(correlationId)!.messageId, `cid=${correlationId}`);
+  }
+
+  markDispatched(correlationId: string): void {
+    if (!this.dispatching.delete(correlationId)) return;
+    this.log('DISPATCHED', this.items.get(correlationId)?.messageId ?? '-', `cid=${correlationId}`);
+  }
+
+  isDispatching(correlationId: string): boolean {
+    return this.dispatching.has(correlationId);
   }
 
   get length(): number {
