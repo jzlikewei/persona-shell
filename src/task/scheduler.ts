@@ -128,16 +128,16 @@ export class Scheduler {
 
             case 'director_msg': {
               this.callbacks.notifyCronFired?.(job);
-              await this.callbacks.executeDirectorMsg(job);
               this.callbacks.markJobRun(job.id);
+              await this.callbacks.executeDirectorMsg(job);
               console.log(`[scheduler] Sent director message for ${job.name}`);
               break;
             }
 
             case 'shell_action': {
               this.callbacks.notifyCronFired?.(job);
-              await this.callbacks.executeShellAction(job);
               this.callbacks.markJobRun(job.id);
+              await this.callbacks.executeShellAction(job);
               console.log(`[scheduler] Executed shell action for ${job.name}`);
               break;
             }

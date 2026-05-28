@@ -608,19 +608,6 @@ async function main() {
     console.log('[shell] Seeded built-in cron job: daily-report');
   }
 
-  const existingDailyFlush = listCronJobs().find((j) => j.name === 'daily-flush');
-  if (!existingDailyFlush) {
-    createCronJob({
-      name: 'daily-flush',
-      role: 'system',
-      description: '每日 flush 所有 Director，加载最新配置',
-      prompt: '',
-      schedule: 'daily 11:00',
-      action_type: 'shell_action',
-      action_name: 'flush',
-    });
-    console.log('[shell] Seeded built-in cron job: daily-flush');
-  }
 
   // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
   director.on('auto-flush-complete', () => {
