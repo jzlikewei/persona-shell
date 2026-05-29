@@ -239,6 +239,7 @@ agents:
       sandbox: workspace-write
       approval: on-request
       transport: stdio
+      cwd: ~/github/jzlikewei/persona-shell
   defaults:
     director: codex-custom
 ```
@@ -251,10 +252,12 @@ agents:
 | 多 turn | 首轮 `thread/start`，后续普通消息走 `turn/start` |
 | active turn 追加用户消息 | 当前 turn 未完成时，新用户消息走 `turn/steer` + `expectedTurnId` |
 | session 持久化 | 保存 `thread.id`，重启 runtime 后优先 `thread/resume` |
+| Codex app 可见性 | thread 写入 `threadSource=user`，并将 `sessionName` 同步到 `thread/name/set` |
 | 中断 | 优先 `turn/interrupt`，失败时退回进程信号 |
 
 注意事项：
 
+- `cwd` 可选；默认使用 `director.persona_dir`。Codex app 按 workspace 精确过滤会话，需要在 persona-shell 项目视图里看到 live session 时，把 provider `cwd` 指向 persona-shell 仓库。
 - 如需退回 turn-based 模式（每消息 spawn），将 provider `type` 改为 `codex`。后台任务始终使用 turn-based `codex exec`，不受此设置影响。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。

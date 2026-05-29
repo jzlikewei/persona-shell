@@ -223,6 +223,7 @@ export class CodexAppServerRuntime {
         });
         const threadId = this.getThreadId(resumed) ?? restoredSession;
         this.hooks.persistSession(threadId, sessionName);
+        await this.setThreadName(threadId, sessionName);
         this.threadReady = true;
         return false;
       } catch (err) {
@@ -238,6 +239,7 @@ export class CodexAppServerRuntime {
     const threadId = this.getThreadId(started);
     if (!threadId) throw new Error('codex app-server thread/start did not return a thread id');
     this.hooks.persistSession(threadId, sessionName);
+    await this.setThreadName(threadId, sessionName);
     this.threadReady = true;
     return true;
   }
@@ -253,7 +255,7 @@ export class CodexAppServerRuntime {
     const child = spawn(this.options.agent.command, args, {
       detached: true,
       stdio: ['pipe', 'pipe', stderrFd],
-      cwd: this.options.config.persona_dir,
+      cwd: this.runtimeCwd(),
       env: { ...process.env, DIRECTOR_LABEL: this.options.label, NO_COLOR: '1' },
     });
     closeSync(stderrFd);
@@ -507,15 +509,25 @@ export class CodexAppServerRuntime {
   }
 
   private threadOptions(): Record<string, unknown> {
-    const personaDir = this.options.config.persona_dir;
     return {
-      cwd: personaDir,
+      cwd: this.runtimeCwd(),
       approvalPolicy: this.options.agent.approval ?? 'never',
       sandbox: this.options.agent.sandbox ?? 'danger-full-access',
       ...(this.options.agent.model ? { model: this.options.agent.model } : {}),
       baseInstructions: this.readPromptSections(['soul.md', 'meta.md']),
       developerInstructions: this.readDeveloperInstructions(),
+      sessionStartSource: 'startup',
+      threadSource: 'user',
     };
+  }
+
+  private runtimeCwd(): string {
+    return this.options.agent.cwd ?? this.options.config.persona_dir;
+  }
+
+  private async setThreadName(threadId: string, sessionName: string | null): Promise<void> {
+    if (!sessionName) return;
+    await this.request('thread/name/set', { threadId, name: sessionName }).catch(() => undefined);
   }
 
   private readDeveloperInstructions(): string {

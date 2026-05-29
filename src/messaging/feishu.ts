@@ -853,6 +853,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
     },
 
     async startStreamingReply(messageId: string, initialText = STREAM_INITIAL_TEXT): Promise<StreamingReplyHandle | null> {
+      if (!config.streaming_reply_enabled) return null;
       try {
         const sourceMessage = await client.im.v1.message.get({ path: { message_id: messageId } });
         const chatId = ((sourceMessage?.data as { items?: Array<{ chat_id?: string }> } | undefined)?.items?.[0]?.chat_id)

@@ -130,4 +130,54 @@ describe('CodexAppServerRuntime', () => {
 
     rmSync(personaDir, { recursive: true, force: true });
   });
+
+  test('uses provider cwd and app-visible thread metadata for app-server threads', () => {
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: 'test',
+        logDir: '/tmp/persona-test/logs',
+        config: {
+          persona_dir: '/tmp/persona-test',
+          pipe_dir: '/tmp/persona-test',
+          pid_file: '/tmp/persona-test/test.pid',
+          time_sync_interval_ms: 999999,
+          flush_context_limit: 999999,
+          flush_interval_ms: 999999,
+          quote_max_length: 32,
+        },
+        agent: {
+          type: 'codex-app-server',
+          command: 'codex',
+          name: 'codex-live',
+          cwd: '/tmp/persona-codex-workspace',
+        },
+        personaRole: 'director',
+      },
+      {
+        getSessionId: () => 'thread-1',
+        getSessionName: () => 'session-1',
+        setSessionName: () => {},
+        buildSessionName: () => 'session-1',
+        persistSession: () => {},
+        clearSession: () => {},
+        logOutput: () => {},
+        onChunk: () => {},
+        onToolCall: () => {},
+        onPartialAgentMessage: () => {},
+        onMetrics: () => {},
+        onTurnComplete: () => {},
+        onTurnFailure: () => {},
+        onRuntimeClosed: () => {},
+      },
+    );
+    const runtimePrivate = runtime as unknown as {
+      threadOptions(): Record<string, unknown>;
+    };
+
+    expect(runtimePrivate.threadOptions()).toMatchObject({
+      cwd: '/tmp/persona-codex-workspace',
+      sessionStartSource: 'startup',
+      threadSource: 'user',
+    });
+  });
 });

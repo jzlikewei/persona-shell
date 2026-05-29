@@ -94,6 +94,7 @@ describe('config', () => {
       const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
       expect(cfg.feishu.app_id).toBe('test_id');
       expect(cfg.feishu.app_secret).toBe('test_secret');
+      expect(cfg.feishu.streaming_reply_enabled).toBe(false);
       expect(cfg.feishu.stream_update_debounce_ms).toBe(2000);
       expect(cfg.feishu.stream_min_update_chars).toBe(64);
     });
@@ -204,12 +205,14 @@ describe('config', () => {
           config: [
             'feishu:',
             '  app_id: id',
+            '  streaming_reply_enabled: true',
             '  stream_update_debounce_ms: 5000',
             '  stream_min_update_chars: 160',
           ].join('\n'),
           secret: `feishu:\n  app_secret: s\n`,
         });
         const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
+        expect(cfg.feishu.streaming_reply_enabled).toBe(true);
         expect(cfg.feishu.stream_update_debounce_ms).toBe(5000);
         expect(cfg.feishu.stream_min_update_chars).toBe(160);
       });
@@ -361,6 +364,7 @@ describe('config', () => {
             '      search: true',
             '      transport: stdio',
             '      ephemeral: false',
+            '      cwd: "~/codex-live"',
             '',
           ].join('\n'),
           secret: `feishu:\n  app_secret: s\n`,
@@ -375,6 +379,7 @@ describe('config', () => {
         expect(p.search).toBe(true);
         expect(p.transport).toBe('stdio');
         expect(p.ephemeral).toBe(false);
+        expect(p.cwd).toBe(homedir() + '/codex-live');
       });
 
       test('parses provider and model flush context limits', () => {

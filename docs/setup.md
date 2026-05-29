@@ -89,6 +89,7 @@ agents:
       search: false
       mcp_mode: "mcp"          # mcp: 注入 MCP tools；cli: turn-based Codex 的 task CLI 提示；off: 关闭 task 注入
       transport: "stdio"
+      # cwd: "~/github/jzlikewei/persona-shell"  # Codex app-server 可选，指定 Codex app 会话所属 workspace
       flush_context_limit: 210000  # 可选：provider 默认上下文刷新阈值
       flush_context_limits:        # 可选：按 model 进一步覆盖
         gpt-5.5: 200000
@@ -102,6 +103,7 @@ agents:
 
 feishu:
   master_id: "ou_xxxx"                       # 本体的飞书 open_id（可选）
+  streaming_reply_enabled: false             # 是否启用飞书流式卡片回复
   stream_update_debounce_ms: 2000            # 飞书流式卡片小 chunk 兜底刷新间隔
   stream_min_update_chars: 64                # 飞书流式卡片累计新增字符刷新阈值
 

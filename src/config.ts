@@ -26,6 +26,8 @@ export interface AgentProviderConfig {
   mcp_mode?: CodexMcpMode;
   transport?: CodexAppServerTransport;
   ephemeral?: boolean;
+  /** Codex app-server thread cwd. Defaults to director.persona_dir. */
+  cwd?: string;
   model?: string;
   /** Override director.flush_context_limit for this provider. */
   flush_context_limit?: number;
@@ -60,6 +62,7 @@ export interface Config {
     app_id: string;
     app_secret: string;
     master_id?: string;
+    streaming_reply_enabled: boolean;
     stream_update_debounce_ms: number;
     stream_min_update_chars: number;
   };
@@ -153,6 +156,7 @@ export function loadConfig(path?: string): Config {
     throw new Error('feishu.app_id is required in config.yaml, feishu.app_secret is required in im_secret.yaml (or config.yaml for compatibility)');
   }
 
+  feishu.streaming_reply_enabled = feishu.streaming_reply_enabled === true;
   feishu.stream_update_debounce_ms = positiveNumber(feishu.stream_update_debounce_ms) ?? 2_000;
   feishu.stream_min_update_chars = positiveNumber(feishu.stream_min_update_chars) ?? 64;
 
@@ -170,6 +174,7 @@ export function loadConfig(path?: string): Config {
     mcp_mode?: unknown;
     transport?: unknown;
     ephemeral?: unknown;
+    cwd?: unknown;
     model?: unknown;
     flush_context_limit?: unknown;
     flush_context_limits?: unknown;
@@ -218,6 +223,9 @@ export function loadConfig(path?: string): Config {
           : {}),
         ...(provider?.transport === 'stdio' ? { transport: provider.transport } : {}),
         ...(typeof provider?.ephemeral === 'boolean' ? { ephemeral: provider.ephemeral } : {}),
+        ...(typeof provider?.cwd === 'string' && provider.cwd.trim()
+          ? { cwd: expandHome(provider.cwd.trim()) }
+          : {}),
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
         ...(providerFlushContextLimit ? { flush_context_limit: providerFlushContextLimit } : {}),
         ...(providerFlushContextLimits ? { flush_context_limits: providerFlushContextLimits } : {}),

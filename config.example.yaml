@@ -23,6 +23,7 @@ agents:
       search: false
       mcp_mode: "mcp"
       transport: "stdio"
+      # cwd: "~/github/jzlikewei/persona-shell" # 可选：让 Codex app 在指定 workspace 下显示 live session
       flush_context_limit: 210000          # 可选：Codex provider 默认上下文刷新阈值
       flush_context_limits:                # 可选：按 model 进一步覆盖
         gpt-5.5: 200000
@@ -40,6 +41,7 @@ agents:
 # 飞书凭据（app_id + app_secret）放 im_secret.yaml，不在此文件中
 feishu:
   master_id: ""                       # 本体的飞书 open_id（配置后仅本体可执行 /restart 等命令）
+  streaming_reply_enabled: false      # 是否启用飞书流式卡片回复
   stream_update_debounce_ms: 2000     # 飞书流式卡片最小刷新间隔兜底，小 chunk 最多等待 2s
   stream_min_update_chars: 64         # 飞书流式卡片累计新增字符达到该值时刷新
 
