@@ -257,7 +257,7 @@ agents:
 
 注意事项：
 
-- `cwd` 可选；默认使用 `director.persona_dir`。Codex app 按 workspace 精确过滤会话，需要在 persona-shell 项目视图里看到 live session 时，把 provider `cwd` 指向 persona-shell 仓库。
+- `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool Director 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{label}-{group}/`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录。
 - 如需退回 turn-based 模式（每消息 spawn），将 provider `type` 改为 `codex`。后台任务始终使用 turn-based `codex exec`，不受此设置影响。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。

@@ -64,6 +64,7 @@ export interface SessionBridgeOptions {
   label: string;
   isMain?: boolean;
   groupName?: string;
+  workspaceCwd?: string;
   directorFactory?: (options: DirectorSessionAdapterOptions, hooks: DirectorSessionAdapterHooks) => DirectorSessionAdapter;
 }
 
@@ -77,6 +78,7 @@ export class SessionBridge extends EventEmitter {
   private adapter: DirectorSessionAdapter;
   private readonly adapterFactory: (directorAgent: AgentRuntimeConfig) => DirectorSessionAdapter;
   private sessionFile: string;
+  private workspaceCwd?: string;
   private sessionId: string | null = null;
   private sessionName: string | null = null;
   private interrupted = false;
@@ -123,6 +125,7 @@ export class SessionBridge extends EventEmitter {
     this.label = options.label;
     this.isMain = options.isMain ?? true;
     this.groupName = options.groupName;
+    this.workspaceCwd = options.workspaceCwd ?? (this.isMain ? undefined : dirname(this.getSessionStateFilePath()));
 
     const pipeDir = this.isMain ? this.config.pipe_dir : join(this.config.pipe_dir, this.label);
     const pidFile = this.isMain ? this.config.pid_file : join(pipeDir, 'director.pid');
@@ -134,7 +137,7 @@ export class SessionBridge extends EventEmitter {
       groupName: this.groupName,
       config: this.config,
       agents: this.agents,
-      directorAgent: resolveAgentProvider(this.agents, 'director', options.directorAgentName),
+      directorAgent: this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.directorAgentName)),
       logDir: this.logDir,
     };
 
@@ -161,9 +164,14 @@ export class SessionBridge extends EventEmitter {
     };
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
-    this.directorAgent = resolveAgentProvider(this.agents, 'director', options.directorAgentName ?? persistedAgentName);
+    this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.directorAgentName ?? persistedAgentName));
     this.personaRole = this.readPersistedPersonaRole() ?? 'director';
     this.adapter = this.adapterFactory(this.directorAgent);
+  }
+
+  private withSessionCwd(agent: AgentRuntimeConfig): AgentRuntimeConfig {
+    if (!this.workspaceCwd || !isCodexFamily(agent.type)) return agent;
+    return { ...agent, cwd: this.workspaceCwd };
   }
 
   private get stateKey(): string {
@@ -576,7 +584,7 @@ export class SessionBridge extends EventEmitter {
       return false;
     }
 
-    const targetAgent = resolveAgentProvider(this.agents, 'director', agentName);
+    const targetAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', agentName));
     if (targetAgent.name === this.directorAgent.name) {
       this.persistDirectorAgentName(targetAgent.name);
       return true;

@@ -852,6 +852,28 @@ describe('SessionBridge', () => {
     expect(name).toMatch(/^codex-director-solo-\d{8}T\d{4}$/);
   });
 
+  test('non-main codex director uses session workspace cwd', () => {
+    createBridgeWithOptions({
+      label: 'group-1',
+      groupName: 'My Group',
+      providerCwd: '/tmp/global-provider-cwd',
+    });
+    const adapter = FakeAdapter.instances.at(-1)!;
+    expect(adapter.options.directorAgent.cwd).toBe('/tmp/persona-test/workspaces/group-1-My Group');
+  });
+
+  test('main codex director keeps provider cwd', () => {
+    createBridgeWithOptions({
+      isMain: true,
+      label: 'main',
+      groupName: undefined,
+      directorAgentName: 'fake',
+      providerCwd: '/tmp/global-provider-cwd',
+    });
+    const adapter = FakeAdapter.instances.at(-1)!;
+    expect(adapter.options.directorAgent.cwd).toBe('/tmp/global-provider-cwd');
+  });
+
   // ---- 9. logOutputEvent ----
 
   test('logOutputEvent writes JSON with _ts and _director', () => {
@@ -1044,6 +1066,7 @@ function createBridgeWithOptions(overrides: {
   providerFlushContextLimit?: number;
   providerFlushContextLimits?: Record<string, number>;
   providerDisableAutoFlush?: boolean;
+  providerCwd?: string;
 } = {}): SessionBridge {
   const hasGroupName = 'groupName' in overrides;
   const fakeProvider: AgentProviderConfig = {
@@ -1053,6 +1076,7 @@ function createBridgeWithOptions(overrides: {
     ...(overrides.providerFlushContextLimit ? { flush_context_limit: overrides.providerFlushContextLimit } : {}),
     ...(overrides.providerFlushContextLimits ? { flush_context_limits: overrides.providerFlushContextLimits } : {}),
     ...(typeof overrides.providerDisableAutoFlush === 'boolean' ? { disable_auto_flush: overrides.providerDisableAutoFlush } : {}),
+    ...(overrides.providerCwd ? { cwd: overrides.providerCwd } : {}),
   };
   return new SessionBridge({
     agents: {
