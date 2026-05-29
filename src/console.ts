@@ -10,7 +10,8 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import type { Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, getState, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task/task-store.js';
+import { createTask, getTask, listTasks, cancelTask as cancelTaskInDb, getState, setState, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, type CreateCronJobInput } from './task/task-store.js';
+import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
 
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
 interface WsConnection {
@@ -506,6 +507,47 @@ export function startConsole(
               if (live) live.sessionName = ds.sessionName;
             }
             return Response.json(sessions);
+          }
+          // Persona orchestration APIs for Codex app / MCP clients
+          if (url.pathname === '/api/persona/roles' && req.method === 'GET') {
+            return Response.json({ roles: listPersonaRoles(config.director.persona_dir) });
+          }
+          if (url.pathname === '/api/persona/prompt' && req.method === 'GET') {
+            const role = url.searchParams.get('role') ?? 'director';
+            const systemPromptFile = url.searchParams.get('system_prompt_file');
+            return Response.json(buildPersonaPromptBundle(config.director.persona_dir, role, { systemPromptFile }));
+          }
+          if (url.pathname === '/api/persona/session-links' && req.method === 'GET') {
+            const links = getState<Record<string, PersonaSessionLink>>('persona:session-links') ?? {};
+            const channel = url.searchParams.get('channel');
+            const externalId = url.searchParams.get('external_id');
+            if (channel && externalId) {
+              return Response.json(links[sessionLinkKey(channel, externalId)] ?? null);
+            }
+            return Response.json({ links });
+          }
+          if (url.pathname === '/api/persona/session-links' && req.method === 'POST') {
+            const body = await req.json() as {
+              channel?: string;
+              external_id?: string;
+              persona_session_id?: string | null;
+              codex_thread_id?: string | null;
+              director_label?: string | null;
+              role?: string | null;
+            };
+            if (!body.channel || !body.external_id) {
+              return Response.json({ error: 'channel and external_id are required' }, { status: 400 });
+            }
+            const links = upsertSessionLink(getState<Record<string, PersonaSessionLink>>('persona:session-links'), {
+              channel: body.channel,
+              externalId: body.external_id,
+              personaSessionId: body.persona_session_id ?? null,
+              codexThreadId: body.codex_thread_id ?? null,
+              directorLabel: body.director_label ?? null,
+              role: body.role ?? null,
+            });
+            setState('persona:session-links', links);
+            return Response.json(links[sessionLinkKey(body.channel, body.external_id)]);
           }
           // Task API routes
           if (url.pathname === '/api/tasks' && req.method === 'POST') {

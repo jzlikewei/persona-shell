@@ -263,6 +263,29 @@ agents:
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
 - 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。
 
+### Codex app 复用 Persona 编排
+
+Shell 写入 `~/.persona/.mcp.json` 时注册 `persona-tasks` MCP server。Codex app 或 Codex app-server 启用该 MCP 后，可以直接调用 persona-shell 的多人格和任务编排能力：
+
+| 工具 | 作用 |
+|------|------|
+| `persona_list` | 列出 `personas/*.md` 中可用人格 |
+| `persona_prompt` | 返回 Codex `baseInstructions` / `developerInstructions` 注入包 |
+| `persona_memory_read` / `persona_memory_write` | 读写 daily、memory、workspace、session 记忆文件 |
+| `persona_delegate` | 按 persona-shell task 系统派发子角色任务 |
+| `persona_session_link` | 绑定外部会话、persona session、Codex thread |
+
+`persona_delegate` 会把 `parent_codex_thread_id`、`persona_session_id`、`channel`、`external_id` 写入 task `extra`。Codex 子任务 stdout 中的 `thread.started` 会被 TaskRunner 捕获为 `extra.codex_thread_id`，用于把 Codex app 当前 thread、persona session 和后台子任务 thread 串起来。
+
+Prompt 分层约定：
+
+| 层级 | Persona 文件 | Codex 字段 |
+|------|--------------|------------|
+| 全局身份 | `soul.md` + `meta.md` | `baseInstructions` |
+| Agent 覆盖 | provider `system_prompt_file` | `developerInstructions` |
+| 人格角色 | `personas/{role}.md` | `developerInstructions` |
+| 用户任务 | 飞书/Web/Codex app 输入 | `turn/start.input` |
+
 ---
 
 ## Kimi

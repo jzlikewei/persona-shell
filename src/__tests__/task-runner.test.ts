@@ -152,4 +152,54 @@ echo '{"type":"turn.completed"}'
     expect(result.spawnArgs).toBeDefined();
     expect(result.spawnArgs).not.toContain('-c');
   });
+
+  test('captures codex thread id from task stdout', async () => {
+    const script = join(BIN_DIR, 'thread-codex.sh');
+    writeFileSync(
+      script,
+      String.raw`#!/bin/sh
+path="/tmp/persona-task-results/T-TEST-003.md"
+mkdir -p "$(dirname "$path")"
+printf '# thread test\n' > "$path"
+printf '{"type":"thread.started","thread_id":"thread-task-003"}\n'
+printf '{"type":"turn.completed"}\n'
+`,
+      { mode: 0o755 },
+    );
+
+    const runner = new TaskRunner({
+      agents: {
+        defaults: { default: 'codex', executor: 'codex' },
+        providers: {
+          codex: { type: 'codex', command: script },
+        },
+      },
+      personaDir: PERSONA_DIR,
+      defaultTimeoutMs: 5000,
+    });
+
+    const startedThreads: Array<{ taskId: string; threadId: string }> = [];
+    runner.on('task-thread-started', (taskId: string, threadId: string) => {
+      startedThreads.push({ taskId, threadId });
+    });
+
+    const result = await new Promise<{
+      success: boolean;
+      codexThreadId?: string;
+    }>((resolve) => {
+      runner.once('task-completed', resolve);
+      runner.once('task-failed', resolve);
+      runner.runTask({
+        taskId: 'T-TEST-003',
+        role: 'executor',
+        agent: 'codex',
+        prompt: 'capture thread',
+        description: 'codex thread test',
+      });
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.codexThreadId).toBe('thread-task-003');
+    expect(startedThreads).toEqual([{ taskId: 'T-TEST-003', threadId: 'thread-task-003' }]);
+  });
 });

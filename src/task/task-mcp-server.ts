@@ -2,6 +2,13 @@
 
 import { readFileSync, readdirSync } from 'fs';
 import { join, basename } from 'path';
+import {
+  buildPersonaPromptBundle,
+  listPersonaRoles,
+  readPersonaMemory,
+  writePersonaMemory,
+  type PersonaMemoryScope,
+} from '../persona-orchestration.js';
 
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
 const SHELL_TOKEN = process.env.SHELL_TOKEN;
@@ -31,6 +38,88 @@ function buildRoleDescription(): string {
 }
 
 const TOOLS = [
+  {
+    name: 'persona_list',
+    description: '列出 persona-shell 可用人格角色及描述',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'persona_prompt',
+    description: '读取指定人格的 Codex instruction 注入包，包含 baseInstructions 与 developerInstructions',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        role: { type: 'string', description: buildRoleDescription() },
+        system_prompt_file: { type: 'string', description: '可选，额外 agent system prompt 文件，相对 persona_dir' },
+      },
+      required: ['role'],
+    },
+  },
+  {
+    name: 'persona_memory_read',
+    description: '读取 persona-shell 记忆文件。scope=daily/memory/workspace/session',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        scope: { type: 'string', enum: ['daily', 'memory', 'workspace', 'session'], description: '记忆范围' },
+        key: { type: 'string', description: 'daily/memory 文件名、workspace 名或 session label' },
+      },
+      required: ['scope'],
+    },
+  },
+  {
+    name: 'persona_memory_write',
+    description: '写入 persona-shell 记忆文件。用于更新 workspace context、session state 或长期记忆',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        scope: { type: 'string', enum: ['daily', 'memory', 'workspace', 'session'], description: '记忆范围' },
+        key: { type: 'string', description: 'daily/memory 文件名、workspace 名或 session label' },
+        content: { type: 'string', description: '完整文件内容' },
+      },
+      required: ['scope', 'content'],
+    },
+  },
+  {
+    name: 'persona_delegate',
+    description: '按 persona-shell 多 agent 方式派发子任务。等价于 create_task，但语义面向 Codex app',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        role: { type: 'string', description: buildRoleDescription() },
+        agent: { type: 'string', description: '可选 agent provider 名称' },
+        model: { type: 'string', description: '可选 model 名称' },
+        description: { type: 'string', description: '简短描述' },
+        prompt: { type: 'string', description: '完整任务 briefing' },
+        project_dir: { type: 'string', description: '可选项目工作目录，用于让 Codex app workspace 对齐' },
+        parent_codex_thread_id: { type: 'string', description: '可选，发起该子任务的 Codex thread id' },
+        persona_session_id: { type: 'string', description: '可选，关联的 persona-shell session id' },
+        channel: { type: 'string', description: '可选，来源渠道，如 codex/feishu/web' },
+        external_id: { type: 'string', description: '可选，渠道侧会话 ID' },
+        timeout_ms: { type: 'number', description: '可选超时时间，单位毫秒' },
+      },
+      required: ['role', 'description', 'prompt'],
+    },
+  },
+  {
+    name: 'persona_session_link',
+    description: '绑定外部会话、persona session 与 Codex thread，便于飞书、Web、Codex app 共享会话资产',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        channel: { type: 'string', description: '来源渠道，如 feishu/web/codex' },
+        external_id: { type: 'string', description: '渠道侧会话 ID，如 chat_id 或 web routing key' },
+        persona_session_id: { type: 'string', description: 'persona-shell session id' },
+        codex_thread_id: { type: 'string', description: 'Codex thread id' },
+        director_label: { type: 'string', description: 'Director label，如 main 或 pool label' },
+        role: { type: 'string', description: '当前 persona role' },
+      },
+      required: ['channel', 'external_id'],
+    },
+  },
   {
     name: 'create_task',
     description: '创建后台任务并 spawn 子角色进程',
@@ -167,8 +256,57 @@ async function callShell(method: string, path: string, body?: unknown): Promise<
   return res.json();
 }
 
+function compactRecord(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined && value !== null && value !== ''),
+  );
+}
+
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
+    case 'persona_list':
+      return { roles: listPersonaRoles(PERSONA_DIR) };
+    case 'persona_prompt':
+      return buildPersonaPromptBundle(PERSONA_DIR, String(args.role), {
+        systemPromptFile: typeof args.system_prompt_file === 'string' ? args.system_prompt_file : null,
+      });
+    case 'persona_memory_read':
+      return readPersonaMemory(PERSONA_DIR, String(args.scope) as PersonaMemoryScope, typeof args.key === 'string' ? args.key : undefined);
+    case 'persona_memory_write':
+      return writePersonaMemory(
+        PERSONA_DIR,
+        String(args.scope) as PersonaMemoryScope,
+        typeof args.key === 'string' ? args.key : undefined,
+        String(args.content ?? ''),
+      );
+    case 'persona_delegate':
+      return callShell('POST', '/api/tasks', {
+        type: 'role',
+        role: args.role,
+        agent: args.agent,
+        model: args.model,
+        description: args.description,
+        prompt: args.prompt,
+        project_dir: args.project_dir,
+        timeout_ms: args.timeout_ms,
+        source_director: DIRECTOR_LABEL,
+        extra: compactRecord({
+          persona_role: args.role,
+          parent_codex_thread_id: args.parent_codex_thread_id,
+          persona_session_id: args.persona_session_id,
+          channel: args.channel,
+          external_id: args.external_id,
+        }),
+      });
+    case 'persona_session_link':
+      return callShell('POST', '/api/persona/session-links', {
+        channel: args.channel,
+        external_id: args.external_id,
+        persona_session_id: args.persona_session_id,
+        codex_thread_id: args.codex_thread_id,
+        director_label: args.director_label,
+        role: args.role,
+      });
     case 'create_task':
       return callShell('POST', '/api/tasks', {
         type: 'role',
@@ -233,6 +371,8 @@ function printCliUsage(): never {
     '  task-mcp-server.ts cli <tool> -',
     '',
     'Tools:',
+    '  persona_list, persona_prompt, persona_memory_read, persona_memory_write',
+    '  persona_delegate, persona_session_link',
     '  create_task, get_task, list_tasks, cancel_task',
     '  create_cron_job, list_cron_jobs, delete_cron_job, toggle_cron_job',
     '  send_attachment',

@@ -327,12 +327,29 @@ async function main() {
   }
 
   // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + messaging notification
+  function mergeTaskExtra(taskId: string, patch: Record<string, unknown>): void {
+    const current = getTask(taskId);
+    const cleanPatch = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined && value !== null),
+    );
+    updateTask(taskId, {
+      extra: {
+        ...(current?.extra ?? {}),
+        ...cleanPatch,
+      },
+    });
+  }
+
   taskRunner.on('task-started', (taskId: string, spawnArgs: string[], pid: number) => {
     updateTask(taskId, {
       status: 'running',
       started_at: localNow(),
-      extra: { spawnArgs, pid },
     });
+    mergeTaskExtra(taskId, { spawnArgs, pid });
+  });
+
+  taskRunner.on('task-thread-started', (taskId: string, codexThreadId: string) => {
+    mergeTaskExtra(taskId, { codex_thread_id: codexThreadId });
   });
 
   taskRunner.on('task-completed', async (result: TaskResult) => {
@@ -343,6 +360,9 @@ async function main() {
       cost_usd: result.costUsd ?? null,
       result_file: result.resultFile ?? null,
     });
+    if (result.codexThreadId) {
+      mergeTaskExtra(result.taskId, { codex_thread_id: result.codexThreadId });
+    }
     const task = getTask(result.taskId);
     const desc = task?.description ?? result.taskId;
     // Route notification to the Director/chat that created this task
@@ -372,6 +392,9 @@ async function main() {
       duration_ms: result.durationMs,
       cost_usd: result.costUsd ?? null,
     });
+    if (result.codexThreadId) {
+      mergeTaskExtra(result.taskId, { codex_thread_id: result.codexThreadId });
+    }
 
     // 7.3.3: Retry if under max_retry — retry logic is here (Shell layer)
     const task = getTask(result.taskId);
