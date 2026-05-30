@@ -45,6 +45,7 @@ interface ClosedPoolEntry {
   label: string;
   lastActiveAt: number;
   closedAt: number;
+  closedReason?: 'shutdown' | 'detached' | 'closed';
   directorAgentName?: string;
 }
 
@@ -141,6 +142,12 @@ export class DirectorPool extends EventEmitter {
       if (entry.bridge.label === label) return entry;
     }
     return undefined;
+  }
+
+  private requireByLabel(label: string): PoolEntry {
+    const entry = this.findByLabel(label);
+    if (!entry) throw new Error(`Director label not found: ${label}`);
+    return entry;
   }
 
   /** Number of active group Directors */
@@ -461,6 +468,24 @@ export class DirectorPool extends EventEmitter {
     return item?.messageId ?? null;
   }
 
+  /** Cancel a queued or currently-processing message for a Director by label. */
+  async cancelQueuedByLabel(label: string, correlationId: string): Promise<{
+    item: QueueItem;
+    interrupted: boolean;
+    label: string;
+    groupName: string;
+  } | null> {
+    const entry = this.findByLabel(label);
+    if (!entry) return null;
+    const headId = entry.queue.peek()?.correlationId;
+    const item = entry.queue.cancel(correlationId);
+    if (!item) return null;
+    await this.abortStreamingReply(correlationId, '已取消');
+    const interrupted = headId === correlationId;
+    if (interrupted) await entry.bridge.interrupt();
+    return { item, interrupted, label: entry.bridge.label, groupName: entry.groupName };
+  }
+
   /** Get the feishuChatId for a Director by label (for sending notification messages) */
   getChatIdByLabel(label: string): string | null {
     const entry = this.findByLabel(label);
@@ -469,6 +494,83 @@ export class DirectorPool extends EventEmitter {
 
   getDirectorAgentName(routingKey: string): string | undefined {
     return this.entries.get(routingKey)?.directorAgentName ?? this.closedEntries.get(routingKey)?.directorAgentName;
+  }
+
+  async switchAgentByLabel(label: string, agentName: string): Promise<PoolEntry> {
+    const entry = this.findByLabel(label);
+    if (!entry) throw new Error(`Director label not found: ${label}`);
+    const currentAgentName = entry.bridge.getDirectorAgentName();
+    if (currentAgentName !== agentName) {
+      const switched = await entry.bridge.switchAgent(agentName);
+      if (!switched) throw new Error(`failed to switch Director ${label} to ${agentName}`);
+    }
+    entry.directorAgentName = entry.bridge.getDirectorAgentName();
+    entry.lastActiveAt = Date.now();
+    this.closedEntries.delete(entry.routingKey);
+    this.persistEntries();
+    return entry;
+  }
+
+  async switchPersonaByLabel(label: string, roleName: string): Promise<PoolEntry> {
+    const entry = this.findByLabel(label);
+    if (!entry) throw new Error(`Director label not found: ${label}`);
+    const switched = await entry.bridge.switchPersona(roleName);
+    if (!switched) throw new Error(`failed to switch Director ${label} to persona ${roleName}`);
+    entry.lastActiveAt = Date.now();
+    this.closedEntries.delete(entry.routingKey);
+    this.persistEntries();
+    return entry;
+  }
+
+  async flushByLabel(label: string): Promise<boolean> {
+    const entry = this.requireByLabel(label);
+    const success = await entry.bridge.flush();
+    if (success) {
+      entry.messagesSinceFlush = 0;
+      entry.lastActiveAt = Date.now();
+      setState(`pool:${entry.routingKey}:msgCount`, 0);
+      this.persistEntries();
+    }
+    return success;
+  }
+
+  async clearContextByLabel(label: string): Promise<boolean> {
+    const entry = this.requireByLabel(label);
+    const success = await entry.bridge.clearContext();
+    if (success) {
+      entry.lastActiveAt = Date.now();
+      this.persistEntries();
+    }
+    return success;
+  }
+
+  async restartByLabel(label: string): Promise<void> {
+    const entry = this.requireByLabel(label);
+    await entry.bridge.restartProcess();
+    entry.lastActiveAt = Date.now();
+    this.persistEntries();
+  }
+
+  async interruptOldestByLabel(label: string): Promise<QueueItem | undefined> {
+    const entry = this.requireByLabel(label);
+    const cancelled = entry.queue.cancelOldest();
+    if (cancelled) {
+      await entry.bridge.interrupt();
+      entry.lastActiveAt = Date.now();
+      this.persistEntries();
+    }
+    return cancelled;
+  }
+
+  async detachByLabel(label: string): Promise<PoolEntry> {
+    const entry = this.requireByLabel(label);
+    console.log(`[pool] Detaching Director for group "${entry.groupName}" (label=${label})`);
+    entry.queue.clearAll();
+    await entry.bridge.detach();
+    this.moveToClosedEntries(entry.routingKey, entry, 'detached');
+    this.entries.delete(entry.routingKey);
+    this.persistEntries();
+    return entry;
   }
 
   async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<PoolEntry> {
@@ -585,9 +687,13 @@ export class DirectorPool extends EventEmitter {
     label: string;
     lastActiveAt: number;
     directorStatus: ReturnType<SessionBridge['getStatus']> | null;
+    directorAgentName?: string;
+    personaRole?: string | null;
     queueLength: number;
+    queue: ReturnType<MessageQueue['getSnapshot']>;
     closed?: boolean;
     closedAt?: number;
+    closedReason?: ClosedPoolEntry['closedReason'];
   }> {
     const active = [...this.entries.values()].map((entry) => ({
       routingKey: entry.routingKey,
@@ -596,7 +702,9 @@ export class DirectorPool extends EventEmitter {
       lastActiveAt: entry.lastActiveAt,
       directorStatus: entry.bridge.getStatus(),
       queueLength: entry.queue.length,
+      queue: entry.queue.getSnapshot(),
       directorAgentName: entry.directorAgentName,
+      personaRole: entry.bridge.getPersonaRole(),
     }));
     const closed = [...this.closedEntries.values()].map((entry) => ({
       routingKey: entry.routingKey,
@@ -605,15 +713,18 @@ export class DirectorPool extends EventEmitter {
       lastActiveAt: entry.lastActiveAt,
       directorStatus: null,
       queueLength: 0,
+      queue: [],
       closed: true as const,
       closedAt: entry.closedAt,
+      closedReason: entry.closedReason ?? 'closed',
       directorAgentName: entry.directorAgentName,
+      personaRole: null,
     }));
     return [...active, ...closed];
   }
 
   /** Move an active entry to the closed list (max 50, evict oldest) */
-  private moveToClosedEntries(routingKey: string, entry: PoolEntry): void {
+  private moveToClosedEntries(routingKey: string, entry: PoolEntry, reason: ClosedPoolEntry['closedReason'] = 'shutdown'): void {
     this.closedEntries.set(routingKey, {
       routingKey,
       feishuChatId: entry.feishuChatId,
@@ -621,6 +732,7 @@ export class DirectorPool extends EventEmitter {
       label: entry.bridge.label,
       lastActiveAt: entry.lastActiveAt,
       closedAt: Date.now(),
+      closedReason: reason,
       directorAgentName: entry.directorAgentName,
     });
     // Evict oldest if over limit
@@ -870,7 +982,7 @@ export class DirectorPool extends EventEmitter {
         this.abortStreamingReplies(orphaned, 'Director 已关闭，本轮回复已中断');
       }
       const entry = this.entries.get(routingKey);
-      if (entry) this.moveToClosedEntries(routingKey, entry);
+      if (entry) this.moveToClosedEntries(routingKey, entry, 'closed');
       this.entries.delete(routingKey);
       this.persistEntries();
     });

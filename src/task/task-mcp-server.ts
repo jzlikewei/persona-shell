@@ -96,6 +96,9 @@ const TOOLS = [
         prompt: { type: 'string', description: '完整任务 briefing' },
         project_dir: { type: 'string', description: '可选项目工作目录，用于让 Codex app workspace 对齐' },
         parent_codex_thread_id: { type: 'string', description: '可选，发起该子任务的 Codex thread id' },
+        callback_codex_thread_id: { type: 'string', description: '可选，任务完成/失败后把通知作为模拟用户消息插入到该 Codex thread' },
+        callback_cwd: { type: 'string', description: '可选，回插 Codex thread 时使用的 workspace cwd' },
+        callback_on_done: { type: 'boolean', description: '可选，是否启用 Codex thread 回插；传 callback_codex_thread_id 时默认启用' },
         persona_session_id: { type: 'string', description: '可选，关联的 persona-shell session id' },
         channel: { type: 'string', description: '可选，来源渠道，如 codex/feishu/web' },
         external_id: { type: 'string', description: '可选，渠道侧会话 ID' },
@@ -134,6 +137,9 @@ const TOOLS = [
         project_dir: { type: 'string', description: '可选，子任务的工作目录（项目路径）；不传则默认在 persona 根目录下执行' },
         max_retry: { type: 'number', description: '最大重试次数 (默认 3)' },
         timeout_ms: { type: 'number', description: '可选，任务超时时间（毫秒）；不传则使用 config 默认值。运行中可通过 DB 修改并自动同步' },
+        callback_codex_thread_id: { type: 'string', description: '可选，任务完成/失败后把通知作为模拟用户消息插入到该 Codex thread' },
+        callback_cwd: { type: 'string', description: '可选，回插 Codex thread 时使用的 workspace cwd' },
+        callback_on_done: { type: 'boolean', description: '可选，是否启用 Codex thread 回插；传 callback_codex_thread_id 时默认启用' },
       },
       required: ['role', 'description', 'prompt'],
     },
@@ -262,99 +268,176 @@ function compactRecord(input: Record<string, unknown>): Record<string, unknown> 
   );
 }
 
+function buildCodexCallback(args: Record<string, unknown>): Record<string, unknown> | undefined {
+  const threadId = typeof args.callback_codex_thread_id === 'string'
+    ? args.callback_codex_thread_id.trim()
+    : '';
+  if (!threadId) return undefined;
+  if (args.callback_on_done === false) return undefined;
+  return compactRecord({
+    type: 'codex_thread',
+    thread_id: threadId,
+    cwd: typeof args.callback_cwd === 'string' ? args.callback_cwd.trim() : undefined,
+  });
+}
+
+function stringFromPath(value: unknown, path: string[]): string | undefined {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!current || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === 'string' && current.trim() ? current.trim() : undefined;
+}
+
+function inferCodexThreadId(args: Record<string, unknown>): string | undefined {
+  const direct = typeof args.callback_codex_thread_id === 'string' && args.callback_codex_thread_id.trim()
+    ? args.callback_codex_thread_id.trim()
+    : undefined;
+  if (direct) return direct;
+
+  const meta = args._meta;
+  return (
+    stringFromPath(meta, ['x-codex-turn-metadata', 'thread_id']) ??
+    stringFromPath(meta, ['x-codex-turn-metadata', 'session_id']) ??
+    stringFromPath(meta, ['threadId']) ??
+    stringFromPath(meta, ['thread_id']) ??
+    stringFromPath(meta, ['session_id']) ??
+    process.env.CODEX_THREAD_ID?.trim() ??
+    process.env.CODEX_SESSION_ID?.trim()
+  ) || undefined;
+}
+
+function inferCodexCwd(args: Record<string, unknown>): string | undefined {
+  if (typeof args.callback_cwd === 'string' && args.callback_cwd.trim()) {
+    return args.callback_cwd.trim();
+  }
+  const workspaces = stringFromPath(args._meta, ['x-codex-turn-metadata', 'workspaces']);
+  if (workspaces) return workspaces;
+  const metadata = args._meta && typeof args._meta === 'object'
+    ? (args._meta as Record<string, unknown>)['x-codex-turn-metadata']
+    : undefined;
+  const workspaceMap = metadata && typeof metadata === 'object'
+    ? (metadata as Record<string, unknown>).workspaces
+    : undefined;
+  if (workspaceMap && typeof workspaceMap === 'object' && !Array.isArray(workspaceMap)) {
+    const first = Object.keys(workspaceMap)[0];
+    if (first) return first;
+  }
+  return process.env.CODEX_CWD?.trim() || process.env.PWD?.trim() || undefined;
+}
+
+function withCodexCallbackDefaults(args: Record<string, unknown>): Record<string, unknown> {
+  const threadId = inferCodexThreadId(args);
+  if (!threadId || args.callback_on_done === false) return args;
+  return {
+    ...args,
+    callback_codex_thread_id: threadId,
+    callback_cwd: inferCodexCwd(args),
+    parent_codex_thread_id: typeof args.parent_codex_thread_id === 'string' && args.parent_codex_thread_id.trim()
+      ? args.parent_codex_thread_id
+      : threadId,
+  };
+}
+
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
+  const enrichedArgs = withCodexCallbackDefaults(args);
   switch (name) {
     case 'persona_list':
       return { roles: listPersonaRoles(PERSONA_DIR) };
     case 'persona_prompt':
-      return buildPersonaPromptBundle(PERSONA_DIR, String(args.role), {
-        systemPromptFile: typeof args.system_prompt_file === 'string' ? args.system_prompt_file : null,
+      return buildPersonaPromptBundle(PERSONA_DIR, String(enrichedArgs.role), {
+        systemPromptFile: typeof enrichedArgs.system_prompt_file === 'string' ? enrichedArgs.system_prompt_file : null,
       });
     case 'persona_memory_read':
-      return readPersonaMemory(PERSONA_DIR, String(args.scope) as PersonaMemoryScope, typeof args.key === 'string' ? args.key : undefined);
+      return readPersonaMemory(PERSONA_DIR, String(enrichedArgs.scope) as PersonaMemoryScope, typeof enrichedArgs.key === 'string' ? enrichedArgs.key : undefined);
     case 'persona_memory_write':
       return writePersonaMemory(
         PERSONA_DIR,
-        String(args.scope) as PersonaMemoryScope,
-        typeof args.key === 'string' ? args.key : undefined,
-        String(args.content ?? ''),
+        String(enrichedArgs.scope) as PersonaMemoryScope,
+        typeof enrichedArgs.key === 'string' ? enrichedArgs.key : undefined,
+        String(enrichedArgs.content ?? ''),
       );
     case 'persona_delegate':
       return callShell('POST', '/api/tasks', {
         type: 'role',
-        role: args.role,
-        agent: args.agent,
-        model: args.model,
-        description: args.description,
-        prompt: args.prompt,
-        project_dir: args.project_dir,
-        timeout_ms: args.timeout_ms,
+        role: enrichedArgs.role,
+        agent: enrichedArgs.agent,
+        model: enrichedArgs.model,
+        description: enrichedArgs.description,
+        prompt: enrichedArgs.prompt,
+        project_dir: enrichedArgs.project_dir,
+        timeout_ms: enrichedArgs.timeout_ms,
         source_director: DIRECTOR_LABEL,
         extra: compactRecord({
-          persona_role: args.role,
-          parent_codex_thread_id: args.parent_codex_thread_id,
-          persona_session_id: args.persona_session_id,
-          channel: args.channel,
-          external_id: args.external_id,
+          persona_role: enrichedArgs.role,
+          parent_codex_thread_id: enrichedArgs.parent_codex_thread_id,
+          persona_session_id: enrichedArgs.persona_session_id,
+          channel: enrichedArgs.channel,
+          external_id: enrichedArgs.external_id,
+          codex_callback: buildCodexCallback(enrichedArgs),
         }),
       });
     case 'persona_session_link':
       return callShell('POST', '/api/persona/session-links', {
-        channel: args.channel,
-        external_id: args.external_id,
-        persona_session_id: args.persona_session_id,
-        codex_thread_id: args.codex_thread_id,
-        director_label: args.director_label,
-        role: args.role,
+        channel: enrichedArgs.channel,
+        external_id: enrichedArgs.external_id,
+        persona_session_id: enrichedArgs.persona_session_id,
+        codex_thread_id: enrichedArgs.codex_thread_id,
+        director_label: enrichedArgs.director_label,
+        role: enrichedArgs.role,
       });
     case 'create_task':
       return callShell('POST', '/api/tasks', {
         type: 'role',
-        role: args.role,
-        agent: args.agent,
-        model: args.model,
-        description: args.description,
-        prompt: args.prompt,
-        max_retry: args.max_retry,
-        project_dir: args.project_dir,
-        timeout_ms: args.timeout_ms,
+        role: enrichedArgs.role,
+        agent: enrichedArgs.agent,
+        model: enrichedArgs.model,
+        description: enrichedArgs.description,
+        prompt: enrichedArgs.prompt,
+        max_retry: enrichedArgs.max_retry,
+        project_dir: enrichedArgs.project_dir,
+        timeout_ms: enrichedArgs.timeout_ms,
         source_director: DIRECTOR_LABEL,
+        extra: compactRecord({
+          codex_callback: buildCodexCallback(enrichedArgs),
+        }),
       });
     case 'get_task':
-      return callShell('GET', `/api/tasks/${args.task_id}`);
+      return callShell('GET', `/api/tasks/${enrichedArgs.task_id}`);
     case 'list_tasks': {
       const params = new URLSearchParams();
-      if (args.status) params.set('status', String(args.status));
-      if (args.role) params.set('role', String(args.role));
-      if (args.limit) params.set('limit', String(args.limit));
+      if (enrichedArgs.status) params.set('status', String(enrichedArgs.status));
+      if (enrichedArgs.role) params.set('role', String(enrichedArgs.role));
+      if (enrichedArgs.limit) params.set('limit', String(enrichedArgs.limit));
       const qs = params.toString();
       return callShell('GET', `/api/tasks${qs ? '?' + qs : ''}`);
     }
     case 'cancel_task':
-      return callShell('POST', `/api/tasks/${args.task_id}/cancel`);
+      return callShell('POST', `/api/tasks/${enrichedArgs.task_id}/cancel`);
     case 'create_cron_job':
       return callShell('POST', '/api/cron-jobs', {
-        name: args.name,
-        role: args.role,
-        agent: args.agent,
-        description: args.description,
-        prompt: args.prompt,
-        schedule: args.schedule,
-        action_type: args.action_type,
-        message: args.message,
-        action_name: args.action_name,
-        timeout_ms: args.timeout_ms,
-        max_retry: args.max_retry,
+        name: enrichedArgs.name,
+        role: enrichedArgs.role,
+        agent: enrichedArgs.agent,
+        description: enrichedArgs.description,
+        prompt: enrichedArgs.prompt,
+        schedule: enrichedArgs.schedule,
+        action_type: enrichedArgs.action_type,
+        message: enrichedArgs.message,
+        action_name: enrichedArgs.action_name,
+        timeout_ms: enrichedArgs.timeout_ms,
+        max_retry: enrichedArgs.max_retry,
         source_director: DIRECTOR_LABEL,
       });
     case 'list_cron_jobs':
       return callShell('GET', '/api/cron-jobs');
     case 'delete_cron_job':
-      return callShell('DELETE', `/api/cron-jobs/${args.id}`);
+      return callShell('DELETE', `/api/cron-jobs/${enrichedArgs.id}`);
     case 'toggle_cron_job':
-      return callShell('POST', `/api/cron-jobs/${args.id}/toggle`);
+      return callShell('POST', `/api/cron-jobs/${enrichedArgs.id}/toggle`);
     case 'send_attachment':
-      return callShell('POST', '/api/send-attachment', { path: args.path, source_director: DIRECTOR_LABEL });
+      return callShell('POST', '/api/send-attachment', { path: enrichedArgs.path, source_director: DIRECTOR_LABEL });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -438,9 +521,12 @@ async function processMessage(msg: { jsonrpc: string; id?: number; method: strin
     case 'tools/list':
       return respond(id, { tools: TOOLS });
     case 'tools/call': {
-      const p = msg.params as { name: string; arguments?: Record<string, unknown> };
+      const p = msg.params as { name: string; arguments?: Record<string, unknown>; _meta?: Record<string, unknown> };
       try {
-        const result = await handleToolCall(p.name, p.arguments ?? {});
+        const result = await handleToolCall(p.name, {
+          ...(p.arguments ?? {}),
+          ...(p._meta ? { _meta: p._meta } : {}),
+        });
         return respond(id, {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         });

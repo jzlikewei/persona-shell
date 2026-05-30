@@ -17,6 +17,7 @@ import { writeFileSync, existsSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
 import { parseShellRestartCommand, buildShellRestartBlockedMessage } from './shell-restart.js';
+import { CodexThreadInjector } from './codex-thread-injector.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -340,6 +341,92 @@ async function main() {
     });
   }
 
+  function taskParentMetadata(sourceDirector?: string | null): Record<string, unknown> {
+    const source = sourceDirector || 'main';
+    const poolEntry = source === 'main' ? undefined : pool.findByLabel(source);
+    const ds = source === 'main' ? director.getStatus() : poolEntry?.bridge.getStatus();
+    if (!ds) {
+      return {
+        parent_director_label: source,
+        parent_director_status: 'not-found',
+      };
+    }
+    const meta: Record<string, unknown> = {
+      parent_director_label: source,
+      parent_director_status: ds.alive ? 'alive' : 'offline',
+      parent_session_id: ds.sessionId,
+      parent_session_name: ds.sessionName,
+      parent_agent: ds.agentName,
+      parent_agent_type: ds.agentType,
+      parent_persona_role: ds.personaRole,
+      parent_pid: ds.pid,
+    };
+    if (ds.agentType === 'codex' || ds.agentType === 'codex-app-server') {
+      meta.parent_codex_thread_id = ds.sessionId;
+    }
+    if (poolEntry) {
+      meta.parent_group_name = poolEntry.groupName;
+      meta.parent_routing_key = poolEntry.routingKey;
+    }
+    return meta;
+  }
+
+  function codexCallbackFromTask(task: { extra?: unknown } | null | undefined): { threadId: string; cwd?: string } | null {
+    const extra = task?.extra && typeof task.extra === 'object' ? task.extra as Record<string, unknown> : {};
+    const callback = extra.codex_callback && typeof extra.codex_callback === 'object'
+      ? extra.codex_callback as Record<string, unknown>
+      : null;
+    if (!callback || callback.type !== 'codex_thread') return null;
+    const threadId = typeof callback.thread_id === 'string' ? callback.thread_id.trim() : '';
+    if (!threadId) return null;
+    const cwd = typeof callback.cwd === 'string' && callback.cwd.trim() ? callback.cwd.trim() : undefined;
+    return { threadId, ...(cwd ? { cwd } : {}) };
+  }
+
+  async function injectTaskCallbackIntoCodexThread(
+    task: ReturnType<typeof getTask>,
+    success: boolean,
+    error?: string,
+  ): Promise<void> {
+    const callback = codexCallbackFromTask(task);
+    if (!callback || !task) return;
+    const codexAgent = (() => {
+      try {
+        return resolveAgentProvider(config.agents, 'director', 'codex');
+      } catch {
+        return config.agents.providers.codex;
+      }
+    })();
+    if (!codexAgent?.command) {
+      console.warn(`[shell] Codex callback for task ${task.id} skipped: codex provider is not configured`);
+      return;
+    }
+    const resultLine = task.result_file ? `\n结果文件：${task.result_file}` : '';
+    const statusLine = success
+      ? `[TASK_DONE] persona-shell 后台任务 ${task.id} 已完成。`
+      : `[TASK_FAILED] persona-shell 后台任务 ${task.id} 失败。错误：${error ?? task.error ?? 'unknown'}`;
+    const text = [
+      statusLine,
+      `任务描述：${task.description}`,
+      resultLine.trim(),
+      '',
+      '请立刻把这条消息当作用户的后台回调通知处理：先读取上面的任务结果文件，再给出简短结论；如果需要后续派发可以继续创建任务，但不要在本轮等待新任务完成。',
+    ].filter(Boolean).join('\n');
+    const injector = new CodexThreadInjector({
+      logDir: join(getLogDir(), 'codex-thread-injector'),
+      directorConfig: config.director,
+      agent: codexAgent,
+    });
+    await injector.injectUserMessage({
+      threadId: callback.threadId,
+      cwd: callback.cwd,
+      text,
+      waitForCompletion: true,
+      timeoutMs: 300_000,
+    });
+    console.log(`[shell] Notified Codex thread ${callback.threadId} about task ${task.id}`);
+  }
+
   taskRunner.on('task-started', (taskId: string, spawnArgs: string[], pid: number) => {
     updateTask(taskId, {
       status: 'running',
@@ -381,6 +468,9 @@ async function main() {
     }
     target.notifyDirector(result.taskId, true, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task completion:', err);
+    });
+    injectTaskCallbackIntoCodexThread(task, true).catch((err) => {
+      console.warn(`[shell] Failed to inject task ${result.taskId} callback into Codex thread:`, err);
     });
   });
 
@@ -425,6 +515,9 @@ async function main() {
     }
     target.notifyDirector(result.taskId, false, notifyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task failure:', err);
+    });
+    injectTaskCallbackIntoCodexThread(task, false, result.error).catch((err) => {
+      console.warn(`[shell] Failed to inject task ${result.taskId} failure into Codex thread:`, err);
     });
   });
 
@@ -471,10 +564,13 @@ async function main() {
           agent: job.agent ?? undefined,
           description: job.description,
           prompt: job.prompt,
+          max_retry: job.max_retry,
+          timeout_ms: job.timeout_ms ?? undefined,
           extra: { cronJobId: job.id },
           source_director: job.source_director ?? undefined,
         });
-        taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, model: (task.extra as Record<string, unknown>)?.model as string | undefined, prompt: task.prompt, description: task.description });
+        mergeTaskExtra(task.id, taskParentMetadata(job.source_director));
+        taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, model: (task.extra as Record<string, unknown>)?.model as string | undefined, prompt: task.prompt, description: task.description, timeoutMs: task.timeout_ms ?? undefined });
         return task.id;
       },
       isOverlapping: (jobId, _role) => {
