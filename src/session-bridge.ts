@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync, readdirSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, resolveFlushContextLimit, isCodexFamily, type Config } from './config.js';
@@ -1168,13 +1168,38 @@ export class SessionBridge extends EventEmitter {
   private getSessionStateFilePath(): string {
     const root = join(this.config.persona_dir, 'workspaces');
     if (!existsSync(root)) mkdirSync(root, { recursive: true });
-    const suffix = this.groupName ? `-${this.groupName.replace(/[\/\\:*?"<>|]/g, '_')}` : '';
-    const wsDir = join(root, `${this.label}${suffix}`);
-    if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
+    const safeName = this.groupName
+      ? this.groupName.replace(/[\/\\:*?"<>|]/g, '_')
+      : this.label;
+    const wsDir = join(root, safeName);
+    if (!existsSync(wsDir)) {
+      // Migrate from legacy {hash}-{groupName} directory format
+      if (this.groupName) {
+        try {
+          const existing = readdirSync(root, { withFileTypes: true })
+            .filter(d => d.isDirectory() && d.name.endsWith(`-${safeName}`))
+            .sort((a, b) => {
+              const aCtx = join(root, a.name, 'context.md');
+              const bCtx = join(root, b.name, 'context.md');
+              const aTime = existsSync(aCtx) ? statSync(aCtx).mtimeMs : 0;
+              const bTime = existsSync(bCtx) ? statSync(bCtx).mtimeMs : 0;
+              return bTime - aTime;
+            });
+          if (existing.length > 0) {
+            const oldDir = join(root, existing[0].name);
+            renameSync(oldDir, wsDir);
+            console.log(`[bridge:${this.label}] Migrated workspace "${existing[0].name}" → "${safeName}"`);
+          }
+        } catch (err) {
+          console.warn(`[bridge:${this.label}] Failed to scan for existing workspace:`, err);
+        }
+      }
+      if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
+    }
     const file = join(wsDir, 'context.md');
     if (!existsSync(file)) {
       // migrate from legacy flat file (workspaces/{label}-{group}.md)
-      const legacyFlat = join(root, `${this.label}${suffix}.md`);
+      const legacyFlat = join(root, `${this.label}-${safeName}.md`);
       const legacyBare = join(root, `${this.label}.md`);
       if (existsSync(legacyFlat)) {
         renameSync(legacyFlat, file);
@@ -1505,9 +1530,24 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  /** Drop the current session ID so the next turn creates a fresh session. */
-  resetSession(): void {
+  /** Kill the Director process, restart, and bootstrap with workspace context. */
+  async resetSession(): Promise<void> {
+    if (this.flushing) {
+      console.log(`[bridge:${this.label}] resetSession skipped: flush in progress`);
+      return;
+    }
+    this.flushing = true;
+    this.expectedStaleCloses++;
+    this.adapter.terminate('SIGTERM');
     this.clearSession();
+    await this.restart('new-session');
+    this.finishFlush();
+
+    if (!this.isMain) {
+      const statePath = this.getSessionStateFilePath();
+      await this.bootstrap(statePath);
+    }
+    console.log(`[bridge:${this.label}] resetSession: new session created with bootstrap`);
   }
 
   private clearSession(): void {

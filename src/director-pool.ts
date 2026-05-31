@@ -120,7 +120,7 @@ export class DirectorPool extends EventEmitter {
   async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
-      existing.bridge.resetSession();
+      await existing.bridge.resetSession();
       existing.directorAgentName = existing.bridge.getDirectorAgentName();
       existing.lastActiveAt = Date.now();
       this.closedEntries.delete(routingKey);
@@ -129,7 +129,7 @@ export class DirectorPool extends EventEmitter {
     }
 
     const entry = await this.getOrCreate(routingKey, opts);
-    entry.bridge.resetSession();
+    await entry.bridge.resetSession();
     entry.directorAgentName = entry.bridge.getDirectorAgentName();
     entry.lastActiveAt = Date.now();
     this.persistEntries();

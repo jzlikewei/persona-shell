@@ -1086,9 +1086,9 @@ async function main() {
         const poolEntry = await pool.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
         label = `group "${poolEntry.groupName}"`;
       } else {
-        director.resetSession();
+        await director.resetSession();
       }
-      await messaging.reply(messageId, `${label} session 已重置，下次消息将创建新 session`).catch(() => {});
+      await messaging.reply(messageId, `${label} session 已重置，新 session 已启动`).catch(() => {});
       console.log(`[shell] /new-session: cleared session for ${label}`);
       return;
     }
@@ -1151,8 +1151,9 @@ async function main() {
       return `[引用上文]\n${block}\n\n`;
     };
 
-    // 并行群（配置的特定 chat_id）→ 始终走 DirectorPool，不受人数限制
-    const isParallelChat = config.pool.parallel_chat_ids.includes(chatId);
+    // 并行群（配置的特定 chat_id 或群名）→ 始终走 DirectorPool，不受人数限制
+    const isParallelChat = config.pool.parallel_chat_ids.includes(chatId)
+      || config.pool.parallel_chat_ids.includes(msg.groupName ?? '');
     // 大群(>threshold 人，非并行群) → one-shot 响应，不走 Director
     if (chatType === 'group' && !isParallelChat && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
       // One-shot 无上下文，引用需要保留全文

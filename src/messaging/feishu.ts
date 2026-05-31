@@ -533,16 +533,21 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
 
       // Group chat @mention filter: skip messages that don't mention the bot
       // Priority: mentionOnlySet (always require @bot) > skipMentionSet (never require) > small group (≤2) > default (require)
+      // Sets accept both chat_id (oc_xxx) and group name for matching.
       if (chatType === 'group') {
-        if (mentionOnlySet.has(chat_id)) {
+        const chatInfo = await getChatInfo(chat_id);
+        const groupName = chatInfo?.name ?? '';
+        const inMentionOnly = mentionOnlySet.has(chat_id) || (groupName && mentionOnlySet.has(groupName));
+        const inSkipMention = skipMentionSet.has(chat_id) || (groupName && skipMentionSet.has(groupName));
+
+        if (inMentionOnly) {
           const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
           if (!hasBotMention) {
-            log.debug(`[feishu] mention_only group without @bot, skipped (chat_id=${chat_id})`);
+            log.debug(`[feishu] mention_only group without @bot, skipped (chat_id=${chat_id}, name=${groupName})`);
             return;
           }
-        } else if (!skipMentionSet.has(chat_id)) {
-          const info = await getChatInfo(chat_id);
-          const isSmallGroup = !info || info.memberCount <= 2;
+        } else if (!inSkipMention) {
+          const isSmallGroup = !chatInfo || chatInfo.memberCount <= 2;
           if (!isSmallGroup) {
             const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
             if (!hasBotMention) {
