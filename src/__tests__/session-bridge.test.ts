@@ -259,7 +259,7 @@ describe('SessionBridge', () => {
     expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
   });
 
-  test('notifyTaskDone waits for active turn instead of steering into it', async () => {
+  test('notifyTaskDone sends immediately even when a turn is active (queued as pending)', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances[0]!;
     const responses: Array<{ text: string; replyToMessageId: string }> = [];
@@ -274,26 +274,17 @@ describe('SessionBridge', () => {
     await bridge.notifyTaskDone('task-1', true, 'msg-1');
     await bridge.notifyTaskDone('task-2', true, 'msg-2');
 
-    expect(adapter.sent).toHaveLength(1);
+    // Notifications are sent immediately through the normal queue
+    expect(adapter.sent).toHaveLength(3);
     expect(adapter.sent[0]?.endsWith('user message')).toBe(true);
+    expect(adapter.sent[1]).toContain('task-1');
+    expect(adapter.sent[2]).toContain('task-2');
 
     adapter.activeTurn = false;
     adapter.completeTurn({ responseText: 'user response', durationMs: 10 });
-    await Promise.resolve();
-
-    expect(adapter.sent).toHaveLength(2);
-    expect(adapter.sent[1]).toContain('task-1');
-    expect(adapter.sent[1]).not.toContain('task-2');
-
     adapter.completeTurn({ responseText: 'task one report', durationMs: 10 });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(responses).toEqual([{ text: 'task one report', replyToMessageId: 'msg-1' }]);
-    expect(adapter.sent).toHaveLength(3);
-    expect(adapter.sent[2]).toContain('task-2');
-
     adapter.completeTurn({ responseText: 'task two report', durationMs: 10 });
+
     expect(responses).toEqual([
       { text: 'task one report', replyToMessageId: 'msg-1' },
       { text: 'task two report', replyToMessageId: 'msg-2' },

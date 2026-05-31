@@ -51,12 +51,6 @@ type PendingType =
   | { type: 'flush-checkpoint' }
   | { type: 'flush-bootstrap' };
 
-interface TaskNotification {
-  taskId: string;
-  success: boolean;
-  replyToMessageId?: string;
-}
-
 export interface SessionBridgeOptions {
   agents: Config['agents'];
   config: Config['director'];
@@ -108,8 +102,6 @@ export class SessionBridge extends EventEmitter {
   private discardNextResponse = false;
   private personaRole: string = 'director';
   private partialSystemReplyText: string | null = null;
-  private taskNotificationQueue: TaskNotification[] = [];
-  private taskNotificationDispatching = false;
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
   private static readonly FLUSH_STEP_TIMEOUT = 90_000;
@@ -870,45 +862,26 @@ export class SessionBridge extends EventEmitter {
 
   async notifyTaskDone(taskId: string, success: boolean, replyToMessageId?: string): Promise<void> {
     if (!this.adapter.isReady() || this.flushing) return;
-    this.taskNotificationQueue.push({ taskId, success, replyToMessageId });
-    this.drainTaskNotifications();
-  }
 
-  private drainTaskNotifications(): void {
-    if (this.taskNotificationDispatching) return;
-    if (!this.adapter.isReady() || this.flushing || this.bootstrapping || this.discardNextResponse) return;
-    if (this.adapter.hasActiveTurn() || this.pendingCount > 0) return;
-
-    const next = this.taskNotificationQueue.shift();
-    if (!next) return;
-
-    this.taskNotificationDispatching = true;
-    void this.dispatchTaskNotification(next).finally(() => {
-      this.taskNotificationDispatching = false;
-      this.drainTaskNotifications();
-    });
-  }
-
-  private async dispatchTaskNotification(notification: TaskNotification): Promise<void> {
     let pendingTurn: PendingType;
-    if (notification.replyToMessageId) {
-      pendingTurn = this.enqueuePendingTurn({ type: 'system-reply', replyToMessageId: notification.replyToMessageId });
-      this.systemReplyQueue.push(notification.replyToMessageId);
+    if (replyToMessageId) {
+      pendingTurn = this.enqueuePendingTurn({ type: 'system-reply', replyToMessageId });
+      this.systemReplyQueue.push(replyToMessageId);
     } else {
       pendingTurn = this.enqueuePendingTurn({ type: 'system-absorbed' });
     }
 
-    const tag = notification.success ? 'TASK_DONE' : 'TASK_FAILED';
+    const tag = success ? 'TASK_DONE' : 'TASK_FAILED';
     const stopLoss = '回复协议：先读取报告，立即给用户一段简短结论；如需后续任务可 create_task 派发，但不要在本轮等待后续任务完成。';
-    const msg = notification.success
-      ? `[${tag}] 后台任务 ${notification.taskId} 已完成。调用 get_task MCP 工具查看详情。${stopLoss}`
-      : `[${tag}] 后台任务 ${notification.taskId} 失败。调用 get_task MCP 工具查看错误信息。${stopLoss}`;
+    const msg = success
+      ? `[${tag}] 后台任务 ${taskId} 已完成。调用 get_task MCP 工具查看详情。${stopLoss}`
+      : `[${tag}] 后台任务 ${taskId} 失败。调用 get_task MCP 工具查看错误信息。${stopLoss}`;
 
     try {
       await this.writeRaw(msg);
     } catch {
       this.removePendingTurn(pendingTurn);
-      if (notification.replyToMessageId) this.systemReplyQueue.pop();
+      if (replyToMessageId) this.systemReplyQueue.pop();
       this.resolveDrainIfNeeded();
     }
   }
@@ -1331,7 +1304,6 @@ export class SessionBridge extends EventEmitter {
     }
 
     this.resolveDrainIfNeeded();
-    this.drainTaskNotifications();
     if (!this.flushing && resolvedTurnType && this.shouldAutoFlushAfterTurn(resolvedTurnType)) {
       this.checkFlush();
     }
@@ -1367,7 +1339,6 @@ export class SessionBridge extends EventEmitter {
     }
 
     this.resolveDrainIfNeeded();
-    this.drainTaskNotifications();
   }
 
   private async handleRuntimeClosed(): Promise<void> {
