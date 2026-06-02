@@ -35,6 +35,7 @@ export interface TaskResult {
   durationMs: number;
   costUsd?: number;
   spawnArgs?: string[];
+  codexThreadId?: string;
 }
 
 interface RunningTask {
@@ -48,6 +49,7 @@ interface RunningTask {
   outputPath: string;
   resultFile: string;
   costUsd?: number;
+  codexThreadId?: string;
 }
 
 const GRACEFUL_KILL_DELAY = 5_000;
@@ -177,6 +179,13 @@ export class TaskRunner extends EventEmitter {
       try { appendFileSync(stdoutLogPath, line + '\n'); } catch { /* best-effort */ }
       try {
         const event = JSON.parse(line);
+        if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+          const entry = this.running.get(input.taskId);
+          if (entry) {
+            entry.codexThreadId = event.thread_id;
+            this.emit('task-thread-started', input.taskId, event.thread_id);
+          }
+        }
         if (event.type === 'result') {
           const entry = this.running.get(input.taskId);
           if (entry) {
@@ -206,6 +215,7 @@ export class TaskRunner extends EventEmitter {
           error: 'timeout',
           durationMs,
           costUsd: entry.costUsd,
+          codexThreadId: entry.codexThreadId,
         };
         console.log(`[task-runner] Task ${input.taskId} killed after timeout (duration=${durationMs}ms)`);
         this.emit('task-failed', result);
@@ -233,6 +243,7 @@ export class TaskRunner extends EventEmitter {
         durationMs,
         costUsd: entry.costUsd,
         spawnArgs: args,
+        codexThreadId: entry.codexThreadId,
         ...(success ? { resultFile: finalResultFile } : { error }),
       };
 
@@ -324,6 +335,7 @@ export class TaskRunner extends EventEmitter {
           success,
           durationMs,
           costUsd: entry.costUsd,
+          codexThreadId: entry.codexThreadId,
           ...(success ? { resultFile } : { error: `process disappeared (pid ${entry.pid})` }),
         };
         this.emit(success ? 'task-completed' : 'task-failed', result);

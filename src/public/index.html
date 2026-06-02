@@ -22,6 +22,17 @@
   <!-- Header -->
   <header id="header">
     <span class="logo">Persona Shell</span>
+    <nav id="primary-nav" aria-label="Primary">
+      <button class="nav-item" data-section="overview" onclick="selectNav('overview')">Overview</button>
+      <button class="nav-item active" data-section="workbench" onclick="selectNav('workbench')">Console</button>
+      <button class="nav-item" data-section="agents" onclick="selectNav('agents')">Runtime</button>
+      <button class="nav-item" data-section="tasks" onclick="selectNav('tasks')">Tasks</button>
+      <button class="nav-item" data-section="automations" onclick="selectNav('automations')">Auto</button>
+      <button class="nav-item" data-section="persona" onclick="selectNav('persona')">Persona</button>
+      <button class="nav-item" data-section="files" onclick="selectNav('files')">Files</button>
+      <button class="nav-item" data-section="observability" onclick="selectNav('observability')">Logs</button>
+      <button class="nav-item" data-section="settings" onclick="selectNav('settings')">Settings</button>
+    </nav>
     <div class="hi">
       <div class="dot off" id="hb-dot"></div>
       <span class="hi-value" id="hb-status">--</span>
@@ -156,8 +167,31 @@
         <!-- filled by JS -->
       </div>
       <div id="chat-container">
+        <div id="chat-toolbar">
+          <div class="chat-view-toggle" role="group" aria-label="Chat view">
+            <button id="chat-view-messages" class="chat-view-btn active" onclick="setChatViewMode('messages')">Messages</button>
+            <button id="chat-view-turns" class="chat-view-btn" onclick="setChatViewMode('turns')">Turns</button>
+            <button id="chat-view-timeline" class="chat-view-btn" onclick="setChatViewMode('timeline')">Timeline</button>
+          </div>
+          <div class="chat-search-wrap">
+            <input type="search" id="chat-search-input" placeholder="Search messages..." oninput="setChatSearch(this.value)" />
+            <span id="chat-search-count">0 / 0</span>
+            <div class="chat-search-nav" aria-label="Search navigation">
+              <button class="mini-btn" id="chat-search-prev" onclick="goChatSearchMatch(-1)" disabled>Prev</button>
+              <button class="mini-btn" id="chat-search-next" onclick="goChatSearchMatch(1)" disabled>Next</button>
+            </div>
+          </div>
+          <button class="mini-btn" onclick="reloadCurrentChat()">Refresh</button>
+          <button class="mini-btn" onclick="copyTranscriptMarkdown()">Copy MD</button>
+          <button class="mini-btn" onclick="exportTranscript()">Export MD</button>
+          <button class="mini-btn" onclick="clearChatSearch()">Clear</button>
+          <button class="mini-btn danger" id="chat-stop-btn" onclick="stopActiveResponse()" disabled>Stop</button>
+        </div>
         <div id="chat-scroll"><div id="chat-messages"></div></div>
         <div id="chat-input-bar">
+          <input id="chat-attachment-input" type="file" multiple hidden onchange="uploadSelectedAttachments(event)" />
+          <div id="chat-reply-preview"></div>
+          <button class="attach-btn" id="chat-attach-btn" type="button" title="Attach files" onclick="pickChatAttachments()">+</button>
           <textarea rows="1" id="chat-input" placeholder="Send message to Director..." onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!event.isComposing){event.preventDefault();doChatSend()}"></textarea>
           <button onclick="doChatSend()">Send</button>
         </div>

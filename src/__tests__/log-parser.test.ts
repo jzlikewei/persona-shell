@@ -1,7 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
-import { parseConversationLog, parseSessions, parseTaskLog } from '../log-parser.js';
+import { parseConversationLog, parseConversationLogFiles, parseSessions, parseSessionsFiles, parseTaskLog } from '../log-parser.js';
 import { initLogDir, getLogDir } from '../logger.js';
 
 // ── Temp directories for input/output log tests ──
@@ -240,6 +240,32 @@ describe('log-parser', () => {
       expect(msgs.length).toBe(4);
     });
 
+    test('multiple daily log files preserve cross-day conversation history', () => {
+      const inLog1 = join(TMP_DIR, 'input-20260415.log');
+      const inLog2 = join(TMP_DIR, 'input-20260416.log');
+      const outLog1 = join(TMP_DIR, 'output-20260415.log');
+      const outLog2 = join(TMP_DIR, 'output-20260416.log');
+
+      writeFileSync(inLog1, inputLine('day-one question', 'pool-a', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog1, [
+        outputInit('sess-cross-day', 'pool-a'),
+        outputAssistant('day-one answer', 'pool-a'),
+        outputResult('sess-cross-day', '2026-04-15T10:00:01+08:00', 'pool-a'),
+      ].join('\n') + '\n');
+
+      writeFileSync(inLog2, inputLine('day-two question', 'pool-a', '2026-04-16T10:00:00+08:00') + '\n');
+      writeFileSync(outLog2, [
+        outputInit('sess-cross-day', 'pool-a'),
+        outputAssistant('day-two answer', 'pool-a'),
+        outputResult('sess-cross-day', '2026-04-16T10:00:01+08:00', 'pool-a'),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLogFiles([inLog1, inLog2], [outLog1, outLog2], 100, 'sess-cross-day');
+      expect(msgs.map((m) => m.content)).toContain('day-one question');
+      expect(msgs.map((m) => m.content)).toContain('day-two answer');
+      expect(msgs.length).toBe(4);
+    });
+
     test('sessionFilter filters by session ID', () => {
       const inLog = join(TMP_DIR, 'input.log');
       const outLog = join(TMP_DIR, 'output.log');
@@ -378,6 +404,28 @@ describe('log-parser', () => {
       const sessions = parseSessions(outLog);
       expect(sessions.length).toBe(1);
       expect(sessions[0].messageCount).toBe(3);
+    });
+
+    test('multiple daily session logs accumulate same session', () => {
+      const outLog1 = join(TMP_DIR, 'output-20260415.log');
+      const outLog2 = join(TMP_DIR, 'output-20260416.log');
+      writeFileSync(outLog1, [
+        outputInit('sess-cross-day'),
+        outputAssistant('r1'),
+        outputResult('sess-cross-day', '2026-04-15T10:00:01+08:00'),
+      ].join('\n') + '\n');
+      writeFileSync(outLog2, [
+        outputInit('sess-cross-day'),
+        outputAssistant('r2'),
+        outputResult('sess-cross-day', '2026-04-16T10:00:01+08:00'),
+      ].join('\n') + '\n');
+
+      const sessions = parseSessionsFiles([outLog1, outLog2]);
+      expect(sessions.length).toBe(1);
+      expect(sessions[0].sessionId).toBe('sess-cross-day');
+      expect(sessions[0].messageCount).toBe(2);
+      expect(sessions[0].firstMessageAt).toBe('2026-04-15T10:00:01+08:00');
+      expect(sessions[0].lastMessageAt).toBe('2026-04-16T10:00:01+08:00');
     });
 
     test('first/last timestamp correct', () => {

@@ -38,6 +38,14 @@ export interface ConversationMessage {
   content: string;
   sessionId?: string;
   timestamp?: number;
+  provider?: string;
+  model?: string;
+  durationMs?: number;
+  costUsd?: number;
+  tokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  numTurns?: number;
 }
 
 export interface SessionInfo {
@@ -69,6 +77,46 @@ function getCodexLiveThreadId(evt: Record<string, unknown>): string | undefined 
   return typeof direct === 'string' && direct.trim() ? direct : undefined;
 }
 
+function numericField(value: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const raw = value[key];
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+    if (typeof raw === 'string' && raw.trim()) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
+}
+
+function stringField(value: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const raw = value[key];
+    if (typeof raw === 'string' && raw.trim()) return raw;
+  }
+  return undefined;
+}
+
+function usageMeta(evt: Record<string, unknown>): Partial<ConversationMessage> {
+  const usage = asRecord(evt.usage);
+  const message = asRecord(evt.message);
+  const messageUsage = asRecord(message.usage);
+  const effectiveUsage = Object.keys(usage).length > 0 ? usage : messageUsage;
+  const inputTokens = numericField(effectiveUsage, 'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens');
+  const outputTokens = numericField(effectiveUsage, 'output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens');
+  const totalTokens = numericField(effectiveUsage, 'total_tokens', 'totalTokens');
+  return {
+    provider: stringField(evt, 'provider', 'agent', 'agent_type', 'agentType'),
+    model: stringField(evt, 'model'),
+    durationMs: numericField(evt, 'duration_ms', 'durationMs'),
+    costUsd: numericField(evt, 'cost_usd', 'costUsd', 'total_cost_usd', 'totalCostUsd'),
+    tokens: totalTokens ?? (inputTokens != null || outputTokens != null ? (inputTokens ?? 0) + (outputTokens ?? 0) : undefined),
+    inputTokens,
+    outputTokens,
+    numTurns: numericField(evt, 'num_turns', 'numTurns'),
+  };
+}
+
 function extractCodexLiveAgentTextFromItem(item: Record<string, unknown>): string {
   return item.type === 'agentMessage' && typeof item.text === 'string' ? item.text : '';
 }
@@ -81,12 +129,26 @@ function extractCodexLiveAgentTextFromTurn(turn: Record<string, unknown>): strin
     .join('\n\n');
 }
 
+function readTailFromFiles(filePaths: string[]): string {
+  return filePaths
+    .slice()
+    .sort()
+    .map((filePath) => readTail(filePath, MAX_LOG_READ_BYTES))
+    .filter(Boolean)
+    .join('\n');
+}
+
 /** Parse director logs to reconstruct conversation messages */
 export function parseConversationLog(inputLog: string, outputLog: string, limit: number, sessionFilter?: string): ConversationMessage[] {
+  return parseConversationLogFiles([inputLog], [outputLog], limit, sessionFilter);
+}
+
+/** Parse multiple director log files, preserving cross-day session history. */
+export function parseConversationLogFiles(inputLogs: string[], outputLogs: string[], limit: number, sessionFilter?: string): ConversationMessage[] {
   // Parse input log — new format has timestamp + director fields
   const inputs: Array<{ content: string; director?: string; timestamp?: string }> = [];
   try {
-    const raw = readTail(inputLog, MAX_LOG_READ_BYTES);
+    const raw = readTailFromFiles(inputLogs);
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
@@ -99,9 +161,9 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
   } catch { /* file read error */ }
 
   // Parse output log — extract result events with response text + session_id + director + timestamp
-  const outputs: Array<{ text: string; sessionId?: string; director?: string; timestamp?: string }> = [];
+  const outputs: Array<{ text: string; sessionId?: string; director?: string; timestamp?: string; meta?: Partial<ConversationMessage> }> = [];
   try {
-    const raw = readTail(outputLog, MAX_LOG_READ_BYTES);
+    const raw = readTailFromFiles(outputLogs);
     let pendingText = '';
     let lastSessionId: string | undefined;
     let lastDirector: string | undefined;
@@ -129,7 +191,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
           pendingText += evt.item.text;
         } else if (evt.type === 'turn.completed') {
           if (pendingText) {
-            outputs.push({ text: pendingText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts || codexTurnTimestamp });
+            outputs.push({ text: pendingText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts || codexTurnTimestamp, meta: usageMeta(evt) });
           }
           pendingText = '';
           codexTurnTimestamp = evt._ts || evt.timestamp;
@@ -148,7 +210,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
           const turnText = extractCodexLiveAgentTextFromTurn(asRecord(params.turn));
           const responseText = pendingText || turnText;
           if (responseText) {
-            outputs.push({ text: responseText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts });
+            outputs.push({ text: responseText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts, meta: usageMeta({ ...evt, ...asRecord(params.turn) }) });
           }
           pendingText = '';
         } else if (evt.type === 'result') {
@@ -162,7 +224,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
             resultText = finalResult.length >= intermediate.length ? finalResult : intermediate;
           }
           if (resultText) {
-            outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts });
+            outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts, meta: usageMeta(evt) });
           }
           pendingText = '';
         }
@@ -172,7 +234,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
 
   // Per-director pairing: group inputs and outputs by director label, then pair within each group
   const directorInputs = new Map<string, Array<{ content: string; timestamp?: string }>>();
-  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string; timestamp?: string }>>();
+  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string; timestamp?: string; meta?: Partial<ConversationMessage> }>>();
 
   for (const inp of inputs) {
     const key = inp.director ?? 'main';
@@ -184,7 +246,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
   for (const out of outputs) {
     const key = out.director ?? 'main';
     const arr = directorOutputs.get(key) ?? [];
-    arr.push({ text: out.text, sessionId: out.sessionId, timestamp: out.timestamp });
+    arr.push({ text: out.text, sessionId: out.sessionId, timestamp: out.timestamp, meta: out.meta });
     directorOutputs.set(key, arr);
   }
 
@@ -201,7 +263,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
     for (let i = 0; i < offset; i++) {
       const o = outs[i];
       if (sessionFilter && o.sessionId && o.sessionId !== sessionFilter) continue;
-      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId, timestamp: o.timestamp ? new Date(o.timestamp!).getTime() : undefined });
+      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId, timestamp: o.timestamp ? new Date(o.timestamp!).getTime() : undefined, ...o.meta });
     }
 
     // Paired input/output
@@ -212,7 +274,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
 
       messages.push({ direction: 'in', content: ins[i].content, sessionId, timestamp: ins[i].timestamp ? new Date(ins[i].timestamp!).getTime() : undefined });
       if (oIdx < outs.length) {
-        messages.push({ direction: 'out', content: outs[oIdx].text, sessionId: outs[oIdx].sessionId, timestamp: outs[oIdx].timestamp ? new Date(outs[oIdx].timestamp!).getTime() : undefined });
+        messages.push({ direction: 'out', content: outs[oIdx].text, sessionId: outs[oIdx].sessionId, timestamp: outs[oIdx].timestamp ? new Date(outs[oIdx].timestamp!).getTime() : undefined, ...outs[oIdx].meta });
       }
     }
   }
@@ -224,12 +286,16 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
 
 /** Extract unique session IDs from director output log */
 export function parseSessions(outputLog: string): SessionInfo[] {
+  return parseSessionsFiles([outputLog]);
+}
+
+/** Extract unique session IDs from multiple director output logs. */
+export function parseSessionsFiles(outputLogs: string[]): SessionInfo[] {
   const sessionMap = new Map<string, { count: number; first?: string; last?: string }>();
 
-  if (!existsSync(outputLog)) return [];
-
   try {
-    const raw = readTail(outputLog, MAX_LOG_READ_BYTES);
+    const raw = readTailFromFiles(outputLogs);
+    if (!raw.trim()) return [];
     let currentSession: string | undefined;
 
     for (const line of raw.split('\n')) {

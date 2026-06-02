@@ -57,6 +57,23 @@ export interface Task {
   source_director: string | null;
 }
 
+export type TaskCleanupStatus = 'terminal' | 'completed' | 'failed' | 'cancelled';
+
+export interface TaskCleanupOptions {
+  olderThanDays: number;
+  status: TaskCleanupStatus;
+}
+
+export interface TaskCleanupPreview {
+  olderThanDays: number;
+  cutoff: string;
+  status: TaskCleanupStatus;
+  eligibleCount: number;
+  oldestCreatedAt: string | null;
+  newestCreatedAt: string | null;
+  samples: Task[];
+}
+
 let DB_DIR: string;
 let DB_PATH: string;
 
@@ -314,6 +331,73 @@ export function cancelTask(id: string): boolean {
     [id],
   );
   return result.changes > 0;
+}
+
+function localIsoFor(date: Date): string {
+  const offsetMin = date.getTimezoneOffset();
+  const sign = offsetMin <= 0 ? '+' : '-';
+  const absMin = Math.abs(offsetMin);
+  const hh = String(Math.floor(absMin / 60)).padStart(2, '0');
+  const mm = String(absMin % 60).padStart(2, '0');
+  const local = new Date(date.getTime() - offsetMin * 60_000);
+  return local.toISOString().replace('Z', `${sign}${hh}:${mm}`);
+}
+
+function normalizeCleanupOptions(input: Partial<TaskCleanupOptions>): TaskCleanupOptions {
+  const rawDays = Number(input.olderThanDays ?? 30);
+  const olderThanDays = Math.max(1, Math.min(3650, Math.floor(Number.isFinite(rawDays) ? rawDays : 30)));
+  const status = input.status === 'completed' || input.status === 'failed' || input.status === 'cancelled' ? input.status : 'terminal';
+  return { olderThanDays, status };
+}
+
+function taskCleanupWhere(options: TaskCleanupOptions): { where: string; params: SQLQueryBindings[]; cutoff: string } {
+  const cutoff = localIsoFor(new Date(Date.now() - options.olderThanDays * 86_400_000));
+  const conditions = ['created_at < ?'];
+  const params: SQLQueryBindings[] = [cutoff];
+
+  if (options.status === 'completed') {
+    conditions.push("status = 'completed'");
+  } else if (options.status === 'failed') {
+    conditions.push("status = 'failed'");
+    conditions.push("COALESCE(error, '') != 'cancelled'");
+  } else if (options.status === 'cancelled') {
+    conditions.push("status = 'failed'");
+    conditions.push("error = 'cancelled'");
+  } else {
+    conditions.push("status IN ('completed', 'failed')");
+  }
+
+  return { where: conditions.join(' AND '), params, cutoff };
+}
+
+export function previewTaskCleanup(input: Partial<TaskCleanupOptions>): TaskCleanupPreview {
+  const options = normalizeCleanupOptions(input);
+  const { where, params, cutoff } = taskCleanupWhere(options);
+  const countRow = getDb().query(`SELECT COUNT(*) AS count FROM tasks WHERE ${where}`).get(...params) as { count: number } | null;
+  const rangeRow = getDb().query(`SELECT MIN(created_at) AS oldestCreatedAt, MAX(created_at) AS newestCreatedAt FROM tasks WHERE ${where}`).get(...params) as { oldestCreatedAt: string | null; newestCreatedAt: string | null } | null;
+  const rows = getDb().query(`SELECT * FROM tasks WHERE ${where} ORDER BY created_at ASC LIMIT 8`).all(...params) as Record<string, unknown>[];
+  return {
+    ...options,
+    cutoff,
+    eligibleCount: Number(countRow?.count ?? 0),
+    oldestCreatedAt: rangeRow?.oldestCreatedAt ?? null,
+    newestCreatedAt: rangeRow?.newestCreatedAt ?? null,
+    samples: rows.map(rowToTask),
+  };
+}
+
+export function cleanupTaskHistory(input: Partial<TaskCleanupOptions>): TaskCleanupPreview & { deletedCount: number } {
+  const preview = previewTaskCleanup(input);
+  if (preview.eligibleCount === 0) return { ...preview, deletedCount: 0 };
+
+  const { where, params } = taskCleanupWhere(preview);
+  const idRows = getDb().query(`SELECT id FROM tasks WHERE ${where}`).all(...params) as Array<{ id: string }>;
+  if (idRows.length === 0) return { ...preview, deletedCount: 0 };
+
+  const ids = idRows.map((row) => row.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const result = getDb().run(`DELETE FROM tasks WHERE id IN (${placeholders})`, ids);
+  return { ...preview, deletedCount: result.changes };
 }
 
 /** Returns today's outbox directory (e.g. outbox/2026-04-08/), auto-creates it */

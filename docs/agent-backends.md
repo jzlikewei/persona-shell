@@ -257,11 +257,51 @@ agents:
 
 注意事项：
 
-- `cwd` 可选；默认使用 `director.persona_dir`。Codex app 按 workspace 精确过滤会话，需要在 persona-shell 项目视图里看到 live session 时，把 provider `cwd` 指向 persona-shell 仓库。
+- `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool Director 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{label}-{group}/`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录。
 - 如需退回 turn-based 模式（每消息 spawn），将 provider `type` 改为 `codex`。后台任务始终使用 turn-based `codex exec`，不受此设置影响。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
 - 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。
+
+### Codex app 复用 Persona 编排
+
+Shell 写入 `~/.persona/.mcp.json` 时注册 `persona-tasks` MCP server。Codex app 或 Codex app-server 启用该 MCP 后，可以直接调用 persona-shell 的多人格和任务编排能力：
+
+| 工具 | 作用 |
+|------|------|
+| `persona_list` | 列出 `personas/*.md` 中可用人格 |
+| `persona_prompt` | 返回 Codex `baseInstructions` / `developerInstructions` 注入包 |
+| `persona_memory_read` / `persona_memory_write` | 读写 daily、memory、workspace、session 记忆文件 |
+| `persona_delegate` | 按 persona-shell task 系统派发子角色任务 |
+| `persona_session_link` | 绑定外部会话、persona session、Codex thread |
+
+`persona_delegate` 会把 `parent_codex_thread_id`、`persona_session_id`、`channel`、`external_id` 写入 task `extra`。Codex 子任务 stdout 中的 `thread.started` 会被 TaskRunner 捕获为 `extra.codex_thread_id`，用于把 Codex app 当前 thread、persona session 和后台子任务 thread 串起来。
+
+如需在后台任务完成/失败后，把通知作为一条“模拟用户消息”插回某个已有 Codex 会话，创建任务时传：
+
+```json
+{
+  "callback_codex_thread_id": "thread_xxx",
+  "callback_cwd": "/path/to/workspace"
+}
+```
+
+Shell 会在 task `extra.codex_callback` 中记录该回调，任务进入终态后通过 `codex app-server` 执行 `thread/resume` + `turn/start`。也可以直接调用 Web Console API 手动插入：
+
+```bash
+curl -X POST http://127.0.0.1:3000/api/codex/inject \
+  -H 'Content-Type: application/json' \
+  -d '{"thread_id":"thread_xxx","text":"[TASK_DONE] ...","cwd":"/path/to/workspace"}'
+```
+
+Prompt 分层约定：
+
+| 层级 | Persona 文件 | Codex 字段 |
+|------|--------------|------------|
+| 全局身份 | `soul.md` + `meta.md` | `baseInstructions` |
+| Agent 覆盖 | provider `system_prompt_file` | `developerInstructions` |
+| 人格角色 | `personas/{role}.md` | `developerInstructions` |
+| 用户任务 | 飞书/Web/Codex app 输入 | `turn/start.input` |
 
 ---
 

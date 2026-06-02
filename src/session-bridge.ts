@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync, readdirSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
 import { resolveAgentProvider, resolveFlushContextLimit, isCodexFamily, type Config } from './config.js';
@@ -58,6 +58,7 @@ export interface SessionBridgeOptions {
   label: string;
   isMain?: boolean;
   groupName?: string;
+  workspaceCwd?: string;
   directorFactory?: (options: DirectorSessionAdapterOptions, hooks: DirectorSessionAdapterHooks) => DirectorSessionAdapter;
 }
 
@@ -71,6 +72,7 @@ export class SessionBridge extends EventEmitter {
   private adapter: DirectorSessionAdapter;
   private readonly adapterFactory: (directorAgent: AgentRuntimeConfig) => DirectorSessionAdapter;
   private sessionFile: string;
+  private workspaceCwd?: string;
   private sessionId: string | null = null;
   private sessionName: string | null = null;
   private interrupted = false;
@@ -98,6 +100,11 @@ export class SessionBridge extends EventEmitter {
   private contextWindow = 0;
   private contextMetricsLive = false;
   private restartTimestamps: number[] = [];
+  private restartCount = 0;
+  private lastRestartAt: number | null = null;
+  private lastRestartReason: string | null = null;
+  private lastCrashAt: number | null = null;
+  private lastCrashReason: string | null = null;
   private expectedStaleCloses = 0;
   private discardNextResponse = false;
   private personaRole: string = 'director';
@@ -115,6 +122,7 @@ export class SessionBridge extends EventEmitter {
     this.label = options.label;
     this.isMain = options.isMain ?? true;
     this.groupName = options.groupName;
+    this.workspaceCwd = options.workspaceCwd ?? (this.isMain ? undefined : dirname(this.getSessionStateFilePath()));
 
     const pipeDir = this.isMain ? this.config.pipe_dir : join(this.config.pipe_dir, this.label);
     const pidFile = this.isMain ? this.config.pid_file : join(pipeDir, 'director.pid');
@@ -126,7 +134,7 @@ export class SessionBridge extends EventEmitter {
       groupName: this.groupName,
       config: this.config,
       agents: this.agents,
-      directorAgent: resolveAgentProvider(this.agents, 'director', options.directorAgentName),
+      directorAgent: this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.directorAgentName)),
       logDir: this.logDir,
     };
 
@@ -153,9 +161,14 @@ export class SessionBridge extends EventEmitter {
     };
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
-    this.directorAgent = resolveAgentProvider(this.agents, 'director', options.directorAgentName ?? persistedAgentName);
+    this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.directorAgentName ?? persistedAgentName));
     this.personaRole = this.readPersistedPersonaRole() ?? 'director';
     this.adapter = this.adapterFactory(this.directorAgent);
+  }
+
+  private withSessionCwd(agent: AgentRuntimeConfig): AgentRuntimeConfig {
+    if (!this.workspaceCwd || !isCodexFamily(agent.type)) return agent;
+    return { ...agent, cwd: this.workspaceCwd };
   }
 
   private get stateKey(): string {
@@ -307,7 +320,7 @@ export class SessionBridge extends EventEmitter {
         this.expectedStaleCloses++;
         this.adapter.terminate('SIGTERM');
         this.clearSession();
-        await this.restart();
+        await this.restart('flush');
         console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms (non-main)`);
 
         // Bootstrap with saved state
@@ -403,7 +416,7 @@ export class SessionBridge extends EventEmitter {
       this.expectedStaleCloses++;
       this.adapter.terminate('SIGTERM');
       this.clearSession();
-      await this.restart();
+      await this.restart('flush');
       console.log(`[bridge:${this.label}] FLUSH: restart done in ${Date.now() - restartStart}ms`);
 
       const bootstrapStart = Date.now();
@@ -450,7 +463,7 @@ export class SessionBridge extends EventEmitter {
     this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
-    await this.restart();
+    await this.restart('clear');
     this.finishFlush();
     console.log(`[bridge:${this.label}] CLEAR: context discarded, fresh session started`);
     return true;
@@ -482,6 +495,12 @@ export class SessionBridge extends EventEmitter {
     return this.personaRole;
   }
 
+  setSessionDisplayName(sessionId: string, sessionName: string | null): boolean {
+    if (this.sessionId !== sessionId) return false;
+    this.sessionName = sessionName;
+    return true;
+  }
+
   getStatus(): {
     alive: boolean;
     pid: number | null;
@@ -490,7 +509,9 @@ export class SessionBridge extends EventEmitter {
     flushing: boolean;
     interrupted: boolean;
     pendingCount: number;
+    agentName: string;
     agentType: AgentRuntimeConfig['type'];
+    personaRole: string;
     lastInputTokens: number;
     contextTokens: number;
     lastFlushAt: number;
@@ -503,6 +524,13 @@ export class SessionBridge extends EventEmitter {
     currentMessageStartedAt: number | null;
     messagesProcessedToday: number;
     totalCostUsd: number;
+    restartCount: number;
+    recentRestartCount: number;
+    recentRestartAt: number[];
+    lastRestartAt: number | null;
+    lastRestartReason: string | null;
+    lastCrashAt: number | null;
+    lastCrashReason: string | null;
   } {
     const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
     if (today !== this.currentCountDate) {
@@ -528,7 +556,9 @@ export class SessionBridge extends EventEmitter {
       flushing: this.flushing,
       interrupted: this.interrupted,
       pendingCount: this.pendingCount,
+      agentName: this.directorAgent.name,
       agentType: this.directorAgent.type,
+      personaRole: this.personaRole,
       lastInputTokens: this.lastInputTokens,
       contextTokens: this.contextTokens,
       lastFlushAt: this.lastFlushAt,
@@ -541,12 +571,18 @@ export class SessionBridge extends EventEmitter {
       currentMessageStartedAt: this.currentMessageStartedAt,
       messagesProcessedToday: this.messagesProcessedToday,
       totalCostUsd: this.totalCostUsd,
+      restartCount: this.restartCount,
+      recentRestartCount: this.restartTimestamps.length,
+      recentRestartAt: [...this.restartTimestamps],
+      lastRestartAt: this.lastRestartAt,
+      lastRestartReason: this.lastRestartReason,
+      lastCrashAt: this.lastCrashAt,
+      lastCrashReason: this.lastCrashReason,
     };
   }
 
   async restartProcess(): Promise<void> {
     if (!this.adapter.hasActiveTurn()) return;
-
     this.explicitRestart = true;
     this.adapter.terminate('SIGTERM');
     await new Promise<void>((resolve) => {
@@ -568,7 +604,7 @@ export class SessionBridge extends EventEmitter {
       return false;
     }
 
-    const targetAgent = resolveAgentProvider(this.agents, 'director', agentName);
+    const targetAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', agentName));
     if (targetAgent.name === this.directorAgent.name) {
       this.persistDirectorAgentName(targetAgent.name);
       return true;
@@ -996,7 +1032,19 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  private async restart(): Promise<void> {
+  private recordRestart(reason: string): void {
+    this.restartCount++;
+    this.lastRestartAt = Date.now();
+    this.lastRestartReason = reason;
+  }
+
+  private recordCrash(reason: string): void {
+    this.lastCrashAt = Date.now();
+    this.lastCrashReason = reason;
+  }
+
+  private async restart(reason = 'restart'): Promise<void> {
+    this.recordRestart(reason);
     if (!this.adapter.shouldTrackRestartBackoff()) {
       await this.adapter.restartTransport();
       return;
@@ -1093,13 +1141,38 @@ export class SessionBridge extends EventEmitter {
   private getSessionStateFilePath(): string {
     const root = join(this.config.persona_dir, 'workspaces');
     if (!existsSync(root)) mkdirSync(root, { recursive: true });
-    const suffix = this.groupName ? `-${this.groupName.replace(/[\/\\:*?"<>|]/g, '_')}` : '';
-    const wsDir = join(root, `${this.label}${suffix}`);
-    if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
+    const safeName = this.groupName
+      ? this.groupName.replace(/[\/\\:*?"<>|]/g, '_')
+      : this.label;
+    const wsDir = join(root, safeName);
+    if (!existsSync(wsDir)) {
+      // Migrate from legacy {hash}-{groupName} directory format
+      if (this.groupName) {
+        try {
+          const existing = readdirSync(root, { withFileTypes: true })
+            .filter(d => d.isDirectory() && d.name.endsWith(`-${safeName}`))
+            .sort((a, b) => {
+              const aCtx = join(root, a.name, 'context.md');
+              const bCtx = join(root, b.name, 'context.md');
+              const aTime = existsSync(aCtx) ? statSync(aCtx).mtimeMs : 0;
+              const bTime = existsSync(bCtx) ? statSync(bCtx).mtimeMs : 0;
+              return bTime - aTime;
+            });
+          if (existing.length > 0) {
+            const oldDir = join(root, existing[0].name);
+            renameSync(oldDir, wsDir);
+            console.log(`[bridge:${this.label}] Migrated workspace "${existing[0].name}" → "${safeName}"`);
+          }
+        } catch (err) {
+          console.warn(`[bridge:${this.label}] Failed to scan for existing workspace:`, err);
+        }
+      }
+      if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
+    }
     const file = join(wsDir, 'context.md');
     if (!existsSync(file)) {
       // migrate from legacy flat file (workspaces/{label}-{group}.md)
-      const legacyFlat = join(root, `${this.label}${suffix}.md`);
+      const legacyFlat = join(root, `${this.label}-${safeName}.md`);
       const legacyBare = join(root, `${this.label}.md`);
       if (existsSync(legacyFlat)) {
         renameSync(legacyFlat, file);
@@ -1378,25 +1451,27 @@ export class SessionBridge extends EventEmitter {
     } else if (this.explicitRestart) {
       this.explicitRestart = false;
       console.log(`[bridge:${this.label}] Explicit restart, restarting with --resume...`);
-      await this.restart();
+      await this.restart('explicit');
       this.emit('restarted');
     } else if (this.interrupted) {
       this.interrupted = false;
       console.log(`[bridge:${this.label}] Interrupted, restarting with --resume...`);
-      await this.restart();
+      await this.restart('interrupt');
       this.emit('restarted');
     } else if (this.flushing) {
       console.log(`[bridge:${this.label}] Pipe closed during flush (expected)`);
     } else if (!this.isMain) {
+      this.recordCrash('unexpected close');
       console.log(`[bridge:${this.label}] Non-main bridge closed unexpectedly`);
       this.emit('stream-abort');
       this.emit('close');
     } else {
+      this.recordCrash('unexpected close');
       this.emit('stream-abort');
       this.emit('alert', '🔴 Director 进程意外退出，正在重启...');
       console.log(`[bridge:${this.label}] Output pipe closed, clearing session and restarting...`);
       this.clearSession();
-      await this.restart();
+      await this.restart('crash');
       await this.bootstrap();
     }
   }
@@ -1426,9 +1501,24 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  /** Drop the current session ID so the next turn creates a fresh session. */
-  resetSession(): void {
+  /** Kill the Director process, restart, and bootstrap with workspace context. */
+  async resetSession(): Promise<void> {
+    if (this.flushing) {
+      console.log(`[bridge:${this.label}] resetSession skipped: flush in progress`);
+      return;
+    }
+    this.flushing = true;
+    this.expectedStaleCloses++;
+    this.adapter.terminate('SIGTERM');
     this.clearSession();
+    await this.restart('new-session');
+    this.finishFlush();
+
+    if (!this.isMain) {
+      const statePath = this.getSessionStateFilePath();
+      await this.bootstrap(statePath);
+    }
+    console.log(`[bridge:${this.label}] resetSession: new session created with bootstrap`);
   }
 
   private clearSession(): void {
