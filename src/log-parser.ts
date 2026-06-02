@@ -38,6 +38,7 @@ export interface ConversationMessage {
   content: string;
   sessionId?: string;
   timestamp?: number;
+  tools?: ConversationToolCall[];
   provider?: string;
   model?: string;
   durationMs?: number;
@@ -48,9 +49,19 @@ export interface ConversationMessage {
   numTurns?: number;
 }
 
+export interface ConversationToolCall {
+  id?: string;
+  name: string;
+  input?: string;
+  result?: string;
+  isError?: boolean;
+  timestamp?: number;
+}
+
 export interface SessionInfo {
   sessionId: string;
   sessionName?: string;
+  alive?: boolean;
   messageCount: number;
   firstMessageAt?: string;
   lastMessageAt?: string;
@@ -117,6 +128,97 @@ function usageMeta(evt: Record<string, unknown>): Partial<ConversationMessage> {
   };
 }
 
+function stringifyPreview(value: unknown, maxLength = 900): string | undefined {
+  if (value == null) return undefined;
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > maxLength ? trimmed.slice(0, maxLength) + '…' : trimmed;
+}
+
+function extractToolResultText(value: unknown): string | undefined {
+  if (typeof value === 'string') return stringifyPreview(value, 1200);
+  if (!Array.isArray(value)) return stringifyPreview(value, 1200);
+  const parts: string[] = [];
+  for (const block of value) {
+    const item = asRecord(block);
+    if (typeof item.content === 'string') parts.push(item.content);
+    else if (typeof item.text === 'string') parts.push(item.text);
+  }
+  return stringifyPreview(parts.join('\n'), 1200);
+}
+
+function cloneTools(tools: ConversationToolCall[]): ConversationToolCall[] | undefined {
+  return tools.length ? tools.map((tool) => ({ ...tool })) : undefined;
+}
+
+function pushToolCall(tools: ConversationToolCall[], tool: ConversationToolCall | undefined): void {
+  if (!tool) return;
+  const existing = tool.id ? tools.find((item) => item.id === tool.id) : undefined;
+  if (existing) {
+    Object.assign(existing, tool);
+    return;
+  }
+  tools.push(tool);
+}
+
+function upsertToolResult(tools: ConversationToolCall[], id: string | undefined, result: string | undefined, isError?: boolean, timestamp?: string): void {
+  if (!id && !result) return;
+  const tool = id ? tools.find((item) => item.id === id) : undefined;
+  if (tool) {
+    tool.result = result;
+    tool.isError = !!isError;
+    if (timestamp) tool.timestamp = new Date(timestamp).getTime();
+    return;
+  }
+  tools.push({
+    id,
+    name: 'tool result',
+    result,
+    isError: !!isError,
+    timestamp: timestamp ? new Date(timestamp).getTime() : undefined,
+  });
+}
+
+function codexToolFromItem(item: Record<string, unknown>, timestamp?: string): ConversationToolCall | undefined {
+  const type = stringField(item, 'type');
+  if (type === 'commandExecution' || type === 'command_execution') {
+    const command = stringField(item, 'command') ?? '';
+    const cwd = stringField(item, 'cwd');
+    const exitCode = item.exitCode ?? item.exit_code;
+    const status = stringField(item, 'status');
+    const output = stringField(item, 'aggregatedOutput', 'aggregated_output');
+    const input = stringifyPreview({ command, ...(cwd ? { cwd } : {}) });
+    const result = stringifyPreview({
+      ...(status ? { status } : {}),
+      ...(exitCode != null ? { exitCode } : {}),
+      ...(output ? { output } : {}),
+    }, 1200);
+    return {
+      id: stringField(item, 'id'),
+      name: 'Bash',
+      input,
+      result,
+      isError: typeof exitCode === 'number' ? exitCode !== 0 : status === 'failed',
+      timestamp: timestampMs(timestamp),
+    };
+  }
+
+  if (type === 'fileChange' || type === 'file_change') {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    return {
+      id: stringField(item, 'id'),
+      name: 'File change',
+      input: stringifyPreview(changes),
+      result: stringifyPreview({ status: stringField(item, 'status') }),
+      isError: stringField(item, 'status') === 'failed',
+      timestamp: timestampMs(timestamp),
+    };
+  }
+
+  return undefined;
+}
+
 function extractCodexLiveAgentTextFromItem(item: Record<string, unknown>): string {
   return item.type === 'agentMessage' && typeof item.text === 'string' ? item.text : '';
 }
@@ -129,6 +231,13 @@ function extractCodexLiveAgentTextFromTurn(turn: Record<string, unknown>): strin
     .join('\n\n');
 }
 
+function extractCodexLiveToolsFromTurn(turn: Record<string, unknown>, timestamp?: string): ConversationToolCall[] {
+  const items = Array.isArray(turn.items) ? turn.items : [];
+  return items
+    .map((item) => codexToolFromItem(asRecord(item), timestamp))
+    .filter((tool): tool is ConversationToolCall => !!tool);
+}
+
 function readTailFromFiles(filePaths: string[]): string {
   return filePaths
     .slice()
@@ -136,6 +245,32 @@ function readTailFromFiles(filePaths: string[]): string {
     .map((filePath) => readTail(filePath, MAX_LOG_READ_BYTES))
     .filter(Boolean)
     .join('\n');
+}
+
+function eventTimestamp(evt: Record<string, unknown>): string | undefined {
+  return stringField(evt, '_ts', 'timestamp');
+}
+
+function eventSessionId(evt: Record<string, unknown>): string | undefined {
+  const direct = stringField(evt, 'session_id', 'thread_id');
+  if (direct) return direct;
+  return getCodexLiveThreadId(evt);
+}
+
+function timestampMs(ts?: string): number | undefined {
+  if (!ts) return undefined;
+  const parsed = new Date(ts).getTime();
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function composeResultText(intermediate: string, finalResult: string): string {
+  if (!intermediate) return finalResult;
+  if (!finalResult) return intermediate;
+  if (intermediate === finalResult) return intermediate;
+  if (finalResult.startsWith(intermediate)) return finalResult;
+  if (intermediate.startsWith(finalResult)) return intermediate;
+  if (intermediate.endsWith(finalResult)) return intermediate;
+  return intermediate + '\n\n---\n\n' + finalResult;
 }
 
 /** Parse director logs to reconstruct conversation messages */
@@ -146,7 +281,7 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
 /** Parse multiple director log files, preserving cross-day session history. */
 export function parseConversationLogFiles(inputLogs: string[], outputLogs: string[], limit: number, sessionFilter?: string): ConversationMessage[] {
   // Parse input log — new format has timestamp + director fields
-  const inputs: Array<{ content: string; director?: string; timestamp?: string }> = [];
+  const inputs: Array<{ content: string; director?: string; timestamp?: string; sessionId?: string }> = [];
   try {
     const raw = readTailFromFiles(inputLogs);
     for (const line of raw.split('\n')) {
@@ -154,17 +289,19 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
       try {
         const evt = JSON.parse(line);
         if (evt?.type === 'user' && evt.message?.content) {
-          inputs.push({ content: evt.message.content, director: evt.director, timestamp: evt.timestamp || evt._ts });
+          inputs.push({ content: evt.message.content, director: evt.director, timestamp: evt.timestamp || evt._ts, sessionId: evt.session_id });
         }
       } catch { /* skip malformed lines */ }
     }
   } catch { /* file read error */ }
 
   // Parse output log — extract result events with response text + session_id + director + timestamp
-  const outputs: Array<{ text: string; sessionId?: string; director?: string; timestamp?: string; meta?: Partial<ConversationMessage> }> = [];
+  const outputs: Array<{ text: string; sessionId?: string; director?: string; timestamp?: string; tools?: ConversationToolCall[]; meta?: Partial<ConversationMessage> }> = [];
+  const sessionMarkers: Array<{ director: string; sessionId: string; timestamp: string; ms: number }> = [];
   try {
     const raw = readTailFromFiles(outputLogs);
     let pendingText = '';
+    let pendingTools: ConversationToolCall[] = [];
     let lastSessionId: string | undefined;
     let lastDirector: string | undefined;
     let codexTurnTimestamp: string | undefined;
@@ -174,26 +311,62 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
       try {
         const evt = JSON.parse(line);
         if (evt._director) lastDirector = evt._director;
+        const evtRecord = asRecord(evt);
+        const evtDirector = typeof evt._director === 'string' ? evt._director : lastDirector;
+        const evtSession = eventSessionId(evtRecord);
+        const evtTs = eventTimestamp(evtRecord);
+        const evtMs = timestampMs(evtTs);
+        if (evtDirector && evtSession && evtTs && evtMs !== undefined) {
+          sessionMarkers.push({ director: evtDirector, sessionId: evtSession, timestamp: evtTs, ms: evtMs });
+        }
         if (evt.type === 'assistant' && evt.message?.content) {
           const content = evt.message.content;
           if (typeof content === 'string') {
             pendingText += content;
           } else if (Array.isArray(content)) {
             for (const block of content) {
-              if (block.type === 'text') pendingText += block.text;
+              const item = asRecord(block);
+              if (item.type === 'text' && typeof item.text === 'string') {
+                pendingText += item.text;
+              } else if (item.type === 'tool_use') {
+                pendingTools.push({
+                  id: typeof item.id === 'string' ? item.id : undefined,
+                  name: typeof item.name === 'string' ? item.name : 'tool',
+                  input: stringifyPreview(item.input),
+                  timestamp: evt._ts ? new Date(evt._ts).getTime() : undefined,
+                });
+              }
             }
+          }
+        } else if (evt?.type === 'user' && Array.isArray(evt.message?.content)) {
+          for (const block of evt.message.content) {
+            const item = asRecord(block);
+            if (item.type !== 'tool_result') continue;
+            upsertToolResult(
+              pendingTools,
+              typeof item.tool_use_id === 'string' ? item.tool_use_id : undefined,
+              extractToolResultText(item.content),
+              !!item.is_error,
+              evt._ts || evt.timestamp,
+            );
           }
         } else if (evt.type === 'system' && evt.subtype === 'init' && evt.session_id) {
           lastSessionId = evt.session_id;
         } else if (evt.type === 'thread.started' && evt.thread_id) {
           lastSessionId = evt.thread_id;
-        } else if (evt.type === 'item.completed' && evt.item?.type === 'agent_message' && typeof evt.item.text === 'string') {
-          pendingText += evt.item.text;
+        } else if (evt.type === 'item.completed') {
+          const item = asRecord(evt.item);
+          if (item.type === 'agent_message' && typeof item.text === 'string') {
+            pendingText += item.text;
+          } else {
+            pushToolCall(pendingTools, codexToolFromItem(item, evt._ts || evt.timestamp));
+          }
         } else if (evt.type === 'turn.completed') {
           if (pendingText) {
-            outputs.push({ text: pendingText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts || codexTurnTimestamp, meta: usageMeta(evt) });
+            outputs.push({ text: pendingText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts || codexTurnTimestamp, tools: cloneTools(pendingTools), meta: usageMeta(evt) });
           }
           pendingText = '';
+          pendingTools = [];
           codexTurnTimestamp = evt._ts || evt.timestamp;
         } else if (evt.method === 'thread/started' || evt.method === 'thread/resumed') {
           lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
@@ -202,51 +375,88 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
         } else if (evt.method === 'item/completed') {
           const params = asRecord(evt.params);
           lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
-          const itemText = extractCodexLiveAgentTextFromItem(asRecord(params.item));
+          const item = asRecord(params.item);
+          const itemText = extractCodexLiveAgentTextFromItem(item);
           if (itemText) pendingText += itemText;
+          pushToolCall(pendingTools, codexToolFromItem(item, evt._ts || evt.timestamp));
         } else if (evt.method === 'turn/completed') {
           const params = asRecord(evt.params);
           lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
-          const turnText = extractCodexLiveAgentTextFromTurn(asRecord(params.turn));
+          const turn = asRecord(params.turn);
+          const turnText = extractCodexLiveAgentTextFromTurn(turn);
+          for (const tool of extractCodexLiveToolsFromTurn(turn, evt._ts || evt.timestamp)) {
+            pushToolCall(pendingTools, tool);
+          }
           const responseText = pendingText || turnText;
           if (responseText) {
-            outputs.push({ text: responseText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts, meta: usageMeta({ ...evt, ...asRecord(params.turn) }) });
+            outputs.push({ text: responseText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts, tools: cloneTools(pendingTools), meta: usageMeta({ ...evt, ...asRecord(params.turn) }) });
           }
           pendingText = '';
+          pendingTools = [];
         } else if (evt.type === 'result') {
           if (evt.session_id) lastSessionId = evt.session_id;
           const finalResult = typeof evt.result === 'string' ? evt.result.trim() : '';
           const intermediate = pendingText.trim();
-          let resultText: string;
-          if (intermediate && finalResult && intermediate !== finalResult && !finalResult.startsWith(intermediate) && !intermediate.startsWith(finalResult)) {
-            resultText = intermediate + '\n\n---\n\n' + finalResult;
-          } else {
-            resultText = finalResult.length >= intermediate.length ? finalResult : intermediate;
-          }
+          const resultText = composeResultText(intermediate, finalResult);
           if (resultText) {
-            outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts, meta: usageMeta(evt) });
+            outputs.push({ text: resultText, sessionId: lastSessionId, director: lastDirector, timestamp: evt._ts, tools: cloneTools(pendingTools), meta: usageMeta(evt) });
           }
           pendingText = '';
+          pendingTools = [];
         }
       } catch { /* skip malformed lines */ }
     }
   } catch { /* file read error */ }
 
+  const markersByDirector = new Map<string, Array<{ sessionId: string; timestamp: string; ms: number }>>();
+  for (const marker of sessionMarkers) {
+    const arr = markersByDirector.get(marker.director) ?? [];
+    arr.push(marker);
+    markersByDirector.set(marker.director, arr);
+  }
+  for (const markers of markersByDirector.values()) {
+    markers.sort((a, b) => a.ms - b.ms);
+  }
+
+  function inferInputSessionId(input: { director?: string; timestamp?: string; sessionId?: string }): string | undefined {
+    if (input.sessionId) return input.sessionId;
+    const inputMs = timestampMs(input.timestamp);
+    if (inputMs === undefined) return undefined;
+    const markers = markersByDirector.get(input.director ?? 'main') ?? [];
+    if (markers.length === 0) return undefined;
+
+    let previous: { sessionId: string; ms: number } | undefined;
+    let next: { sessionId: string; ms: number } | undefined;
+    for (const marker of markers) {
+      if (marker.ms <= inputMs) {
+        previous = marker;
+      } else {
+        next = marker;
+        break;
+      }
+    }
+
+    if (next && (!previous || next.ms - inputMs < Math.min(inputMs - previous.ms, 120_000))) {
+      return next.sessionId;
+    }
+    return previous?.sessionId ?? next?.sessionId;
+  }
+
   // Per-director pairing: group inputs and outputs by director label, then pair within each group
-  const directorInputs = new Map<string, Array<{ content: string; timestamp?: string }>>();
-  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string; timestamp?: string; meta?: Partial<ConversationMessage> }>>();
+  const directorInputs = new Map<string, Array<{ content: string; timestamp?: string; sessionId?: string }>>();
+  const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string; timestamp?: string; tools?: ConversationToolCall[]; meta?: Partial<ConversationMessage> }>>();
 
   for (const inp of inputs) {
     const key = inp.director ?? 'main';
     const arr = directorInputs.get(key) ?? [];
-    arr.push({ content: inp.content, timestamp: inp.timestamp });
+    arr.push({ content: inp.content, timestamp: inp.timestamp, sessionId: inferInputSessionId(inp) });
     directorInputs.set(key, arr);
   }
 
   for (const out of outputs) {
     const key = out.director ?? 'main';
     const arr = directorOutputs.get(key) ?? [];
-    arr.push({ text: out.text, sessionId: out.sessionId, timestamp: out.timestamp, meta: out.meta });
+    arr.push({ text: out.text, sessionId: out.sessionId, timestamp: out.timestamp, tools: out.tools, meta: out.meta });
     directorOutputs.set(key, arr);
   }
 
@@ -263,18 +473,22 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
     for (let i = 0; i < offset; i++) {
       const o = outs[i];
       if (sessionFilter && o.sessionId && o.sessionId !== sessionFilter) continue;
-      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId, timestamp: o.timestamp ? new Date(o.timestamp!).getTime() : undefined, ...o.meta });
+      messages.push({ direction: 'out', content: o.text, sessionId: o.sessionId, timestamp: o.timestamp ? new Date(o.timestamp!).getTime() : undefined, tools: o.tools, ...o.meta });
     }
 
     // Paired input/output
     for (let i = 0; i < ins.length; i++) {
       const oIdx = offset + i;
-      const sessionId = oIdx < outs.length ? outs[oIdx].sessionId : undefined;
-      if (sessionFilter && sessionId && sessionId !== sessionFilter) continue;
+      const pairedOutput = oIdx < outs.length ? outs[oIdx] : undefined;
+      const sessionId = ins[i].sessionId ?? pairedOutput?.sessionId;
+      const includeInput = !sessionFilter || sessionId === sessionFilter;
+      const includeOutput = !!pairedOutput && (!sessionFilter || pairedOutput.sessionId === sessionFilter);
 
-      messages.push({ direction: 'in', content: ins[i].content, sessionId, timestamp: ins[i].timestamp ? new Date(ins[i].timestamp!).getTime() : undefined });
-      if (oIdx < outs.length) {
-        messages.push({ direction: 'out', content: outs[oIdx].text, sessionId: outs[oIdx].sessionId, timestamp: outs[oIdx].timestamp ? new Date(outs[oIdx].timestamp!).getTime() : undefined, ...outs[oIdx].meta });
+      if (includeInput) {
+        messages.push({ direction: 'in', content: ins[i].content, sessionId, timestamp: timestampMs(ins[i].timestamp) });
+      }
+      if (includeOutput && pairedOutput) {
+        messages.push({ direction: 'out', content: pairedOutput.text, sessionId: pairedOutput.sessionId, timestamp: timestampMs(pairedOutput.timestamp), tools: pairedOutput.tools, ...pairedOutput.meta });
       }
     }
   }

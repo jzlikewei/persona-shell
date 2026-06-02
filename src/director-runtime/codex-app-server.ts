@@ -97,6 +97,10 @@ export class CodexAppServerRuntime {
     return Boolean(this.child?.pid && !this.child.killed && this.initialized && this.threadReady);
   }
 
+  private isTransportReady(): boolean {
+    return Boolean(this.child?.pid && !this.child.killed && this.initialized);
+  }
+
   hasActiveTurn(): boolean {
     return this.activeTurnId !== null;
   }
@@ -110,8 +114,12 @@ export class CodexAppServerRuntime {
   }
 
   async send(content: string): Promise<DirectorSendResult> {
-    if (!this.isReady()) {
+    if (!this.isTransportReady()) {
       throw new Error('codex app-server is not ready');
+    }
+
+    if (!this.threadReady || !this.hooks.getSessionId()) {
+      await this.startFreshThread();
     }
 
     const threadId = this.hooks.getSessionId();
@@ -232,6 +240,14 @@ export class CodexAppServerRuntime {
       }
     }
 
+    await this.startFreshThread();
+    return true;
+  }
+
+  private async startFreshThread(): Promise<void> {
+    const sessionName = this.hooks.getSessionName() ?? this.hooks.buildSessionName();
+    if (!this.hooks.getSessionName()) this.hooks.setSessionName(sessionName);
+
     const started = await this.request('thread/start', {
       ...this.threadOptions(),
       ephemeral: this.options.agent.ephemeral ?? false,
@@ -241,7 +257,6 @@ export class CodexAppServerRuntime {
     this.hooks.persistSession(threadId, sessionName);
     await this.setThreadName(threadId, sessionName);
     this.threadReady = true;
-    return true;
   }
 
   private spawnChild(): void {

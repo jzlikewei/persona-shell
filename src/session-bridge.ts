@@ -632,23 +632,27 @@ export class SessionBridge extends EventEmitter {
 
       this.emit('flush-drain-complete');
 
-      const checkpointDone = new Promise<void>((resolve) => {
-        this.flushCheckpointResolve = resolve;
-      });
-      this.enqueuePendingTurn({ type: 'flush-checkpoint' });
-      await this.writeRaw(this.buildAgentSwitchCheckpointPrompt(targetAgent.name));
+      if (this.sessionId) {
+        const checkpointDone = new Promise<void>((resolve) => {
+          this.flushCheckpointResolve = resolve;
+        });
+        this.enqueuePendingTurn({ type: 'flush-checkpoint' });
+        await this.writeRaw(this.buildAgentSwitchCheckpointPrompt(targetAgent.name));
 
-      const checkpointOk = await Promise.race([
-        checkpointDone.then(() => true),
-        this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
-      ]);
-      if (!checkpointOk) {
-        console.warn(`[bridge:${this.label}] Agent switch: checkpoint timeout, continuing`);
-        this.flushCheckpointResolve = null;
-        this.discardNextResponse = true;
-        // 清除过期的 checkpoint pending turn
-        const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
-        if (idx >= 0) this.pendingTurns.splice(idx, 1);
+        const checkpointOk = await Promise.race([
+          checkpointDone.then(() => true),
+          this.timeout(SessionBridge.FLUSH_STEP_TIMEOUT).then(() => false),
+        ]);
+        if (!checkpointOk) {
+          console.warn(`[bridge:${this.label}] Agent switch: checkpoint timeout, continuing`);
+          this.flushCheckpointResolve = null;
+          this.discardNextResponse = true;
+          // 清除过期的 checkpoint pending turn
+          const idx = this.pendingTurns.findIndex(t => t.type === 'flush-checkpoint');
+          if (idx >= 0) this.pendingTurns.splice(idx, 1);
+        }
+      } else {
+        console.log(`[bridge:${this.label}] Agent switch: no active session, cold-starting ${targetAgent.name}`);
       }
 
       const currentAdapter = this.adapter;
@@ -841,6 +845,7 @@ export class SessionBridge extends EventEmitter {
     const pendingTurn = this.enqueuePendingTurn({ type: 'system-absorbed' });
     try {
       await this.writeRaw(msg);
+      this.emit('input-message', msg);
     } catch {
       this.removePendingTurn(pendingTurn);
       this.resolveDrainIfNeeded();
@@ -873,6 +878,7 @@ export class SessionBridge extends EventEmitter {
         message: { role: 'user', content },
         timestamp: new Date().toISOString(),
         director: this.label,
+        session_id: this.sessionId ?? undefined,
       }) + '\n';
       appendFileSync(this.inputLogPath, logPayload);
     } catch {
@@ -915,6 +921,7 @@ export class SessionBridge extends EventEmitter {
 
     try {
       await this.writeRaw(msg);
+      this.emit('input-message', msg);
     } catch {
       this.removePendingTurn(pendingTurn);
       if (replyToMessageId) this.systemReplyQueue.pop();

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router'
 import { RootLayout } from '@/layouts/root-layout'
 import { ChatPage } from '@/pages/chat'
@@ -8,12 +8,13 @@ import { TokenDialog } from '@/components/token-dialog'
 
 export default function App() {
   const [authenticated, setAuthenticated] = useState(() => !!localStorage.getItem('auth_token'))
+  const handleAuthenticated = useCallback(() => setAuthenticated(true), [])
 
   return (
     <>
-      <TokenDialog onAuthenticated={() => setAuthenticated(true)} />
+      <TokenDialog onAuthenticated={handleAuthenticated} />
       {authenticated && (
-        <BrowserRouter>
+        <BrowserRouter basename="/v2">
           <Routes>
             <Route element={<RootLayout />}>
               <Route index element={<ChatPage />} />

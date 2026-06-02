@@ -26,6 +26,8 @@ export interface StatusData {
     alive: boolean
     queueLength: number
     activity: string | null
+    sessionId?: string | null
+    sessionName?: string | null
   }>
 }
 

@@ -933,6 +933,7 @@ export class DirectorPool extends EventEmitter {
         }
         queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
         console.log(`[pool:${groupName}] Replied to ${item.messageId} (${elapsedSec}s)`);
+        this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
       } catch (err) {
         this.streamingReplies.delete(item.correlationId);
         queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
@@ -940,6 +941,7 @@ export class DirectorPool extends EventEmitter {
         await this.messaging.sendMessage(feishuChatId, replyWithTiming).catch((e) => {
           console.error(`[pool:${groupName}] sendMessage fallback also failed:`, e);
         });
+        this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
       }
       await this.startStreamingReplyForHead(queue, routingKey);
     });
@@ -947,8 +949,8 @@ export class DirectorPool extends EventEmitter {
     // system-response → reply to task notification message (web sessions: forward via WebSocket)
     bridge.on('system-response', async (reply: string, replyToMessageId: string) => {
       if (this.cancelledSystemMessageIds.delete(replyToMessageId)) return;
+      this.emit('web-reply', bridge.label, replyToMessageId, reply);
       if (isWeb) {
-        this.emit('web-reply', bridge.label, replyToMessageId, reply);
         return;
       }
       try {
@@ -963,7 +965,12 @@ export class DirectorPool extends EventEmitter {
     });
 
     bridge.on('system-chunk', (text: string, replyToMessageId: string) => {
+      this.emit('chunk', bridge.label, text);
       if (!isWeb) this.appendSystemStreamingReply(replyToMessageId, text);
+    });
+
+    bridge.on('input-message', (text: string) => {
+      this.emit('input-message', bridge.label, text);
     });
 
     bridge.on('system-tool-call', (replyToMessageId: string, toolName?: string) => {

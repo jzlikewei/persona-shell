@@ -280,7 +280,7 @@ export function getTaskTimeouts(ids: string[]): Map<string, number | null> {
   return result;
 }
 
-export function listTasks(filter?: { status?: string; role?: string; limit?: number }): Task[] {
+export function listTasks(filter?: { status?: string; role?: string; sourceDirector?: string; limit?: number }): Task[] {
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
 
@@ -291,6 +291,10 @@ export function listTasks(filter?: { status?: string; role?: string; limit?: num
   if (filter?.role) {
     conditions.push('role = ?');
     params.push(filter.role);
+  }
+  if (filter?.sourceDirector) {
+    conditions.push('source_director = ?');
+    params.push(filter.sourceDirector);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

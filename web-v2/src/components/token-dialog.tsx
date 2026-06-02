@@ -18,8 +18,14 @@ export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!token.trim()) return
-    localStorage.setItem('auth_token', token.trim())
+    if (token.trim()) {
+      localStorage.setItem('auth_token', token.trim())
+    }
+    setVisible(false)
+    onAuthenticated()
+  }
+
+  const handleSkip = () => {
     setVisible(false)
     onAuthenticated()
   }
@@ -47,8 +53,11 @@ export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }
           autoFocus
           className="mb-4"
         />
-        <Button type="submit" className="w-full" disabled={!token.trim()}>
+        <Button type="submit" className="w-full">
           Connect
+        </Button>
+        <Button type="button" variant="ghost" className="w-full mt-2 text-muted-foreground" onClick={handleSkip}>
+          Skip (no token)
         </Button>
       </form>
     </div>

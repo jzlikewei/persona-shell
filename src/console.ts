@@ -1,7 +1,7 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, readdirSync, openSync, readSync, closeSync, mkdirSync } from 'fs';
-import { join, resolve, extname, relative, dirname, normalize } from 'path';
+import { join, resolve, extname, relative, dirname, normalize, basename } from 'path';
 import { homedir } from 'os';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
 import type { DirectorPool } from './director-pool.js';
@@ -21,6 +21,30 @@ import { CodexThreadInjector } from './codex-thread-injector.js';
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
 interface WsConnection {
   send(data: string): void;
+}
+
+interface ConsoleProject {
+  id: string;
+  name: string;
+  path: string;
+  source: 'process' | 'provider' | 'persona';
+}
+
+interface ConsoleWorkspace {
+  id: string;
+  name: string;
+  path: string;
+  source: 'main' | 'memory';
+  directorLabel?: string;
+  routingKey?: string;
+  groupName?: string;
+  sessionId?: string | null;
+  sessionName?: string | null;
+  alive?: boolean;
+  lastActiveAt?: number;
+  localSessionCount?: number;
+  localMessageCount?: number;
+  lastMessageAt?: string;
 }
 
 // Shell 启动时间，用于计算 uptime
@@ -110,6 +134,8 @@ export function startConsole(
   const token = config.console.token;
   const publicDir = join(import.meta.dir, 'public');
   const htmlPath = join(publicDir, 'index.html');
+  const v2Dir = resolve(import.meta.dir, '..', 'web-v2', 'dist');
+  const v2HtmlPath = join(v2Dir, 'index.html');
 
   // Web chat 消息处理
   const chatHandlers: Array<(msg: IncomingMessage) => Promise<void> | void> = [];
@@ -156,6 +182,190 @@ export function startConsole(
 
   // 活跃的 WebSocket 连接集合
   const clients = new Set<WsConnection>();
+
+  function expandConsolePath(path: string): string {
+    if (path === '~') return homedir();
+    if (path.startsWith('~/')) return join(homedir(), path.slice(2));
+    return path;
+  }
+
+  function buildWorkContext(): { projects: ConsoleProject[]; workspaces: ConsoleWorkspace[]; activeProjectId?: string; activeWorkspaceId?: string } {
+    const projects = new Map<string, ConsoleProject>();
+    const addProject = (project: ConsoleProject) => {
+      const path = resolve(expandConsolePath(project.path));
+      projects.set(path, { ...project, path });
+    };
+
+    addProject({
+      id: 'process-cwd',
+      name: basename(process.cwd()) || 'current',
+      path: process.cwd(),
+      source: 'process',
+    });
+
+    for (const [name, provider] of Object.entries(config.agents.providers)) {
+      if (!provider.cwd) continue;
+      const path = resolve(expandConsolePath(provider.cwd));
+      addProject({
+        id: `provider-${name}`,
+        name: basename(path) || name,
+        path,
+        source: 'provider',
+      });
+    }
+
+    addProject({
+      id: 'persona-dir',
+      name: basename(config.director.persona_dir) || 'persona',
+      path: config.director.persona_dir,
+      source: 'persona',
+    });
+
+    const mainStatus = director.getStatus();
+    const poolStatus = pool?.getPoolStatus() ?? [];
+    const safeGroupName = (name: string) => name.replace(/[\/\\:*?"<>|]/g, '_');
+    const directorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
+      const match = poolStatus.find((entry) => {
+        const safeName = safeGroupName(entry.groupName);
+        return workspaceName === safeName
+          || workspaceName === entry.label
+          || workspaceName === `${entry.label}-${safeName}`
+          || workspaceName.startsWith(`${entry.label}-`);
+      });
+      if (!match) return {};
+      return {
+        directorLabel: match.label,
+        routingKey: match.routingKey,
+        groupName: match.groupName,
+        sessionId: match.directorStatus?.sessionId ?? null,
+        sessionName: match.directorStatus?.sessionName ?? null,
+        alive: match.directorStatus?.alive ?? false,
+        lastActiveAt: match.lastActiveAt,
+      };
+    };
+    const legacyDirectorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
+      const match = workspaceName.match(/^([0-9a-f]{8})-(.+)$/i);
+      if (!match) return {};
+      const [, label, groupName] = match;
+      return {
+        directorLabel: label,
+        groupName,
+        sessionId: null,
+        sessionName: null,
+        alive: false,
+      };
+    };
+    const unlinkedDirectorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => ({
+      directorLabel: `workspace-${createHash('sha256').update(workspaceName).digest('hex').slice(0, 8)}`,
+      groupName: workspaceName,
+      sessionId: null,
+      sessionName: null,
+      alive: false,
+    });
+    const localHistoryForWorkspace = (directorLabel?: string): Partial<ConsoleWorkspace> => {
+      if (!directorLabel) return {};
+      const sessions = parseSessionsFiles(listDirectorLogs(directorLabel, 'output'));
+      return {
+        localSessionCount: sessions.length,
+        localMessageCount: sessions.reduce((sum, session) => sum + session.messageCount, 0),
+        lastMessageAt: sessions[0]?.lastMessageAt,
+      };
+    };
+
+    const workspaces: ConsoleWorkspace[] = [{
+      id: 'main',
+      name: 'Main director',
+      path: join(config.director.persona_dir, 'daily', 'state.md'),
+      source: 'main',
+      directorLabel: 'main',
+      sessionId: mainStatus.sessionId ?? null,
+      sessionName: mainStatus.sessionName ?? null,
+      alive: mainStatus.alive,
+      ...localHistoryForWorkspace('main'),
+    }];
+
+    const memoryRoot = join(config.director.persona_dir, 'workspaces');
+    if (existsSync(memoryRoot)) {
+      for (const name of readdirSync(memoryRoot)) {
+        const workspacePath = join(memoryRoot, name);
+        try {
+          if (!statSync(workspacePath).isDirectory()) continue;
+          const routing = {
+            ...unlinkedDirectorForWorkspace(name),
+            ...legacyDirectorForWorkspace(name),
+            ...directorForWorkspace(name),
+          };
+          workspaces.push({
+            id: `memory-${name}`,
+            name,
+            path: join(workspacePath, 'context.md'),
+            source: 'memory',
+            ...routing,
+            ...localHistoryForWorkspace(routing.directorLabel),
+          });
+        } catch {
+          // Best effort for UI context.
+        }
+      }
+    }
+
+    workspaces.sort((a, b) => {
+      if (a.id === 'main') return -1;
+      if (b.id === 'main') return 1;
+      const aHistory = (a.localMessageCount ?? 0) > 0 ? 1 : 0;
+      const bHistory = (b.localMessageCount ?? 0) > 0 ? 1 : 0;
+      if (aHistory !== bHistory) return bHistory - aHistory;
+      const aActive = a.alive ? 1 : 0;
+      const bActive = b.alive ? 1 : 0;
+      if (aActive !== bActive) return bActive - aActive;
+      const aTime = a.lastActiveAt ?? (a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0);
+      const bTime = b.lastActiveAt ?? (b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0);
+      if (aTime !== bTime) return bTime - aTime;
+      return a.name.localeCompare(b.name, 'zh-Hans-CN');
+    });
+
+    return {
+      projects: [...projects.values()],
+      workspaces,
+      activeProjectId: [...projects.values()][0]?.id,
+      activeWorkspaceId: workspaces[0]?.id,
+    };
+  }
+
+  function sanitizeWorkspaceName(input: unknown): string | null {
+    if (typeof input !== 'string') return null;
+    const name = input
+      .trim()
+      .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, '_')
+      .replace(/\s+/g, ' ')
+      .slice(0, 80)
+      .trim();
+    if (!name || name === '.' || name === '..') return null;
+    return name;
+  }
+
+  function createWorkspace(input: unknown): ConsoleWorkspace {
+    const name = sanitizeWorkspaceName(input);
+    if (!name) {
+      throw new Error('Workspace name is required');
+    }
+
+    const memoryRoot = join(config.director.persona_dir, 'workspaces');
+    const workspacePath = join(memoryRoot, name);
+    const contextPath = join(workspacePath, 'context.md');
+
+    mkdirSync(workspacePath, { recursive: true });
+    if (!existsSync(contextPath)) {
+      writeFileSync(contextPath, '');
+    }
+
+    return {
+      id: `memory-${name}`,
+      name,
+      path: contextPath,
+      source: 'memory',
+    };
+  }
 
   // 构建状态快照
   function buildSnapshot() {
@@ -1289,26 +1499,66 @@ export function startConsole(
     }
   }
 
+  function sessionIdForDirector(label: string): string | null {
+    if (label === director.label || label === 'main') return director.getStatus().sessionId;
+    const entry = pool?.getPoolStatus().find((item) => item.label === label);
+    if (!entry) return null;
+    return pool?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
+  }
+
   director.on('chunk', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
   });
   director.on('stream-abort', () => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: director.label }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: director.label, sessionId: sessionIdForDirector(director.label) }));
+  });
+  director.on('input-message', (text: string) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', director: director.label, sessionId: sessionIdForDirector(director.label), text, timestamp: new Date().toISOString() }));
+  });
+  director.on('system-chunk', (text: string) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
+  });
+  director.on('system-response', (text: string, messageId: string) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', director: director.label, sessionId: sessionIdForDirector(director.label), messageId, text }));
+  });
+  director.on('response', (text: string) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', director: director.label, sessionId: sessionIdForDirector(director.label), messageId: null, text }));
+  });
+  director.on('web-alert', (message: string) => {
+    if (clients.size === 0) return;
+    const taskCallback = message.startsWith('✅ 后台任务') || message.startsWith('❌ 后台任务');
+    broadcastWs(JSON.stringify({
+      type: taskCallback ? 'task_callback' : 'chat_reply',
+      director: director.label,
+      sessionId: sessionIdForDirector(director.label),
+      messageId: null,
+      text: taskCallback ? message : '⚠️ ' + message,
+    }));
   });
 
   if (pool) {
     pool.on('chunk', (label: string, text: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, text }));
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, sessionId: sessionIdForDirector(label), text }));
     });
     pool.on('stream-abort', (label: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label }));
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label, sessionId: sessionIdForDirector(label) }));
+    });
+    pool.on('input-message', (label: string, text: string) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', director: label, sessionId: sessionIdForDirector(label), text, timestamp: new Date().toISOString() }));
     });
     // Web session reply/alert routing
     pool.on('web-reply', (label: string, messageId: string, text: string) => {
-      broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, messageId, text }));
+      broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, sessionId: sessionIdForDirector(label), messageId, text }));
     });
     pool.on('web-alert', (label: string, message: string) => {
-      broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, messageId: null, text: '⚠️ ' + message }));
+      const taskCallback = message.startsWith('✅ 后台任务') || message.startsWith('❌ 后台任务');
+      broadcastWs(JSON.stringify({
+        type: taskCallback ? 'task_callback' : 'chat_reply',
+        director: label,
+        sessionId: sessionIdForDirector(label),
+        messageId: null,
+        text: taskCallback ? message : '⚠️ ' + message,
+      }));
     });
   }
 
@@ -1925,9 +2175,17 @@ export function startConsole(
     async fetch(req, server) {
       const url = new URL(req.url);
 
-      // Token 认证检查
-      const authErr = checkAuth(req);
-      if (authErr) return authErr;
+      // Skip auth for static assets and HTML pages
+      const isStaticAsset = url.pathname === '/' ||
+        url.pathname.startsWith('/css/') ||
+        url.pathname.startsWith('/js/') ||
+        url.pathname === '/v2' ||
+        url.pathname.startsWith('/v2/');
+      if (!isStaticAsset) {
+        // Token 认证检查
+        const authErr = checkAuth(req);
+        if (authErr) return authErr;
+      }
 
       // WebSocket 升级
       if (server.upgrade(req)) {
@@ -1947,6 +2205,52 @@ export function startConsole(
           }
         }
         default: {
+          // Serve web-v2 SPA under /v2
+          if (url.pathname === '/v2' || url.pathname.startsWith('/v2/')) {
+            const subPath = url.pathname === '/v2' ? '' : url.pathname.slice(3);
+            if (subPath === '' || subPath === '/') {
+              try {
+                const html = readFileSync(v2HtmlPath, 'utf-8');
+                return new Response(html, {
+                  headers: { 'Content-Type': 'text/html; charset=utf-8' },
+                });
+              } catch {
+                return new Response('web-v2 not built. Run: cd web-v2 && bun run build', { status: 404 });
+              }
+            }
+            const filePath = resolve(v2Dir, subPath.slice(1));
+            if (!filePath.startsWith(v2Dir + '/')) {
+              return new Response('Forbidden', { status: 403 });
+            }
+            if (existsSync(filePath) && statSync(filePath).isFile()) {
+              const ext = extname(filePath).toLowerCase();
+              const mimeTypes: Record<string, string> = {
+                '.css': 'text/css; charset=utf-8',
+                '.js': 'application/javascript; charset=utf-8',
+                '.html': 'text/html; charset=utf-8',
+                '.svg': 'image/svg+xml',
+                '.png': 'image/png',
+                '.ico': 'image/x-icon',
+                '.json': 'application/json',
+                '.woff': 'font/woff',
+                '.woff2': 'font/woff2',
+              };
+              const file = Bun.file(filePath);
+              return new Response(file, {
+                headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
+              });
+            }
+            // SPA fallback: unknown paths serve index.html for client-side routing
+            try {
+              const html = readFileSync(v2HtmlPath, 'utf-8');
+              return new Response(html, {
+                headers: { 'Content-Type': 'text/html; charset=utf-8' },
+              });
+            } catch {
+              return new Response('Not found', { status: 404 });
+            }
+          }
+
           // Serve static files from /css/ and /js/ subdirectories
           if (url.pathname.startsWith('/css/') || url.pathname.startsWith('/js/')) {
             const filePath = resolve(publicDir, url.pathname.slice(1));
@@ -2487,6 +2791,17 @@ export function startConsole(
               },
             });
           }
+          if (url.pathname === '/api/work-context' && req.method === 'GET') {
+            return Response.json(buildWorkContext());
+          }
+          if (url.pathname === '/api/workspaces' && req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as { name?: unknown };
+            try {
+              return Response.json(createWorkspace(body.name));
+            } catch (err) {
+              return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+            }
+          }
           // Message history and session APIs
           if (url.pathname === '/api/messages' && req.method === 'GET') {
             const limit = Number(url.searchParams.get('limit') ?? 100);
@@ -2513,7 +2828,19 @@ export function startConsole(
             const ds = target.label === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
             if (ds?.sessionId && ds.sessionName) {
               const live = sessions.find(s => s.sessionId === ds.sessionId);
-              if (live) live.sessionName = ds.sessionName;
+              if (live) {
+                live.sessionName = ds.sessionName;
+                live.alive = true;
+              } else {
+                sessions.unshift({
+                  sessionId: ds.sessionId,
+                  sessionName: ds.sessionName,
+                  alive: true,
+                  messageCount: 0,
+                  firstMessageAt: undefined,
+                  lastMessageAt: new Date().toISOString(),
+                });
+              }
             }
             return Response.json(sessions);
           }
@@ -2801,8 +3128,9 @@ export function startConsole(
           if (url.pathname === '/api/tasks' && req.method === 'GET') {
             const status = url.searchParams.get('status') ?? undefined;
             const role = url.searchParams.get('role') ?? undefined;
+            const sourceDirector = url.searchParams.get('source_director') ?? undefined;
             const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-            return Response.json(listTasks({ status, role, limit }));
+            return Response.json(listTasks({ status, role, sourceDirector, limit }));
           }
           if (url.pathname === '/api/tasks/cleanup' && req.method === 'GET') {
             const olderThanDays = Number(url.searchParams.get('older_than_days') ?? 30);

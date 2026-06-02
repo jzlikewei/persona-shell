@@ -71,6 +71,26 @@ function codexLiveItemCompleted(text: string, threadId = 'thread-live-001', dire
   });
 }
 
+function codexLiveCommandCompleted(threadId = 'thread-live-001', director = 'main'): string {
+  return JSON.stringify({
+    method: 'item/completed',
+    params: {
+      threadId,
+      item: {
+        type: 'commandExecution',
+        id: 'call-test-001',
+        command: '/bin/zsh -lc pwd',
+        cwd: '/tmp/workspace',
+        status: 'completed',
+        aggregatedOutput: '/tmp/workspace\n',
+        exitCode: 0,
+      },
+    },
+    _ts: '2026-04-15T10:00:01+08:00',
+    _director: director,
+  });
+}
+
 function codexLiveTurnCompleted(threadId = 'thread-live-001', ts = '2026-04-15T10:00:02+08:00', director = 'main'): string {
   return JSON.stringify({
     method: 'turn/completed',
@@ -167,6 +187,25 @@ describe('log-parser', () => {
       const msgs = parseConversationLog(inLog, outLog, 100);
       const outMsg = msgs.find((m) => m.direction === 'out');
       expect(outMsg?.content).toBe('answer body');
+    });
+
+    test('keeps streamed intro and removes duplicated final suffix', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+      const finalText = '已派 Executor 执行（T-0602-19-001），改动包括 proto 新增字段 → Go 透传 → 前端文案逻辑 → 创建 MR。等完成后我来审结果。';
+      writeFileSync(inLog, inputLine('q1', 'main', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog, [
+        outputInit('sess-001'),
+        outputAssistant('好，派 Executor 开干。'),
+        outputAssistant(finalText),
+        JSON.stringify({ type: 'result', session_id: 'sess-001', result: finalText, _ts: '2026-04-15T10:00:01+08:00' }),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLog(inLog, outLog, 100);
+      const outMsg = msgs.find((m) => m.direction === 'out');
+      expect(outMsg?.content).toBe(`好，派 Executor 开干。${finalText}`);
+      expect(outMsg?.content.match(/T-0602-19-001/g)?.length).toBe(1);
+      expect(outMsg?.content.includes('---')).toBe(false);
     });
 
     test('orphan outputs (more outputs than inputs)', () => {
@@ -293,6 +332,30 @@ describe('log-parser', () => {
       expect(filtered.some((m) => m.content === 'a2')).toBe(false);
     });
 
+    test('sessionFilter keeps raw task callback inputs with inferred session ID', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+
+      writeFileSync(inLog, [
+        inputLine('q1', 'worker-a', '2026-04-15T10:00:00+08:00'),
+        inputLine('q2', 'worker-a', '2026-04-15T10:05:00+08:00'),
+        inputLine('[TASK_DONE] 后台任务 T-TEST 已完成。调用 get_task MCP 工具查看详情。', 'worker-a', '2026-04-15T10:08:00+08:00'),
+      ].join('\n') + '\n');
+
+      writeFileSync(outLog, [
+        outputInit('sess-raw-task', 'worker-a'),
+        outputAssistant('a1', 'worker-a'),
+        outputResult('sess-raw-task', '2026-04-15T10:00:01+08:00', 'worker-a'),
+        outputAssistant('a2', 'worker-a'),
+        outputResult('sess-raw-task', '2026-04-15T10:05:01+08:00', 'worker-a'),
+      ].join('\n') + '\n');
+
+      const filtered = parseConversationLogFiles([inLog], [outLog], 100, 'sess-raw-task');
+      expect(filtered.some((m) => m.direction === 'in' && m.content.startsWith('[TASK_DONE]'))).toBe(true);
+      const taskMsg = filtered.find((m) => m.content.startsWith('[TASK_DONE]'));
+      expect(taskMsg?.sessionId).toBe('sess-raw-task');
+    });
+
     test('codex format — thread.started + item.completed + turn.completed', () => {
       const inLog = join(TMP_DIR, 'input.log');
       const outLog = join(TMP_DIR, 'output.log');
@@ -327,6 +390,30 @@ describe('log-parser', () => {
       const outMsg = msgs.find((m) => m.direction === 'out');
       expect(outMsg?.content).toBe('codex-live response');
       expect(outMsg?.sessionId).toBe('thread-live-001');
+    });
+
+    test('codex-live JSON-RPC format attaches commandExecution tools to assistant message', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+
+      writeFileSync(inLog, inputLine('where am I', 'pool-a', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog, [
+        codexLiveThreadStarted('thread-live-001', 'pool-a'),
+        codexLiveCommandCompleted('thread-live-001', 'pool-a'),
+        codexLiveItemCompleted('`/tmp/workspace`', 'thread-live-001', 'pool-a'),
+        codexLiveTurnCompleted('thread-live-001', '2026-04-15T10:00:02+08:00', 'pool-a'),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLog(inLog, outLog, 100);
+      const outMsg = msgs.find((m) => m.direction === 'out');
+      expect(outMsg?.content).toBe('`/tmp/workspace`');
+      expect(outMsg?.sessionId).toBe('thread-live-001');
+      expect(outMsg?.tools?.length).toBe(1);
+      expect(outMsg?.tools?.[0].name).toBe('Bash');
+      expect(outMsg?.tools?.[0].input).toContain('/bin/zsh -lc pwd');
+      expect(outMsg?.tools?.[0].input).toContain('/tmp/workspace');
+      expect(outMsg?.tools?.[0].result).toContain('/tmp/workspace');
+      expect(outMsg?.tools?.[0].isError).toBe(false);
     });
 
     test('codex-live JSON-RPC format falls back to turn items when item/completed text is absent', () => {
