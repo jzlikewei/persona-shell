@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
+import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
@@ -979,12 +980,17 @@ export class DirectorPool extends EventEmitter {
       if (!isWeb) this.appendSystemStreamingReply(replyToMessageId, text);
     });
 
+    bridge.on('turn-event', (event: AssistantTurnEvent) => {
+      this.emit('turn-event', bridge.label, event);
+    });
+
     bridge.on('input-message', (text: string) => {
       this.emit('input-message', bridge.label, text);
     });
 
-    bridge.on('system-tool-call', (replyToMessageId: string, toolName?: string) => {
+    bridge.on('system-tool-call', (replyToMessageId: string, toolName?: string, tool?: DirectorToolCall) => {
       if (!isWeb) this.showSystemToolCall(replyToMessageId, toolName);
+      this.emit('tool-call', bridge.label, toolName, tool);
     });
 
     bridge.on('system-stream-abort', (replyToMessageId: string, text?: string) => {
@@ -1068,9 +1074,9 @@ export class DirectorPool extends EventEmitter {
       if (!isWeb) this.appendStreamingReply(queue, text);
       this.emit('chunk', bridge.label, text);
     });
-    bridge.on('tool-call', (toolName?: string) => {
+    bridge.on('tool-call', (toolName?: string, tool?: DirectorToolCall) => {
       if (!isWeb) this.showToolCallInStreamingReply(queue, toolName);
-      this.emit('tool-call', bridge.label, toolName);
+      this.emit('tool-call', bridge.label, toolName, tool);
     });
     bridge.on('stream-abort', () => {
       const item = queue.peek();

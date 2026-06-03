@@ -15,6 +15,30 @@ export interface DirectorTurnResult {
   durationMs: number | null;
 }
 
+export interface DirectorToolCall {
+  id?: string;
+  name: string;
+  input?: string;
+  result?: string;
+  isError?: boolean;
+  timestamp?: number;
+  status?: 'running' | 'completed' | 'failed';
+}
+
+export interface AssistantTurnEvent {
+  type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted';
+  director: string;
+  sessionId?: string | null;
+  turnId: string;
+  messageId?: string;
+  timestamp: string;
+  text?: string;
+  content?: string;
+  tool?: DirectorToolCall;
+  durationMs?: number | null;
+  error?: string;
+}
+
 export interface RestoredSessionState {
   sessionId: string | null;
   sessionName: string | null;
@@ -30,7 +54,7 @@ export interface DirectorSessionAdapterHooks {
   buildSessionName(): string;
   logOutput(line: string): void;
   onChunk(text: string): void;
-  onToolCall(toolName?: string): void;
+  onToolCall(toolName?: string, tool?: DirectorToolCall): void;
   onMetrics(update: DirectorSessionMetricsUpdate): void;
   onPartialAgentMessage(text: string): void;
   onTurnComplete(result: DirectorTurnResult): void;

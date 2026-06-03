@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, appendFileSync, renameSync, readdirSync, statSync } from 'fs';
 import { execSync } from 'child_process';
 import { dirname, join } from 'path';
@@ -13,10 +14,12 @@ import { CodexAppServerSessionAdapter } from './director-session-adapter/codex-a
 import { ClaudeSessionAdapter } from './director-session-adapter/claude.js';
 import { KimiSessionAdapter } from './director-session-adapter/kimi.js';
 import type {
+  AssistantTurnEvent,
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
   DirectorSessionAdapterOptions,
   DirectorSessionMetricsUpdate,
+  DirectorToolCall,
   DirectorTurnResult,
   RestoredSessionState,
 } from './director-session-adapter/index.js';
@@ -43,13 +46,13 @@ interface BridgePersistedState {
 }
 
 type PendingType =
-  | { type: 'user'; correlationId?: string }
-  | { type: 'system-absorbed' }
-  | { type: 'system-reply'; replyToMessageId: string }
-  | { type: 'system-forward' }
-  | { type: 'bootstrap' }
-  | { type: 'flush-checkpoint' }
-  | { type: 'flush-bootstrap' };
+  | { type: 'user'; correlationId?: string; turnId?: string }
+  | { type: 'system-absorbed'; turnId?: string }
+  | { type: 'system-reply'; replyToMessageId: string; turnId?: string }
+  | { type: 'system-forward'; turnId?: string }
+  | { type: 'bootstrap'; turnId?: string }
+  | { type: 'flush-checkpoint'; turnId?: string }
+  | { type: 'flush-bootstrap'; turnId?: string };
 
 export interface SessionBridgeOptions {
   agents: Config['agents'];
@@ -834,8 +837,7 @@ export class SessionBridge extends EventEmitter {
     try {
       return await this.writeRaw(content);
     } catch (err) {
-      this.removePendingTurn(pendingTurn);
-      this.resolveDrainIfNeeded();
+      this.failPendingTurn(pendingTurn, err);
       throw err;
     }
   }
@@ -889,10 +891,12 @@ export class SessionBridge extends EventEmitter {
     if (result === 'steered' && options.handleSteeredPending !== false) {
       const steeredTurn = this.pendingTurns.pop();
       if (steeredTurn?.type === 'user') {
+        this.emitTurnEvent(steeredTurn, { type: 'turn_aborted', error: '已并入当前处理中' });
         this.emit('message-steered', steeredTurn.correlationId);
       } else if (steeredTurn?.type === 'system-reply') {
         this.systemReplyQueue.pop();
         this.partialSystemReplyText = null;
+        this.emitTurnEvent(steeredTurn, { type: 'turn_aborted', error: '已并入当前处理中' });
         this.emit('system-stream-abort', steeredTurn.replyToMessageId, '已并入当前处理中');
       } else if (steeredTurn) {
         log.debug(`[bridge:${this.label}] Non-user turn was steered and absorbed: ${steeredTurn.type}`);
@@ -922,10 +926,9 @@ export class SessionBridge extends EventEmitter {
     try {
       await this.writeRaw(msg);
       this.emit('input-message', msg);
-    } catch {
-      this.removePendingTurn(pendingTurn);
+    } catch (err) {
+      this.failPendingTurn(pendingTurn, err);
       if (replyToMessageId) this.systemReplyQueue.pop();
-      this.resolveDrainIfNeeded();
     }
   }
 
@@ -988,7 +991,9 @@ export class SessionBridge extends EventEmitter {
   }
 
   private enqueuePendingTurn(turn: PendingType): PendingType {
+    turn.turnId ??= randomUUID();
     this.pendingTurns.push(turn);
+    this.emitTurnEvent(turn, { type: 'turn_started' });
     return turn;
   }
 
@@ -999,6 +1004,33 @@ export class SessionBridge extends EventEmitter {
   private removePendingTurn(turn: PendingType): void {
     const idx = this.pendingTurns.indexOf(turn);
     if (idx >= 0) this.pendingTurns.splice(idx, 1);
+  }
+
+  private failPendingTurn(turn: PendingType, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.emitTurnEvent(turn, { type: 'turn_failed', error: message || 'send failed' });
+    this.removePendingTurn(turn);
+    this.resolveDrainIfNeeded();
+  }
+
+  private isVisibleTurn(turn: PendingType | undefined): turn is PendingType & { turnId: string } {
+    return !!turn?.turnId && (turn.type === 'user' || turn.type === 'system-reply');
+  }
+
+  private emitTurnEvent(
+    turn: PendingType | undefined,
+    patch: Omit<AssistantTurnEvent, 'director' | 'sessionId' | 'turnId' | 'timestamp'> & { timestamp?: string },
+  ): void {
+    if (!this.isVisibleTurn(turn)) return;
+    const event: AssistantTurnEvent = {
+      ...patch,
+      director: this.label,
+      sessionId: this.sessionId,
+      turnId: turn.turnId,
+      messageId: turn.type === 'system-reply' ? turn.replyToMessageId : turn.type === 'user' ? turn.correlationId : undefined,
+      timestamp: patch.timestamp ?? new Date().toISOString(),
+    };
+    this.emit('turn-event', event);
   }
 
   private timeout(ms: number): Promise<void> {
@@ -1087,7 +1119,7 @@ export class SessionBridge extends EventEmitter {
       buildSessionName: () => this.buildSessionName(),
       logOutput: (line) => this.logOutputEvent(line),
       onChunk: (text) => this.handleStreamChunk(text),
-      onToolCall: (toolName) => this.handleToolCall(toolName),
+      onToolCall: (toolName, tool) => this.handleToolCall(toolName, tool),
       onPartialAgentMessage: (text) => this.handlePartialAgentMessage(text),
       onMetrics: (update) => this.handleMetricsUpdate(update),
       onTurnComplete: (result) => this.handleTurnComplete(result),
@@ -1280,15 +1312,35 @@ export class SessionBridge extends EventEmitter {
   private handleStreamChunk(text: string): void {
     const head = this.pendingTurns[0];
     const shouldStream = !this.flushing && !this.bootstrapping && !this.discardNextResponse;
-    if (shouldStream && head?.type === 'user') this.emit('chunk', text);
-    if (shouldStream && head?.type === 'system-reply') this.emit('system-chunk', text, head.replyToMessageId);
+    if (shouldStream && head?.type === 'user') {
+      this.emit('chunk', text);
+      this.emitTurnEvent(head, { type: 'assistant_delta', text });
+    }
+    if (shouldStream && head?.type === 'system-reply') {
+      this.emit('system-chunk', text, head.replyToMessageId);
+      this.emitTurnEvent(head, { type: 'assistant_delta', text });
+    }
   }
 
-  private handleToolCall(toolName?: string): void {
+  private handleToolCall(toolName?: string, tool?: DirectorToolCall): void {
     const head = this.pendingTurns[0];
     const shouldStream = !this.flushing && !this.bootstrapping && !this.discardNextResponse;
-    if (shouldStream && head?.type === 'user') this.emit('tool-call', toolName);
-    if (shouldStream && head?.type === 'system-reply') this.emit('system-tool-call', head.replyToMessageId, toolName);
+    const eventTool: DirectorToolCall = {
+      ...(tool ?? { name: toolName ?? 'tool' }),
+      name: tool?.name ?? toolName ?? 'tool',
+      status: tool?.result !== undefined || tool?.isError !== undefined
+        ? (tool?.isError ? 'failed' : 'completed')
+        : (tool?.status ?? 'running'),
+    };
+    const eventType = eventTool.status === 'completed' || eventTool.status === 'failed' ? 'tool_completed' : 'tool_started';
+    if (shouldStream && head?.type === 'user') {
+      this.emit('tool-call', toolName, eventTool);
+      this.emitTurnEvent(head, { type: eventType, tool: eventTool });
+    }
+    if (shouldStream && head?.type === 'system-reply') {
+      this.emit('system-tool-call', head.replyToMessageId, toolName, eventTool);
+      this.emitTurnEvent(head, { type: eventType, tool: eventTool });
+    }
   }
 
   private handlePartialAgentMessage(text: string): void {
@@ -1356,6 +1408,11 @@ export class SessionBridge extends EventEmitter {
       resolvedTurnType = 'bootstrap';
     } else {
       if (!pending || pending.type === 'user') {
+        this.emitTurnEvent(pending, {
+          type: 'turn_completed',
+          content: responseText,
+          durationMs: result.durationMs ?? null,
+        });
         if (responseText) {
           this.messagesProcessedToday++;
           this.emit('response', responseText, result.durationMs ?? undefined);
@@ -1363,6 +1420,11 @@ export class SessionBridge extends EventEmitter {
         resolvedTurnType = 'user';
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
+        this.emitTurnEvent(pending, {
+          type: 'turn_completed',
+          content: responseText,
+          durationMs: result.durationMs ?? null,
+        });
         if (responseText) {
           log.debug(`[bridge:${this.label}] Task notification response (replyTo=${pending.replyToMessageId}): ${responseText.slice(0, 100)}`);
           this.emit('system-response', responseText, pending.replyToMessageId);
@@ -1409,10 +1471,12 @@ export class SessionBridge extends EventEmitter {
     } else {
       if (!pending || pending.type === 'user') {
         this.messagesProcessedToday++;
+        this.emitTurnEvent(pending, { type: 'turn_failed', error: message });
         this.emit('response', '处理失败，请稍后重试');
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
         this.partialSystemReplyText = null;
+        this.emitTurnEvent(pending, { type: 'turn_failed', error: message });
         this.emit('system-stream-abort', pending.replyToMessageId, 'Director 调用失败');
       }
       this.emit('alert', `⚠️ Director 调用失败: ${message}`);

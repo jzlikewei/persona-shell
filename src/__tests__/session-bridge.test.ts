@@ -8,6 +8,8 @@ import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
   DirectorSessionAdapterOptions,
+  AssistantTurnEvent,
+  DirectorToolCall,
   DirectorTurnResult,
 } from '../director-session-adapter/index.js';
 import type { DirectorRuntimeStatus, DirectorSendResult } from '../director-runtime/index.js';
@@ -612,6 +614,87 @@ describe('SessionBridge', () => {
     adapter.completeTurn({ responseText: 'done', durationMs: 1 });
   });
 
+  test('user turn emits unified turn events with deltas, tools and completion on one turnId', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    await bridge.send('hello', { correlationId: 'msg-1' });
+
+    adapter.hooks.onChunk('I will inspect it.');
+    adapter.hooks.onToolCall('Bash');
+    adapter.hooks.onToolCall('Bash', {
+      id: 'tool-1',
+      name: 'Bash',
+      input: '{ "command": "pwd" }',
+      result: '/tmp/workspace',
+      isError: false,
+    });
+    adapter.completeTurn({ responseText: 'I will inspect it.\nDone.', durationMs: 12 });
+
+    expect(events.map(event => event.type)).toEqual([
+      'turn_started',
+      'assistant_delta',
+      'tool_started',
+      'tool_completed',
+      'turn_completed',
+    ]);
+    expect(new Set(events.map(event => event.turnId)).size).toBe(1);
+    expect(events[0].messageId).toBe('msg-1');
+    expect(events.find(event => event.type === 'assistant_delta')?.text).toBe('I will inspect it.');
+    const startedTool = events.find(event => event.type === 'tool_started')?.tool;
+    expect(startedTool).toMatchObject({ name: 'Bash', status: 'running' });
+    const completedTool = events.find(event => event.type === 'tool_completed')?.tool;
+    expect(completedTool).toMatchObject({
+      id: 'tool-1',
+      name: 'Bash',
+      input: '{ "command": "pwd" }',
+      result: '/tmp/workspace',
+      isError: false,
+      status: 'completed',
+    } satisfies DirectorToolCall);
+    expect(events.at(-1)).toMatchObject({
+      type: 'turn_completed',
+      content: 'I will inspect it.\nDone.',
+      durationMs: 12,
+    });
+  });
+
+  test('system reply turn emits unified turn events with tool structure', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    await bridge.notifyTaskDone('task-1', true, 'msg-1');
+    adapter.hooks.onToolCall('Read', {
+      id: 'tool-system-1',
+      name: 'Read',
+      input: '/tmp/a.txt',
+      result: 'ok',
+      isError: false,
+    });
+    adapter.completeTurn({ responseText: 'task acknowledged', durationMs: 3 });
+
+    expect(events.map(event => event.type)).toEqual([
+      'turn_started',
+      'tool_completed',
+      'turn_completed',
+    ]);
+    expect(new Set(events.map(event => event.turnId)).size).toBe(1);
+    expect(events[0].messageId).toBe('msg-1');
+    expect(events[1].tool).toMatchObject({
+      id: 'tool-system-1',
+      name: 'Read',
+      input: '/tmp/a.txt',
+      result: 'ok',
+      status: 'completed',
+    } satisfies DirectorToolCall);
+  });
+
   test('handleStreamChunk suppresses chunk during bootstrap', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
@@ -897,6 +980,46 @@ describe('SessionBridge', () => {
     adapter.send = async () => { throw new Error('boom'); };
     await bridge.sendSystemMessage('fail');
     expect(bridge.getStatus().pendingCount).toBe(0);
+    adapter.send = orig;
+  });
+
+  test('send emits turn_failed when visible user turn cannot be written', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    const orig = adapter.send.bind(adapter);
+    adapter.send = async () => { throw new Error('boom'); };
+
+    await expect(bridge.send('fail', { correlationId: 'msg-fail' })).rejects.toThrow('boom');
+
+    expect(bridge.getStatus().pendingCount).toBe(0);
+    expect(events.map(event => event.type)).toEqual(['turn_started', 'turn_failed']);
+    expect(new Set(events.map(event => event.turnId)).size).toBe(1);
+    expect(events[0].messageId).toBe('msg-fail');
+    expect(events[1].error).toBe('boom');
+    adapter.send = orig;
+  });
+
+  test('notifyTaskDone emits turn_failed when visible system reply cannot be written', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    const orig = adapter.send.bind(adapter);
+    adapter.send = async () => { throw new Error('boom'); };
+
+    await bridge.notifyTaskDone('task-fail', true, 'msg-task-fail');
+
+    expect(bridge.getStatus().pendingCount).toBe(0);
+    expect(events.map(event => event.type)).toEqual(['turn_started', 'turn_failed']);
+    expect(new Set(events.map(event => event.turnId)).size).toBe(1);
+    expect(events[0].messageId).toBe('msg-task-fail');
+    expect(events[1].error).toBe('boom');
     adapter.send = orig;
   });
 

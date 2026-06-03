@@ -2,6 +2,9 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { useApi } from './use-api'
 import { ACTIVE_SESSION_EVENT, storageKeyForDirector } from './use-sessions'
 import { useWebSocket } from './use-websocket'
+import { mergeChatToolCall, type ChatToolCall } from './chat-tools'
+
+export { mergeChatToolCall, type ChatToolCall } from './chat-tools'
 
 export interface ChatMessage {
   id: string
@@ -14,21 +17,26 @@ export interface ChatMessage {
   attachments?: string[]
 }
 
-export interface ChatToolCall {
-  id?: string
-  name: string
-  input?: string
-  result?: string
-  isError?: boolean
-  timestamp?: number
-}
-
 interface ApiConversationMessage {
   direction: 'in' | 'out'
   content: string
   sessionId?: string
   timestamp?: number
   tools?: ChatToolCall[]
+}
+
+interface AssistantTurnEvent {
+  type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted'
+  director: string
+  sessionId?: string | null
+  turnId: string
+  messageId?: string
+  timestamp: string
+  text?: string
+  content?: string
+  tool?: ChatToolCall
+  durationMs?: number | null
+  error?: string
 }
 
 function normalizeReplyText(text: string) {
@@ -59,6 +67,7 @@ function mapMessage(message: ApiConversationMessage, index: number): ChatMessage
 export function useChat(director?: string, sessionId?: string, liveSession = false, workspace?: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState('')
+  const [streamingTools, setStreamingTools] = useState<ChatToolCall[]>([])
   const [activity, setActivity] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
@@ -69,6 +78,9 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   const liveSessionRef = useRef(liveSession)
   const requestSeq = useRef(0)
   const streamingRef = useRef('')
+  const liveToolsRef = useRef<ChatToolCall[]>([])
+  const liveTurnIdRef = useRef<string | null>(null)
+  const usingTurnEventsRef = useRef(false)
   directorRef.current = director
   sessionIdRef.current = sessionId
   liveSessionRef.current = liveSession
@@ -80,26 +92,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       const next = typeof value === 'function' ? value(prev) : value
       streamingRef.current = next
       clearTimeout(streamTimeoutRef.current)
-      if (next) {
-        streamTimeoutRef.current = setTimeout(() => {
-          const text = streamingRef.current
-          if (!text) return
-          streamingRef.current = ''
-          setStreaming('')
-          setMessages(prev => {
-            const last = prev[prev.length - 1]
-            if (last?.role === 'assistant' && sameReplyText(last.content, text)) return prev
-            return [...prev, {
-              id: crypto.randomUUID(),
-              role: 'assistant' as const,
-              content: text,
-              timestamp: new Date().toISOString(),
-              director: directorRef.current,
-              sessionId: sessionIdRef.current,
-            }]
-          })
-        }, 8000)
-      }
       return next
     })
   }, [])
@@ -157,8 +149,23 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     })
   }, [])
 
+  const upsertLiveTool = useCallback((tool: ChatToolCall) => {
+    const tools = mergeChatToolCall(liveToolsRef.current, tool)
+    liveToolsRef.current = tools
+    setStreamingTools(tools)
+    setActivity(tool.name || 'tool')
+  }, [])
+
+  const clearLiveTurn = useCallback(() => {
+    liveTurnIdRef.current = null
+    liveToolsRef.current = []
+    setStreamingTools([])
+    updateStreaming('')
+    setActivity(null)
+  }, [updateStreaming])
+
   const sendMessage = useCallback(async (content: string) => {
-    flushStreaming()
+    if (!usingTurnEventsRef.current) flushStreaming()
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -181,29 +188,109 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     } finally {
       setSending(false)
     }
-  }, [post, director, sessionId, workspace, updateStreaming])
+  }, [post, director, sessionId, workspace, flushStreaming])
 
   useEffect(() => {
     const unsubs = [
+      on('turn_event', (data) => {
+        const event = data.event as AssistantTurnEvent | undefined
+        if (!event || !liveEventMatches(event as unknown as Record<string, unknown>)) return
+        usingTurnEventsRef.current = true
+
+        if (event.type === 'turn_started') {
+          liveTurnIdRef.current = event.turnId
+          liveToolsRef.current = []
+          setStreamingTools([])
+          updateStreaming('')
+          setActivity(null)
+          return
+        }
+
+        if (liveTurnIdRef.current !== event.turnId) {
+          liveTurnIdRef.current = event.turnId
+          streamingRef.current = ''
+          setStreaming('')
+          liveToolsRef.current = []
+          setStreamingTools([])
+        }
+
+        if (event.type === 'assistant_delta') {
+          updateStreaming(prev => prev + (event.text ?? ''))
+          return
+        }
+
+        if (event.type === 'tool_started' || event.type === 'tool_completed') {
+          if (event.tool) upsertLiveTool(event.tool)
+          return
+        }
+
+        if (event.type === 'turn_completed') {
+          const text = event.content ?? streamingRef.current
+          const tools = liveToolsRef.current
+          if (text || tools.length) {
+            const msg: ChatMessage = {
+              id: event.messageId || event.turnId,
+              role: 'assistant',
+              content: text,
+              timestamp: event.timestamp || new Date().toISOString(),
+              director: event.director,
+              sessionId: event.sessionId ?? undefined,
+              tools: tools.length ? tools : undefined,
+            }
+            setMessages(prev => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'assistant' && sameReplyText(last.content, msg.content)) {
+                return [...prev.slice(0, -1), { ...last, ...msg, id: last.id, tools: msg.tools ?? last.tools }]
+              }
+              return [...prev, msg]
+            })
+          }
+          clearLiveTurn()
+          return
+        }
+
+        if (event.type === 'turn_failed') {
+          const msg: ChatMessage = {
+            id: event.messageId || event.turnId,
+            role: 'assistant',
+            content: event.error ? `处理失败：${event.error}` : '处理失败，请稍后重试',
+            timestamp: event.timestamp || new Date().toISOString(),
+            director: event.director,
+            sessionId: event.sessionId ?? undefined,
+          }
+          setMessages(prev => [...prev, msg])
+          clearLiveTurn()
+          return
+        }
+
+        if (event.type === 'turn_aborted') {
+          clearLiveTurn()
+        }
+      }),
       on('chunk', (data) => {
+        if (usingTurnEventsRef.current) return
         if (!liveEventMatches(data)) return
         updateStreaming(prev => prev + (data.text as string || ''))
       }),
       on('tool-call', (data) => {
+        if (usingTurnEventsRef.current) return
         if (!liveEventMatches(data)) return
-        const toolName = typeof data.toolName === 'string' && data.toolName ? data.toolName : 'tool'
-        setActivity(toolName)
+        const eventTool = data.tool as ChatToolCall | undefined
+        const toolName = typeof data.toolName === 'string' && data.toolName ? data.toolName : eventTool?.name || 'tool'
+        upsertLiveTool(eventTool ?? { id: crypto.randomUUID(), name: toolName, timestamp: Date.now(), status: 'running' })
       }),
       on('stream-abort', (data) => {
+        if (usingTurnEventsRef.current) return
         if (!liveEventMatches(data)) return
-        updateStreaming('')
-        setActivity(null)
+        clearLiveTurn()
       }),
       on('chat_reply', (data) => {
+        if (usingTurnEventsRef.current) return
         if (!liveEventMatches(data)) return
         const replyDirector = data.director as string | undefined
         const replySessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : sessionIdRef.current
         const text = data.text as string || ''
+        const liveTools = liveToolsRef.current
         const msg: ChatMessage = {
           id: data.messageId as string || crypto.randomUUID(),
           role: 'assistant',
@@ -211,6 +298,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
           timestamp: new Date().toISOString(),
           director: replyDirector,
           sessionId: replySessionId,
+          tools: liveTools.length ? liveTools : undefined,
           attachments: data.attachments as string[] | undefined,
         }
         setMessages(prev => {
@@ -222,7 +310,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         })
         if (!streamingRef.current || sameReplyText(streamingRef.current, text)) updateStreaming('')
         else updateStreaming('')
-        setActivity(null)
+        clearLiveTurn()
       }),
       on('chat_input', (data) => {
         if (!liveEventMatches(data)) return
@@ -245,7 +333,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       }),
     ]
     return () => unsubs.forEach(fn => fn())
-  }, [liveEventMatches, on, updateStreaming])
+  }, [clearLiveTurn, liveEventMatches, on, updateStreaming, upsertLiveTool])
 
   useEffect(() => {
     if (status === 'connected') loadMessages()
@@ -255,8 +343,12 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     setMessages([])
     updateStreaming('')
     setActivity(null)
+    liveToolsRef.current = []
+    setStreamingTools([])
+    liveTurnIdRef.current = null
+    usingTurnEventsRef.current = false
     if (status === 'connected') loadMessages()
   }, [director, sessionId, status, loadMessages, updateStreaming])
 
-  return { messages, streaming, activity, loading, sending, sendMessage, loadMessages }
+  return { messages, streaming, streamingTools, activity, loading, sending, sendMessage, loadMessages }
 }

@@ -118,6 +118,8 @@ function MarkdownContent({ content, onFileClick }: { content: string; onFileClic
 
 function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
   if (!tools?.length) return null
+  const hasRunning = tools.some(tool => tool.status === 'running' || (!tool.result && !tool.isError))
+  const hasError = tools.some(tool => tool.isError || tool.status === 'failed')
 
   return (
     <details className="mt-1.5 rounded-md border border-[#45475a] bg-[#181825] text-xs">
@@ -127,15 +129,16 @@ function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
         <span className="rounded bg-[#313244] px-1.5 py-0.5 text-[10px] text-[#bac2de]">{tools.length} calls</span>
         <span className={cn(
           'ml-auto inline-flex items-center gap-1',
-          tools.some(tool => tool.isError) ? 'text-[#f38ba8]' : 'text-[#a6e3a1]'
+          hasError ? 'text-[#f38ba8]' : hasRunning ? 'text-[#89b4fa]' : 'text-[#a6e3a1]'
         )}>
-          {tools.some(tool => tool.isError) ? <XCircle className="size-3" /> : <CheckCircle2 className="size-3" />}
-          {tools.some(tool => tool.isError) ? 'has error' : 'done'}
+          {hasError ? <XCircle className="size-3" /> : hasRunning ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+          {hasError ? 'has error' : hasRunning ? 'running' : 'done'}
         </span>
       </summary>
       <div className="space-y-1 border-t border-[#313244] p-1.5">
         {tools.map((tool, index) => {
           const isError = !!tool.isError
+          const isRunning = tool.status === 'running' || (!tool.result && !isError)
           return (
             <details
               key={tool.id ?? `${tool.name}-${index}`}
@@ -147,9 +150,9 @@ function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
               <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 font-mono text-[11px] text-[#a6adc8] marker:hidden">
                 <span className="text-[#89b4fa]">&gt;_</span>
                 <span className="truncate font-bold text-[#cdd6f4]">{tool.name}</span>
-                <span className={cn('ml-auto inline-flex items-center gap-1', isError ? 'text-[#f38ba8]' : 'text-[#a6e3a1]')}>
-                  {isError ? <XCircle className="size-3" /> : <CheckCircle2 className="size-3" />}
-                  {isError ? 'error' : tool.result ? 'done' : 'call'}
+                <span className={cn('ml-auto inline-flex items-center gap-1', isError ? 'text-[#f38ba8]' : isRunning ? 'text-[#89b4fa]' : 'text-[#a6e3a1]')}>
+                  {isError ? <XCircle className="size-3" /> : isRunning ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+                  {isError ? 'error' : isRunning ? 'running' : 'done'}
                 </span>
               </summary>
               <div className="space-y-1.5 border-t border-[#313244] px-2 py-2">
@@ -214,27 +217,30 @@ function MessageBlock({
   )
 }
 
-function StreamingBlock({ text, activity }: { text: string; activity?: string | null }) {
+function StreamingBlock({ text, activity, tools }: { text: string; activity?: string | null; tools?: ChatToolCall[] }) {
   return (
     <article className="mb-3 flex justify-start">
       <div className="flex max-w-[min(76%,780px)] flex-col items-start">
-      <div className="mb-1 flex items-center gap-2">
-        <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Director</span>
-        <span className="font-mono text-[10px] text-[#6c7086]">{text ? 'streaming' : 'working'}</span>
-      </div>
-      <div className="w-fit rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
-        {text ? (
-          <>
-            <MarkdownContent content={text} />
-            <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-[#a6e3a1]" />
-          </>
-        ) : (
-          <div className="flex items-center gap-2 font-mono text-xs text-[#a6adc8]">
-            <Loader2 className="size-3.5 animate-spin text-[#89b4fa]" />
-            <span>running {activity ?? 'tool'}</span>
-          </div>
-        )}
-      </div>
+        <div className="mb-1 flex items-center gap-2">
+          <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Director</span>
+          <span className="font-mono text-[10px] text-[#6c7086]">{text ? 'streaming' : 'working'}</span>
+        </div>
+        <div className="w-fit rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
+          {text ? (
+            <>
+              <MarkdownContent content={text} />
+              <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-[#a6e3a1]" />
+            </>
+          ) : (
+            <div className="flex items-center gap-2 font-mono text-xs text-[#a6adc8]">
+              <Loader2 className="size-3.5 animate-spin text-[#89b4fa]" />
+              <span>running {activity ?? 'tool'}</span>
+            </div>
+          )}
+        </div>
+        <div className="w-full max-w-[min(76vw,780px)]">
+          <ToolCalls tools={tools} />
+        </div>
       </div>
     </article>
   )
@@ -332,7 +338,7 @@ export function ChatPage() {
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, activity, loading, sending, sendMessage } = useChat(directorLabel, activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, activity, loading, sending, sendMessage } = useChat(directorLabel, activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
@@ -465,7 +471,7 @@ export function ChatPage() {
             <MessageBlock key={message.id} message={message} onFileClick={setPreviewPath} />
           ))
         )}
-        {(streaming || activity) && <StreamingBlock text={streaming} activity={activity} />}
+        {(streaming || activity || streamingTools.length > 0) && <StreamingBlock text={streaming} activity={activity} tools={streamingTools} />}
       </div>
 
       <div

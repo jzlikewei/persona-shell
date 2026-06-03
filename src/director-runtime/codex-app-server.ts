@@ -20,6 +20,7 @@ interface JsonRpcNotification {
   method: string;
   params?: unknown;
   id?: number | string;
+  _ts?: string;
 }
 
 interface PendingRequest {
@@ -51,12 +52,21 @@ interface CodexAppServerRuntimeHooks {
   clearSession(): void;
   logOutput(line: string): void;
   onChunk(text: string): void;
-  onToolCall(toolName?: string): void;
+  onToolCall(toolName?: string, tool?: RuntimeToolCall): void;
   onPartialAgentMessage(text: string): void;
   onMetrics(update: { lastInputTokens?: number; contextTokens?: number; contextWindow?: number }): void;
   onTurnComplete(result: { responseText: string; durationMs: number | null }): void;
   onTurnFailure(message: string): void;
   onRuntimeClosed(): Promise<void> | void;
+}
+
+interface RuntimeToolCall {
+  id?: string;
+  name: string;
+  input?: string;
+  result?: string;
+  isError?: boolean;
+  timestamp?: number;
 }
 
 export interface CodexAppServerRuntimeOptions {
@@ -404,7 +414,8 @@ export class CodexAppServerRuntime {
         if (item.type === 'agentMessage' && typeof item.text === 'string') {
           this.hooks.onPartialAgentMessage(item.text);
         } else if (this.isToolLikeItem(item)) {
-          this.hooks.onToolCall(this.extractToolName(item));
+          const tool = this.extractToolCall(item, msg._ts);
+          this.hooks.onToolCall(tool?.name ?? this.extractToolName(item), tool);
         }
         break;
       }
@@ -627,7 +638,69 @@ export class CodexAppServerRuntime {
     return undefined;
   }
 
+  private stringifyPreview(value: unknown, maxLength = 900): string | undefined {
+    if (value == null) return undefined;
+    const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    const trimmed = text.trim();
+    if (!trimmed) return undefined;
+    return trimmed.length > maxLength ? trimmed.slice(0, maxLength) + '…' : trimmed;
+  }
+
+  private timestampMs(timestamp?: unknown): number | undefined {
+    if (typeof timestamp !== 'string') return undefined;
+    const ms = new Date(timestamp).getTime();
+    return Number.isFinite(ms) ? ms : undefined;
+  }
+
+  private extractToolCall(item: Record<string, unknown>, timestamp?: unknown): RuntimeToolCall | undefined {
+    const type = this.stringField(item, 'type');
+    if (type === 'commandExecution' || type === 'command_execution') {
+      const command = this.stringField(item, 'command') ?? '';
+      const cwd = this.stringField(item, 'cwd');
+      const status = this.stringField(item, 'status');
+      const exitCode = item.exitCode ?? item.exit_code;
+      const output = this.stringField(item, 'aggregatedOutput', 'aggregated_output');
+      return {
+        id: this.stringField(item, 'id'),
+        name: 'Bash',
+        input: this.stringifyPreview({ command, ...(cwd ? { cwd } : {}) }),
+        result: this.stringifyPreview({
+          ...(status ? { status } : {}),
+          ...(exitCode != null ? { exitCode } : {}),
+          ...(output ? { output } : {}),
+        }, 1200),
+        isError: typeof exitCode === 'number' ? exitCode !== 0 : status === 'failed',
+        timestamp: this.timestampMs(timestamp),
+      };
+    }
+
+    if (type === 'fileChange' || type === 'file_change') {
+      const changes = Array.isArray(item.changes) ? item.changes : [];
+      const status = this.stringField(item, 'status');
+      return {
+        id: this.stringField(item, 'id'),
+        name: 'File change',
+        input: this.stringifyPreview(changes),
+        result: this.stringifyPreview({ status }),
+        isError: status === 'failed',
+        timestamp: this.timestampMs(timestamp),
+      };
+    }
+
+    const name = this.extractToolName(item);
+    return name ? {
+      id: this.stringField(item, 'id'),
+      name,
+      input: this.stringifyPreview(item.input),
+      result: this.stringifyPreview(item.result),
+      timestamp: this.timestampMs(timestamp),
+    } : undefined;
+  }
+
   private extractToolNameFromMethod(method: string): string | undefined {
+    const normalized = method.toLowerCase();
+    if (normalized.includes('commandexecution')) return 'Bash';
+    if (normalized.includes('filechange')) return 'File change';
     const parts = method.split('/').filter(Boolean);
     for (let idx = parts.length - 1; idx >= 0; idx -= 1) {
       if (/tool|command|mcp/i.test(parts[idx])) return parts[idx];
