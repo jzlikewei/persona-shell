@@ -8,6 +8,7 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>window.onerror=function(m,s,l,c,e){document.title='ERR';var d=document.createElement('pre');d.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99999;background:red;color:white;padding:12px;font-size:12px;white-space:pre-wrap;max-height:50vh;overflow:auto';d.textContent=m+'\n'+s+':'+l+':'+c+'\n'+(e&&e.stack||'');document.body.prepend(d)};window.onunhandledrejection=function(e){window.onerror(String(e.reason),'','','',e.reason)}</script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

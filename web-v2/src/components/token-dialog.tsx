@@ -6,6 +6,8 @@ import { KeyRound } from 'lucide-react'
 export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [token, setToken] = useState('')
   const [visible, setVisible] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     const stored = localStorage.getItem('auth_token')
@@ -16,18 +18,35 @@ export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }
     }
   }, [onAuthenticated])
 
+  const tryConnect = async (authToken: string | undefined) => {
+    setChecking(true)
+    setError(null)
+    try {
+      const headers: Record<string, string> = {}
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`
+      const res = await fetch('/api/config-summary', { headers })
+      if (!res.ok) {
+        setError(`认证失败 (${res.status})`)
+        setChecking(false)
+        return
+      }
+      if (authToken) localStorage.setItem('auth_token', authToken)
+      setVisible(false)
+      onAuthenticated()
+    } catch {
+      setError('无法连接到服务器')
+    } finally {
+      setChecking(false)
+    }
+  }
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (token.trim()) {
-      localStorage.setItem('auth_token', token.trim())
-    }
-    setVisible(false)
-    onAuthenticated()
+    tryConnect(token.trim() || undefined)
   }
 
   const handleSkip = () => {
-    setVisible(false)
-    onAuthenticated()
+    tryConnect(undefined)
   }
 
   if (!visible) return null
@@ -53,10 +72,13 @@ export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }
           autoFocus
           className="mb-4"
         />
-        <Button type="submit" className="w-full">
-          Connect
+        {error && (
+          <p className="text-sm text-destructive mb-4">{error}</p>
+        )}
+        <Button type="submit" className="w-full" disabled={checking}>
+          {checking ? 'Connecting...' : 'Connect'}
         </Button>
-        <Button type="button" variant="ghost" className="w-full mt-2 text-muted-foreground" onClick={handleSkip}>
+        <Button type="button" variant="ghost" className="w-full mt-2 text-muted-foreground" onClick={handleSkip} disabled={checking}>
           Skip (no token)
         </Button>
       </form>

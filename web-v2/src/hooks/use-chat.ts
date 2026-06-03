@@ -3,6 +3,7 @@ import { useApi } from './use-api'
 import { ACTIVE_SESSION_EVENT, storageKeyForDirector } from './use-sessions'
 import { useWebSocket } from './use-websocket'
 import { mergeChatToolCall, type ChatToolCall } from './chat-tools'
+import { uuid } from '@/lib/utils'
 
 export { mergeChatToolCall, type ChatToolCall } from './chat-tools'
 
@@ -139,7 +140,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       const last = prev[prev.length - 1]
       if (last?.role === 'assistant' && sameReplyText(last.content, text)) return prev
       return [...prev, {
-        id: crypto.randomUUID(),
+        id: uuid(),
         role: 'assistant' as const,
         content: text,
         timestamp: new Date().toISOString(),
@@ -167,7 +168,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   const sendMessage = useCallback(async (content: string) => {
     if (!usingTurnEventsRef.current) flushStreaming()
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: uuid(),
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
@@ -277,7 +278,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         if (!liveEventMatches(data)) return
         const eventTool = data.tool as ChatToolCall | undefined
         const toolName = typeof data.toolName === 'string' && data.toolName ? data.toolName : eventTool?.name || 'tool'
-        upsertLiveTool(eventTool ?? { id: crypto.randomUUID(), name: toolName, timestamp: Date.now(), status: 'running' })
+        upsertLiveTool(eventTool ?? { id: uuid(), name: toolName, timestamp: Date.now(), status: 'running' })
       }),
       on('stream-abort', (data) => {
         if (usingTurnEventsRef.current) return
@@ -292,7 +293,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         const text = data.text as string || ''
         const liveTools = liveToolsRef.current
         const msg: ChatMessage = {
-          id: data.messageId as string || crypto.randomUUID(),
+          id: data.messageId as string || uuid(),
           role: 'assistant',
           content: text,
           timestamp: new Date().toISOString(),
@@ -318,7 +319,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         const inputSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : sessionIdRef.current
         const text = data.text as string || ''
         const msg: ChatMessage = {
-          id: data.messageId as string || crypto.randomUUID(),
+          id: data.messageId as string || uuid(),
           role: 'user',
           content: text,
           timestamp: typeof data.timestamp === 'string' ? data.timestamp : new Date().toISOString(),

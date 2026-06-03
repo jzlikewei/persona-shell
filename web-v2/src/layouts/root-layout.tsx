@@ -327,7 +327,7 @@ export function RootLayout() {
   const { on } = useWebSocket()
 
   useEffect(() => {
-    if (Notification.permission === 'default') {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
       Notification.requestPermission()
     }
   }, [])
@@ -335,7 +335,7 @@ export function RootLayout() {
   useEffect(() => {
     return on('task_callback', (data) => {
       const text = (data.text as string) || '后台任务完成'
-      if (Notification.permission === 'granted' && document.hidden) {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
         new Notification('Persona Shell', { body: text, icon: '/v2/favicon.ico' })
       }
     })
