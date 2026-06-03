@@ -15,6 +15,7 @@ import { useApi } from '@/hooks/use-api'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useSessions, type Session } from '@/hooks/use-sessions'
 import { useWorkContext, type ProjectInfo, type WorkspaceInfo } from '@/hooks/use-work-context'
+import { WorkspaceCreateSheet } from '@/components/workspace-create-sheet'
 import { cn } from '@/lib/utils'
 
 type BrowseMode = 'projects' | 'workspaces'
@@ -23,6 +24,7 @@ export interface ShellOutletContext {
   activeProject?: ProjectInfo
   activeWorkspace?: WorkspaceInfo
   directorLabel: string
+  workspaceName?: string
   sessions: Session[]
   activeSession?: string
   activeSessionInfo?: Session
@@ -156,6 +158,7 @@ function Sidebar({
   activeWorkspace,
   setActiveWorkspace,
   onCreateWorkspace,
+  onConfigureWorkspace,
   onRestart,
 }: {
   mode: BrowseMode
@@ -166,6 +169,7 @@ function Sidebar({
   activeWorkspace?: WorkspaceInfo
   setActiveWorkspace: (id: string) => void
   onCreateWorkspace: () => void
+  onConfigureWorkspace: (workspace: WorkspaceInfo) => void
   onRestart: () => void
 }) {
   const title = mode === 'projects' ? 'Projects' : 'Workspaces'
@@ -224,7 +228,7 @@ function Sidebar({
                   <SidebarItem
                     key={workspace.id}
                     name={workspace.name}
-                    path={workspace.path}
+                    path={workspace.cwd || workspace.path}
                     meta={workspace.source === 'main' ? 'root' : String(workspace.localMessageCount ?? 0)}
                     status={workspace.id === activeWorkspace?.id ? 'live' : 'off'}
                     badges={[
@@ -251,12 +255,18 @@ function Sidebar({
                           <SidebarItem
                             key={workspace.id}
                             name={workspace.name}
-                            path={workspace.path}
+                            path={workspace.cwd || workspace.path}
                             meta="0"
                             status="off"
                             badges={[workspace.source]}
                             active={workspace.id === activeWorkspace?.id}
-                            onClick={() => setActiveWorkspace(workspace.id)}
+                            onClick={() => {
+                              if (!workspace.cwd) {
+                                onConfigureWorkspace(workspace)
+                              } else {
+                                setActiveWorkspace(workspace.id)
+                              }
+                            }}
                           />
                         ))}
                       </div>
@@ -307,7 +317,7 @@ export function RootLayout() {
     else localStorage.removeItem(WS_STORAGE_KEY)
     setActiveWorkspaceIdState(id)
   }, [])
-  const { context, createWorkspace } = useWorkContext()
+  const { context, createWorkspace, updateWorkspaceConfig, loadContext } = useWorkContext()
   const isSubPage = location.pathname !== '/' && location.pathname !== ''
   const activeProject = context.projects[0]
   const activeWorkspaceInfo = context.workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? context.workspaces[0]
@@ -332,28 +342,44 @@ export function RootLayout() {
   }, [on])
 
   useEffect(() => {
+    return on('context_update', () => { loadContext() })
+  }, [on, loadContext])
+
+  useEffect(() => {
     if (!context.workspaces.length) return
     if (activeWorkspaceId && context.workspaces.some(workspace => workspace.id === activeWorkspaceId)) return
     setActiveWorkspaceId(context.activeWorkspaceId ?? context.workspaces[0]?.id)
   }, [activeWorkspaceId, context.activeWorkspaceId, context.workspaces, setActiveWorkspaceId])
 
-  const handleCreateWorkspace = async () => {
-    const name = window.prompt('Workspace name')
-    if (!name?.trim()) return
-    try {
-      const workspace = await createWorkspace(name.trim())
-      setActiveWorkspaceId(workspace.id)
-      setMode('workspaces')
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : String(error))
-    }
+  const [createSheetOpen, setCreateSheetOpen] = useState(false)
+  const [configWorkspace, setConfigWorkspace] = useState<WorkspaceInfo | undefined>()
+
+  const handleCreateWorkspace = () => {
+    setConfigWorkspace(undefined)
+    setCreateSheetOpen(true)
+  }
+
+  const handleConfigureWorkspace = (workspace: WorkspaceInfo) => {
+    setConfigWorkspace(workspace)
+    setCreateSheetOpen(true)
+  }
+
+  const handleWorkspaceCreated = (workspace: WorkspaceInfo) => {
+    setActiveWorkspaceId(workspace.id)
+    setMode('workspaces')
+    setCreateSheetOpen(false)
   }
 
   const { post } = useApi()
   const handleRestart = useCallback(async () => {
     if (!window.confirm('确定要重启 Shell 吗？')) return
     try {
-      await post('/api/send', { text: '/shell-restart' })
+      const res = await post<{ ok: boolean; message?: string }>('/api/send', { text: '/shell-restart' })
+      if (!res.ok && res.message) {
+        if (window.confirm(`${res.message}\n\n是否强制重启？`)) {
+          await post('/api/send', { text: '/shell-restart --force' })
+        }
+      }
     } catch {
       window.alert('重启请求失败')
     }
@@ -375,6 +401,7 @@ export function RootLayout() {
             activeWorkspace={activeWorkspaceInfo}
             setActiveWorkspace={setActiveWorkspaceId}
             onCreateWorkspace={handleCreateWorkspace}
+            onConfigureWorkspace={handleConfigureWorkspace}
             onRestart={handleRestart}
           />
         )}
@@ -420,6 +447,7 @@ export function RootLayout() {
             activeProject,
             activeWorkspace: activeWorkspaceInfo,
             directorLabel: activeDirectorLabel,
+            workspaceName: activeWorkspaceInfo?.source === 'memory' ? activeWorkspaceInfo.name : undefined,
             sessions,
             activeSession: activeSessionInfo?.id,
             activeSessionInfo,
@@ -427,6 +455,15 @@ export function RootLayout() {
           } satisfies ShellOutletContext} />
         </main>
       </div>
+      <WorkspaceCreateSheet
+        open={createSheetOpen}
+        onOpenChange={setCreateSheetOpen}
+        projects={context.projects}
+        onCreated={handleWorkspaceCreated}
+        createWorkspace={createWorkspace}
+        existingWorkspace={configWorkspace}
+        updateWorkspaceConfig={updateWorkspaceConfig}
+      />
     </div>
   )
 }

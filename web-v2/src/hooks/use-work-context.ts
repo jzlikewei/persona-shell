@@ -13,6 +13,8 @@ export interface WorkspaceInfo {
   name: string
   path: string
   source: 'main' | 'memory'
+  cwd?: string
+  agent?: string
   directorLabel?: string
   routingKey?: string
   groupName?: string
@@ -33,7 +35,7 @@ export interface WorkContext {
 }
 
 export function useWorkContext() {
-  const { get, post } = useApi()
+  const { get, post, request } = useApi()
   const [context, setContext] = useState<WorkContext>({ projects: [], workspaces: [] })
   const [loading, setLoading] = useState(false)
 
@@ -48,15 +50,23 @@ export function useWorkContext() {
     }
   }, [get])
 
-  const createWorkspace = useCallback(async (name: string) => {
-    const workspace = await post<WorkspaceInfo>('/api/workspaces', { name })
+  const createWorkspace = useCallback(async (name: string, opts?: { cwd?: string; agent?: string }) => {
+    const workspace = await post<WorkspaceInfo>('/api/workspaces', { name, cwd: opts?.cwd, agent: opts?.agent })
     await loadContext()
     return workspace
   }, [post, loadContext])
+
+  const updateWorkspaceConfig = useCallback(async (name: string, opts: { cwd?: string; agent?: string }) => {
+    await request('/api/workspaces/config', {
+      method: 'PUT',
+      body: JSON.stringify({ name, ...opts }),
+    })
+    await loadContext()
+  }, [request, loadContext])
 
   useEffect(() => {
     loadContext()
   }, [loadContext])
 
-  return { context, loading, loadContext, createWorkspace }
+  return { context, loading, loadContext, createWorkspace, updateWorkspaceConfig }
 }

@@ -35,6 +35,8 @@ interface ConsoleWorkspace {
   name: string;
   path: string;
   source: 'main' | 'memory';
+  cwd?: string;
+  agent?: string;
   directorLabel?: string;
   routingKey?: string;
   groupName?: string;
@@ -45,6 +47,19 @@ interface ConsoleWorkspace {
   localSessionCount?: number;
   localMessageCount?: number;
   lastMessageAt?: string;
+}
+
+interface WorkspaceConfig {
+  cwd?: string;
+  agent?: string;
+}
+
+function getWorkspaceConfig(name: string): WorkspaceConfig | null {
+  return getState<WorkspaceConfig>(`workspace:config:${name}`);
+}
+
+function setWorkspaceConfig(name: string, wsConfig: WorkspaceConfig): void {
+  setState(`workspace:config:${name}`, wsConfig);
 }
 
 // Shell 启动时间，用于计算 uptime
@@ -295,11 +310,14 @@ export function startConsole(
             ...legacyDirectorForWorkspace(name),
             ...directorForWorkspace(name),
           };
+          const wsConfig = getWorkspaceConfig(name);
           workspaces.push({
             id: `memory-${name}`,
             name,
             path: join(workspacePath, 'context.md'),
             source: 'memory',
+            cwd: wsConfig?.cwd,
+            agent: wsConfig?.agent,
             ...routing,
             ...localHistoryForWorkspace(routing.directorLabel),
           });
@@ -344,10 +362,18 @@ export function startConsole(
     return name;
   }
 
-  function createWorkspace(input: unknown): ConsoleWorkspace {
+  function createWorkspace(input: unknown, cwd?: string, agent?: string): ConsoleWorkspace {
     const name = sanitizeWorkspaceName(input);
     if (!name) {
       throw new Error('Workspace name is required');
+    }
+
+    let resolvedCwd: string | undefined;
+    if (cwd && typeof cwd === 'string') {
+      resolvedCwd = resolve(expandConsolePath(cwd.trim()));
+      if (!existsSync(resolvedCwd) || !statSync(resolvedCwd).isDirectory()) {
+        throw new Error(`Invalid cwd: directory does not exist: ${resolvedCwd}`);
+      }
     }
 
     const memoryRoot = join(config.director.persona_dir, 'workspaces');
@@ -359,11 +385,20 @@ export function startConsole(
       writeFileSync(contextPath, '');
     }
 
+    const wsConfig: WorkspaceConfig = {};
+    if (resolvedCwd) wsConfig.cwd = resolvedCwd;
+    if (agent && typeof agent === 'string') wsConfig.agent = agent.trim();
+    if (Object.keys(wsConfig).length > 0) {
+      setWorkspaceConfig(name, wsConfig);
+    }
+
     return {
       id: `memory-${name}`,
       name,
       path: contextPath,
       source: 'memory',
+      cwd: resolvedCwd,
+      agent: wsConfig.agent,
     };
   }
 
@@ -1509,6 +1544,9 @@ export function startConsole(
   director.on('chunk', (text: string) => {
     if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
   });
+  director.on('tool-call', (toolName?: string) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: director.label, sessionId: sessionIdForDirector(director.label), toolName }));
+  });
   director.on('stream-abort', () => {
     if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: director.label, sessionId: sessionIdForDirector(director.label) }));
   });
@@ -1539,6 +1577,9 @@ export function startConsole(
   if (pool) {
     pool.on('chunk', (label: string, text: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, sessionId: sessionIdForDirector(label), text }));
+    });
+    pool.on('tool-call', (label: string, toolName?: string) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: label, sessionId: sessionIdForDirector(label), toolName }));
     });
     pool.on('stream-abort', (label: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label, sessionId: sessionIdForDirector(label) }));
@@ -2668,7 +2709,7 @@ export function startConsole(
 
           // POST /api/send — send arbitrary text to Director (bypass messaging)
           if (url.pathname === '/api/send' && req.method === 'POST') {
-            const body = await req.json() as { text: string; director?: string };
+            const body = await req.json() as { text: string; director?: string; workspace?: string };
             if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
 
             // Intercept /shell-restart commands
@@ -2695,15 +2736,30 @@ export function startConsole(
 
             try {
               // Route to pool Director if specified
-              if (body.director && pool) {
-                const poolStatus = pool.getPoolStatus().find((e) => e.label === body.director);
-                if (poolStatus) {
-                  const entry = pool.get(poolStatus.routingKey);
-                  if (entry) {
-                    await entry.bridge.send(body.text);
-                    writeAuditEntry('director.send', true, { target: body.director, bytes: Buffer.byteLength(body.text, 'utf-8') });
-                    return Response.json({ ok: true, message: 'sent to pool director' });
+              if (body.director && body.director !== 'main' && pool) {
+                let poolEntry = pool.getPoolStatus().find((e) => e.label === body.director);
+                let entry = poolEntry ? pool.get(poolEntry.routingKey) : undefined;
+
+                // Auto-create pool Director for web workspace
+                if (!entry && body.workspace) {
+                  const wsName = sanitizeWorkspaceName(body.workspace);
+                  if (wsName) {
+                    const routingKey = `web-workspace:${wsName}`;
+                    const wsConfig = getWorkspaceConfig(wsName);
+                    entry = await pool.getOrCreate(routingKey, {
+                      groupName: wsName,
+                      feishuChatId: 'web-console',
+                      directorAgentName: wsConfig?.agent,
+                    });
+                    broadcastWs(JSON.stringify({ type: 'context_update', workspace: wsName, label: entry.bridge.label }));
+                    writeAuditEntry('workspace.director.create', true, { workspace: wsName, routingKey, label: entry.bridge.label });
                   }
+                }
+
+                if (entry) {
+                  await pool.send(entry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
+                  writeAuditEntry('director.send', true, { target: body.director, bytes: Buffer.byteLength(body.text, 'utf-8') });
+                  return Response.json({ ok: true, message: 'sent to pool director', label: entry.bridge.label });
                 }
                 writeAuditEntry('director.send', false, { target: body.director, reason: 'pool director not found' });
                 return Response.json({ ok: false, message: `Pool director "${body.director}" not found` }, { status: 404 });
@@ -2894,11 +2950,62 @@ export function startConsole(
             return Response.json(buildWorkContext());
           }
           if (url.pathname === '/api/workspaces' && req.method === 'POST') {
-            const body = await req.json().catch(() => ({})) as { name?: unknown };
+            const body = await req.json().catch(() => ({})) as { name?: unknown; cwd?: string; agent?: string };
             try {
-              return Response.json(createWorkspace(body.name));
+              return Response.json(createWorkspace(body.name, body.cwd, body.agent));
             } catch (err) {
               return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+            }
+          }
+          if (url.pathname === '/api/workspaces/config' && req.method === 'PUT') {
+            const body = await req.json().catch(() => ({})) as { name?: string; cwd?: string; agent?: string };
+            const wsName = sanitizeWorkspaceName(body.name);
+            if (!wsName) {
+              return Response.json({ error: 'Workspace name is required' }, { status: 400 });
+            }
+            const workspacePath = join(config.director.persona_dir, 'workspaces', wsName);
+            if (!existsSync(workspacePath)) {
+              return Response.json({ error: `Workspace not found: ${wsName}` }, { status: 404 });
+            }
+            let resolvedCwd: string | undefined;
+            if (body.cwd && typeof body.cwd === 'string') {
+              resolvedCwd = resolve(expandConsolePath(body.cwd.trim()));
+              if (!existsSync(resolvedCwd) || !statSync(resolvedCwd).isDirectory()) {
+                return Response.json({ error: `Invalid cwd: directory does not exist: ${resolvedCwd}` }, { status: 400 });
+              }
+            }
+            const existing = getWorkspaceConfig(wsName);
+            const wsConfig: WorkspaceConfig = { ...existing, cwd: resolvedCwd };
+            if (body.agent !== undefined) wsConfig.agent = body.agent?.trim() || undefined;
+            setWorkspaceConfig(wsName, wsConfig);
+            return Response.json({ ok: true, name: wsName, config: wsConfig });
+          }
+          if (url.pathname === '/api/browse' && req.method === 'GET') {
+            const rawPath = url.searchParams.get('path') || '~';
+            const resolved = resolve(expandConsolePath(rawPath));
+            if (resolved.includes('\0')) {
+              return Response.json({ error: 'Invalid path' }, { status: 400 });
+            }
+            try {
+              if (!statSync(resolved).isDirectory()) {
+                return Response.json({ error: 'Not a directory' }, { status: 400 });
+              }
+            } catch {
+              return Response.json({ error: 'Path does not exist' }, { status: 404 });
+            }
+            try {
+              const entries = readdirSync(resolved, { withFileTypes: true });
+              const dirs = entries
+                .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+                .map(e => ({ name: e.name, path: join(resolved, e.name) }))
+                .sort((a, b) => a.name.localeCompare(b.name));
+              return Response.json({
+                current: resolved,
+                parent: dirname(resolved) !== resolved ? dirname(resolved) : null,
+                directories: dirs,
+              });
+            } catch (err) {
+              return Response.json({ error: `Cannot read directory: ${err instanceof Error ? err.message : String(err)}` }, { status: 403 });
             }
           }
           // Message history and session APIs

@@ -68,7 +68,12 @@ function extractText(node: ReactNode): string {
   return ''
 }
 
-function MarkdownContent({ content }: { content: string }) {
+function looksLikeFilePath(text: string): boolean {
+  const trimmed = text.trim()
+  return /^(\/|~\/|\.\/)[^\s]+\.\w{1,10}$/.test(trimmed)
+}
+
+function MarkdownContent({ content, onFileClick }: { content: string; onFileClick?: (path: string) => void }) {
   return (
     <div className="md-content prose prose-sm prose-invert max-w-none text-[#bac2de] [&_a]:text-[#89b4fa] [&_code]:rounded [&_code]:bg-[#45475a] [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_code]:text-[#fab387] [&_ol]:my-1 [&_p]:my-1.5 [&_pre]:my-2 [&_ul]:my-1">
       <ReactMarkdown
@@ -87,6 +92,18 @@ function MarkdownContent({ content }: { content: string }) {
                 <CodeBlock className={className}>
                   {text.replace(/\n$/, '')}
                 </CodeBlock>
+              )
+            }
+            if (onFileClick && looksLikeFilePath(text)) {
+              return (
+                <code
+                  className={cn(className, 'cursor-pointer !text-[#89b4fa] hover:!bg-[#89b4fa]/20 transition-colors')}
+                  onClick={() => onFileClick(text.trim())}
+                  title="点击预览文件"
+                  {...props}
+                >
+                  {children}
+                </code>
               )
             }
             return <code className={className} {...props}>{children}</code>
@@ -182,7 +199,7 @@ function MessageBlock({
             ? 'border-r-[3px] border-[#89b4fa] bg-[#89b4fa]/[.08] text-right text-[#cdd6f4]'
             : 'border-l-[3px] border-[#a6e3a1] bg-[#313244] text-[#bac2de]'
         )}>
-          {isUser ? <div className="whitespace-pre-wrap text-left">{message.content}</div> : <MarkdownContent content={message.content} />}
+          {isUser ? <div className="whitespace-pre-wrap text-left">{message.content}</div> : <MarkdownContent content={message.content} onFileClick={onFileClick} />}
         </div>
         {!isUser && <ToolCalls tools={message.tools} />}
         {filePaths.length > 0 && (
@@ -197,17 +214,26 @@ function MessageBlock({
   )
 }
 
-function StreamingBlock({ text }: { text: string }) {
+function StreamingBlock({ text, activity }: { text: string; activity?: string | null }) {
   return (
     <article className="mb-3 flex justify-start">
       <div className="flex max-w-[min(76%,780px)] flex-col items-start">
       <div className="mb-1 flex items-center gap-2">
         <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Director</span>
-        <span className="font-mono text-[10px] text-[#6c7086]">streaming</span>
+        <span className="font-mono text-[10px] text-[#6c7086]">{text ? 'streaming' : 'working'}</span>
       </div>
       <div className="w-fit rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
-        <MarkdownContent content={text} />
-        <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-[#a6e3a1]" />
+        {text ? (
+          <>
+            <MarkdownContent content={text} />
+            <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-[#a6e3a1]" />
+          </>
+        ) : (
+          <div className="flex items-center gap-2 font-mono text-xs text-[#a6adc8]">
+            <Loader2 className="size-3.5 animate-spin text-[#89b4fa]" />
+            <span>running {activity ?? 'tool'}</span>
+          </div>
+        )}
       </div>
       </div>
     </article>
@@ -300,12 +326,13 @@ export function ChatPage() {
     activeProject,
     activeWorkspace,
     directorLabel,
+    workspaceName,
     sessions,
     activeSession,
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, loading, sending, sendMessage } = useChat(directorLabel, activeSession, activeSessionInfo?.alive ?? false)
+  const { messages, streaming, activity, loading, sending, sendMessage } = useChat(directorLabel, activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
@@ -431,14 +458,14 @@ export function ChatPage() {
             <Loader2 className="size-4 animate-spin" />
             Loading session history...
           </div>
-        ) : filteredMessages.length === 0 && !streaming ? (
+        ) : filteredMessages.length === 0 && !streaming && !activity ? (
           <EmptyConversation />
         ) : (
           filteredMessages.map(message => (
             <MessageBlock key={message.id} message={message} onFileClick={setPreviewPath} />
           ))
         )}
-        {streaming && <StreamingBlock text={streaming} />}
+        {(streaming || activity) && <StreamingBlock text={streaming} activity={activity} />}
       </div>
 
       <div

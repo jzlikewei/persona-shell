@@ -1,11 +1,7 @@
-import { useState, useEffect } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeHighlight from 'rehype-highlight'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { X, FileText, Image } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Sheet, SheetContent } from '@/components/ui/sheet'
+import { MarkdownRenderer } from '@/components/markdown-renderer'
 import { useApi } from '@/hooks/use-api'
 
 interface DocumentPanelProps {
@@ -21,7 +17,7 @@ function isMarkdownPath(path: string): boolean {
   return /\.(md|mdx|markdown)$/i.test(path)
 }
 
-function PanelContent({ filePath }: { filePath: string }) {
+function usePanelContent(filePath: string) {
   const [content, setContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -33,7 +29,7 @@ function PanelContent({ filePath }: { filePath: string }) {
     setError(null)
     setContent(null)
 
-    get<{ content: string }>('/api/files/content', { path: filePath })
+    get<{ content: string }>('/api/files/read', { path: filePath })
       .then(data => {
         if (!cancelled) setContent(data.content ?? String(data))
       })
@@ -47,9 +43,18 @@ function PanelContent({ filePath }: { filePath: string }) {
     return () => { cancelled = true }
   }, [filePath, get])
 
+  return { content, loading, error }
+}
+
+function PanelContent({ filePath, content, loading, error }: {
+  filePath: string
+  content: string | null
+  loading: boolean
+  error: string | null
+}) {
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
+      <div className="flex items-center justify-center h-32 text-sm text-[#7f849c]">
         Loading...
       </div>
     )
@@ -57,7 +62,7 @@ function PanelContent({ filePath }: { filePath: string }) {
 
   if (error) {
     return (
-      <div className="p-4 text-sm text-destructive">
+      <div className="p-4 text-sm text-[#f38ba8]">
         Failed to load file: {error}
       </div>
     )
@@ -77,65 +82,102 @@ function PanelContent({ filePath }: { filePath: string }) {
 
   if (isMarkdownPath(filePath)) {
     return (
-      <div className="p-4 prose prose-sm prose-invert max-w-none">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-          {content ?? ''}
-        </ReactMarkdown>
+      <div className="p-4">
+        <MarkdownRenderer
+          content={content ?? ''}
+          className="prose prose-sm prose-invert max-w-none text-[#bac2de] [&_a]:text-[#89b4fa] [&_code]:rounded [&_code]:bg-[#45475a] [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_code]:text-[#fab387] [&_ol]:my-1 [&_p]:my-1.5 [&_pre]:my-2 [&_ul]:my-1"
+        />
       </div>
     )
   }
 
   return (
-    <pre className="p-4 text-xs leading-relaxed whitespace-pre-wrap break-words font-mono text-foreground">
+    <pre className="p-4 text-xs leading-relaxed whitespace-pre-wrap break-words font-mono text-[#bac2de]">
       {content}
     </pre>
   )
 }
 
+const STORAGE_KEY = 'persona-shell:v2:doc-panel-width'
+
 export function DocumentPanel({ filePath, onClose }: DocumentPanelProps) {
   if (!filePath) return null
 
+  const [width, setWidth] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    return saved ? Number(saved) : 420
+  })
+
+  const dragging = useRef(false)
+  const lastX = useRef(0)
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragging.current = true
+    lastX.current = e.clientX
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return
+      const delta = lastX.current - ev.clientX
+      lastX.current = ev.clientX
+      setWidth(prev => {
+        const maxW = Math.floor(window.innerWidth * 0.8)
+      const next = Math.max(280, Math.min(maxW, prev + delta))
+        localStorage.setItem(STORAGE_KEY, String(next))
+        return next
+      })
+    }
+    const onUp = () => {
+      dragging.current = false
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [])
+
+  const { content, loading, error } = usePanelContent(filePath)
   const fileName = filePath.split('/').pop() ?? filePath
   const icon = isImagePath(filePath) ? Image : FileText
 
-  const header = (
-    <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-      {(() => { const Icon = icon; return <Icon className="h-4 w-4 text-muted-foreground shrink-0" /> })()}
-      <span className="text-sm font-medium truncate flex-1" title={filePath}>{fileName}</span>
-      <Button variant="ghost" size="icon" onClick={onClose} className="shrink-0 h-7 w-7">
-        <X className="h-4 w-4" />
-      </Button>
-    </div>
-  )
-
-  const pathBar = (
-    <div className="px-4 py-1.5 text-[11px] text-muted-foreground bg-muted/30 border-b border-border font-mono truncate">
-      {filePath}
-    </div>
-  )
-
   return (
-    <>
-      {/* Desktop: side panel */}
-      <div className="hidden md:flex flex-col w-[420px] border-l border-border bg-background shrink-0">
-        {header}
-        {pathBar}
-        <ScrollArea className="flex-1">
-          <PanelContent filePath={filePath} />
-        </ScrollArea>
+    <div
+      className="fixed top-0 right-0 z-50 flex h-full"
+      style={{ width: width + 8 }}
+    >
+      {/* Drag handle */}
+      <div
+        onMouseDown={onMouseDown}
+        className="group flex w-2 shrink-0 cursor-col-resize items-center justify-center hover:bg-[#89b4fa]/30 active:bg-[#89b4fa]/40 transition-colors"
+      >
+        <div className="h-8 w-0.5 rounded-full bg-[#6c7086] group-hover:bg-[#89b4fa] transition-colors" />
       </div>
 
-      {/* Mobile: overlay sheet */}
-      <Sheet open={true} onOpenChange={(open) => { if (!open) onClose() }}>
-        <SheetContent side="right" className="p-0 w-full sm:max-w-lg" showCloseButton={false}>
-          {header}
-          {pathBar}
-          <ScrollArea className="flex-1">
-            <PanelContent filePath={filePath} />
-          </ScrollArea>
-        </SheetContent>
-      </Sheet>
-    </>
+      {/* Panel */}
+      <div className="flex flex-1 flex-col overflow-hidden border-l border-[#45475a] bg-[#1e1e2e] shadow-[-4px_0_24px_rgba(0,0,0,.4)]">
+        {/* Header */}
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-[#45475a] shrink-0">
+          {(() => { const Icon = icon; return <Icon className="h-4 w-4 text-[#7f849c] shrink-0" /> })()}
+          <span className="text-sm font-medium truncate flex-1 text-[#cdd6f4]" title={filePath}>{fileName}</span>
+          <Button variant="ghost" size="icon" onClick={onClose} className="shrink-0 h-7 w-7 text-[#7f849c] hover:text-[#cdd6f4]">
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {/* Path bar */}
+        <div className="px-4 py-1.5 text-[11px] text-[#7f849c] bg-[#181825] border-b border-[#45475a] font-mono truncate">
+          {filePath}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          <PanelContent filePath={filePath} content={content} loading={loading} error={error} />
+        </div>
+      </div>
+    </div>
   )
 }
 

@@ -56,9 +56,10 @@ function mapMessage(message: ApiConversationMessage, index: number): ChatMessage
   }
 }
 
-export function useChat(director?: string, sessionId?: string, liveSession = false) {
+export function useChat(director?: string, sessionId?: string, liveSession = false, workspace?: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState('')
+  const [activity, setActivity] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const { get, post } = useApi()
@@ -173,13 +174,14 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       await post('/api/send', {
         text: content,
         director: director || undefined,
+        workspace: workspace || undefined,
       })
     } catch (e) {
       console.error('Failed to send message:', e)
     } finally {
       setSending(false)
     }
-  }, [post, director, sessionId, updateStreaming])
+  }, [post, director, sessionId, workspace, updateStreaming])
 
   useEffect(() => {
     const unsubs = [
@@ -187,9 +189,15 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         if (!liveEventMatches(data)) return
         updateStreaming(prev => prev + (data.text as string || ''))
       }),
+      on('tool-call', (data) => {
+        if (!liveEventMatches(data)) return
+        const toolName = typeof data.toolName === 'string' && data.toolName ? data.toolName : 'tool'
+        setActivity(toolName)
+      }),
       on('stream-abort', (data) => {
         if (!liveEventMatches(data)) return
         updateStreaming('')
+        setActivity(null)
       }),
       on('chat_reply', (data) => {
         if (!liveEventMatches(data)) return
@@ -214,6 +222,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         })
         if (!streamingRef.current || sameReplyText(streamingRef.current, text)) updateStreaming('')
         else updateStreaming('')
+        setActivity(null)
       }),
       on('chat_input', (data) => {
         if (!liveEventMatches(data)) return
@@ -245,8 +254,9 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   useEffect(() => {
     setMessages([])
     updateStreaming('')
+    setActivity(null)
     if (status === 'connected') loadMessages()
   }, [director, sessionId, status, loadMessages, updateStreaming])
 
-  return { messages, streaming, loading, sending, sendMessage, loadMessages }
+  return { messages, streaming, activity, loading, sending, sendMessage, loadMessages }
 }

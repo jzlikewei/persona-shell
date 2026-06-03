@@ -192,7 +192,8 @@ export class DirectorPool extends EventEmitter {
 
     const label = routingKeyToLabel(routingKey);
     const name = opts.groupName ?? routingKey.slice(0, 8);
-    console.log(`[pool] Creating session bridge for group "${name}" (label=${label})`);
+    const workspaceCwd = getState<{ cwd?: string }>(`workspace:config:${name}`)?.cwd;
+    console.log(`[pool] Creating session bridge for group "${name}" (label=${label}${workspaceCwd ? `, cwd=${workspaceCwd}` : ''})`);
 
     const bridge = new SessionBridge({
       agents: this.getFreshAgentsConfig(),
@@ -201,6 +202,7 @@ export class DirectorPool extends EventEmitter {
       label,
       isMain: false,
       groupName: name,
+      workspaceCwd,
     } satisfies SessionBridgeOptions);
 
     const queue = new MessageQueue(join(getLogDir(), `queue-${label}.log`));
@@ -239,7 +241,7 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Send a message to a group Director, managing queue correlation */
-  async send(routingKey: string, text: string, messageId: string): Promise<void> {
+  async send(routingKey: string, text: string, messageId: string, options: { webOnly?: boolean } = {}): Promise<void> {
     const entry = this.entries.get(routingKey);
     if (!entry) throw new Error(`No Director for routingKey ${routingKey}`);
 
@@ -251,7 +253,11 @@ export class DirectorPool extends EventEmitter {
       return;
     }
 
-    const correlationId = entry.queue.enqueue({ text, messageId, chatId: entry.feishuChatId });
+    const correlationId = entry.queue.enqueue({
+      text,
+      messageId,
+      chatId: options.webOnly ? 'web-console' : entry.feishuChatId,
+    });
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
@@ -288,6 +294,7 @@ export class DirectorPool extends EventEmitter {
     if (!this.messaging.startStreamingReply) return;
     const head = queue.peek();
     if (!head || head.correlationId !== correlationId) return;
+    if (head.chatId === 'web-console') return;
     if (head.cancelled) return;
     if (queue.isDispatching(correlationId)) return;
     if (this.streamingReplies.has(correlationId)) return;
@@ -777,6 +784,7 @@ export class DirectorPool extends EventEmitter {
     let restored = 0;
 
     for (const item of saved) {
+      const workspaceCwd = getState<{ cwd?: string }>(`workspace:config:${item.groupName}`)?.cwd;
       const bridge = new SessionBridge({
         agents: this.getFreshAgentsConfig(),
         config: this.directorConfig,
@@ -784,6 +792,7 @@ export class DirectorPool extends EventEmitter {
         label: item.label,
         isMain: false,
         groupName: item.groupName,
+        workspaceCwd,
       } satisfies SessionBridgeOptions);
 
       const queue = new MessageQueue(`logs/queue-${item.label}.log`);
@@ -919,7 +928,8 @@ export class DirectorPool extends EventEmitter {
       const elapsedSec = (elapsedMs / 1000).toFixed(1);
       const replyWithTiming = `${reply}\n\n(耗时 ${elapsedSec}s)`;
 
-      if (isWeb) {
+      const webOnly = isWeb || item.chatId === 'web-console';
+      if (webOnly) {
         this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
         queue.logAction('WEB_REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
         console.log(`[pool:${groupName}] Web replied to ${item.messageId} (${elapsedSec}s)`);
@@ -1060,6 +1070,7 @@ export class DirectorPool extends EventEmitter {
     });
     bridge.on('tool-call', (toolName?: string) => {
       if (!isWeb) this.showToolCallInStreamingReply(queue, toolName);
+      this.emit('tool-call', bridge.label, toolName);
     });
     bridge.on('stream-abort', () => {
       const item = queue.peek();

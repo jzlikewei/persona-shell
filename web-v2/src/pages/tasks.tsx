@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Search,
   Terminal,
+  X,
   XCircle,
 } from 'lucide-react'
 import { MarkdownRenderer } from '@/components/markdown-renderer'
@@ -623,12 +624,48 @@ function LogsPanel({
   )
 }
 
-/* ── Right Panel: Result + Prompt ─────────────── */
+/* ── Right Panel: Result + Prompt (floating overlay) ── */
 
-function ResultPanel({ task }: { task: Task | null }) {
+function ResultPanel({ task, onClose }: { task: Task | null; onClose: () => void }) {
   const { get, post } = useApi()
   const [output, setOutput] = useState<TaskOutput | null>(null)
   const [loadingOutput, setLoadingOutput] = useState(false)
+
+  const STORAGE_KEY = 'persona-shell:v2:tasks-right-width'
+  const [width, setWidth] = useState(() => {
+    const saved = localStorage.getItem(STORAGE_KEY)
+    return saved ? Number(saved) : 400
+  })
+  const dragging = useRef(false)
+  const lastX = useRef(0)
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragging.current = true
+    lastX.current = e.clientX
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return
+      const delta = lastX.current - ev.clientX
+      lastX.current = ev.clientX
+      setWidth(prev => {
+        const maxW = Math.floor(window.innerWidth * 0.8)
+        const next = Math.max(280, Math.min(maxW, prev + delta))
+        localStorage.setItem(STORAGE_KEY, String(next))
+        return next
+      })
+    }
+    const onUp = () => {
+      dragging.current = false
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [])
 
   useEffect(() => {
     setOutput(null)
@@ -655,140 +692,160 @@ function ResultPanel({ task }: { task: Task | null }) {
     navigator.clipboard.writeText(text).catch(() => {})
   }, [])
 
-  if (!task) {
-    return (
-      <div className="flex h-full min-w-0 flex-col items-center justify-center border-l border-[#313244] bg-[#181825] text-sm text-[#7f849c]">
-        Select a task
-      </div>
-    )
-  }
+  if (!task) return null
 
   const model = extraValue(task, 'model')
+  const projectDir = extraValue(task, 'project_dir')
   const canCancel = task.status === 'running' || task.status === 'dispatched'
   const canRetry = task.status === 'failed'
   const hasArtifact = !!task.result_file
   const hasOutput = output?.content != null
 
   return (
-    <aside className="flex h-full min-w-0 flex-col overflow-hidden border-l border-[#313244] bg-[#181825]">
-      {/* RESULT header */}
-      <div className="shrink-0 border-b border-[#313244] px-3 py-2">
-        <div className="mb-2 flex items-center justify-between">
-          <span className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Result</span>
-          <StatusBadge status={task.status} />
+    <div
+      className="fixed top-0 right-0 z-50 flex h-full"
+      style={{ width: width + 8 }}
+    >
+      {/* Drag handle */}
+      <div
+        onMouseDown={onMouseDown}
+        className="group flex w-2 shrink-0 cursor-col-resize items-center justify-center hover:bg-[#89b4fa]/30 active:bg-[#89b4fa]/40 transition-colors"
+      >
+        <div className="h-8 w-0.5 rounded-full bg-[#6c7086] group-hover:bg-[#89b4fa] transition-colors" />
+      </div>
+
+      {/* Panel */}
+      <div className="flex flex-1 flex-col overflow-hidden border-l border-[#45475a] bg-[#181825] shadow-[-4px_0_24px_rgba(0,0,0,.4)]">
+        {/* header */}
+        <div className="shrink-0 border-b border-[#313244] px-3 py-2">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Result</span>
+            <div className="flex items-center gap-2">
+              <StatusBadge status={task.status} />
+              <button onClick={onClose} className="rounded p-0.5 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]">
+                <X className="size-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* action buttons */}
+          <div className="flex flex-wrap gap-1">
+            {task.result_file && (
+              <button
+                onClick={() => handleCopy(task.result_file!)}
+                className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25"
+              >
+                <Copy className="size-2.5" /> Copy Path
+              </button>
+            )}
+            {canCancel && (
+              <button
+                onClick={() => handleAction('cancel')}
+                className="inline-flex h-6 items-center gap-1 rounded bg-[#f38ba8]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#f38ba8] hover:bg-[#f38ba8]/25"
+              >
+                <XCircle className="size-2.5" /> Cancel
+              </button>
+            )}
+            {canRetry && (
+              <button
+                onClick={() => handleAction('retry')}
+                className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25"
+              >
+                <RotateCcw className="size-2.5" /> Retry
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* completion evidence */}
-        {(task.status === 'completed' || task.status === 'failed') && (
-          <div className="mb-2 rounded bg-[#313244]/60 p-2">
-            <div className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#6c7086]">Completion Evidence</div>
-            <div className="grid grid-cols-3 gap-2 font-mono text-[10px]">
-              <div>
-                <div className="text-[9px] text-[#585b70]">Artifact</div>
-                <div className={hasArtifact ? 'text-[#a6e3a1]' : 'text-[#6c7086]'}>{hasArtifact ? 'ready' : 'none'}</div>
+        {/* scrollable content */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {/* prompt / input params — shown first */}
+          <div className="border-b border-[#313244] px-3 py-2">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Input / Prompt</div>
+            <pre className="whitespace-pre-wrap break-words rounded bg-[#1e1e2e] p-2 font-mono text-[11px] leading-relaxed text-[#bac2de]">
+              {task.prompt}
+            </pre>
+          </div>
+
+          {/* task error */}
+          {task.error && (
+            <div className="border-b border-[#313244] px-3 py-2">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#f38ba8]">Error</div>
+              <div className="rounded bg-[#f38ba8]/10 px-2 py-1.5 font-mono text-[11px] text-[#f38ba8]">
+                {task.error}
               </div>
-              <div>
-                <div className="text-[9px] text-[#585b70]">Output</div>
-                <div className={hasOutput ? 'text-[#a6e3a1]' : loadingOutput ? 'text-[#f9e2af]' : 'text-[#6c7086]'}>
-                  {hasOutput ? 'loaded' : loadingOutput ? 'loading' : 'none'}
+            </div>
+          )}
+
+          {/* completion evidence */}
+          {(task.status === 'completed' || task.status === 'failed') && (
+            <div className="border-b border-[#313244] px-3 py-2">
+              <div className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#6c7086]">Completion Evidence</div>
+              <div className="grid grid-cols-3 gap-2 font-mono text-[10px]">
+                <div>
+                  <div className="text-[9px] text-[#585b70]">Artifact</div>
+                  <div className={hasArtifact ? 'text-[#a6e3a1]' : 'text-[#6c7086]'}>{hasArtifact ? 'ready' : 'none'}</div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[#585b70]">Output</div>
+                  <div className={hasOutput ? 'text-[#a6e3a1]' : loadingOutput ? 'text-[#f9e2af]' : 'text-[#6c7086]'}>
+                    {hasOutput ? 'loaded' : loadingOutput ? 'loading' : 'none'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-[#585b70]">Sent</div>
+                  <div className="text-[#6c7086]">not sent</div>
                 </div>
               </div>
-              <div>
-                <div className="text-[9px] text-[#585b70]">Sent</div>
-                <div className="text-[#6c7086]">not sent</div>
+            </div>
+          )}
+
+          {/* output */}
+          {output && !output.error && output.content && (
+            <div className="border-b border-[#313244] px-3 py-2">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Output</div>
+              <div className="text-[12px] leading-relaxed text-[#bac2de]">
+                <MarkdownRenderer content={output.content} />
               </div>
             </div>
-          </div>
-        )}
+          )}
+          {output?.error && (
+            <div className="border-b border-[#313244] px-3 py-2">
+              <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Output</div>
+              <div className="rounded bg-[#181825]/60 p-2 font-mono text-[11px] text-[#6c7086]">{output.error}</div>
+            </div>
+          )}
 
-        {/* task error */}
-        {task.error && (
-          <div className="mb-2 rounded bg-[#f38ba8]/10 px-2 py-1.5 font-mono text-[11px] text-[#f38ba8]">
-            {task.error}
-          </div>
-        )}
-
-        {/* result file path */}
-        {task.result_file && (
-          <div className="mb-2 overflow-hidden rounded bg-[#313244]/60 px-2 py-1.5">
-            <div className="truncate font-mono text-[10px] text-[#a6adc8]">{task.result_file}</div>
-          </div>
-        )}
-
-        {/* action buttons */}
-        <div className="flex flex-wrap gap-1">
+          {/* result file path */}
           {task.result_file && (
-            <button
-              onClick={() => handleCopy(task.result_file!)}
-              className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25"
-            >
-              <Copy className="size-2.5" /> Copy Path
-            </button>
+            <div className="border-b border-[#313244] px-3 py-2">
+              <div className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#6c7086]">Result File</div>
+              <div className="truncate font-mono text-[10px] text-[#a6adc8]">{task.result_file}</div>
+            </div>
           )}
-          {canCancel && (
-            <button
-              onClick={() => handleAction('cancel')}
-              className="inline-flex h-6 items-center gap-1 rounded bg-[#f38ba8]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#f38ba8] hover:bg-[#f38ba8]/25"
-            >
-              <XCircle className="size-2.5" /> Cancel
-            </button>
-          )}
-          {canRetry && (
-            <button
-              onClick={() => handleAction('retry')}
-              className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25"
-            >
-              <RotateCcw className="size-2.5" /> Retry
-            </button>
-          )}
-        </div>
-      </div>
 
-      {/* meta info */}
-      <div className="shrink-0 border-b border-[#313244] px-3 py-2">
-        <div className="space-y-1 font-mono text-[10px]">
-          <div className="flex justify-between"><span className="text-[#6c7086]">ID</span><span className="text-[#a6adc8]">{task.id}</span></div>
-          <div className="flex justify-between"><span className="text-[#6c7086]">Role</span><span className="text-[#a6adc8]">{task.role}</span></div>
-          {task.agent && <div className="flex justify-between"><span className="text-[#6c7086]">Agent</span><span className="text-[#a6adc8]">{task.agent}</span></div>}
-          {model && <div className="flex justify-between"><span className="text-[#6c7086]">Model</span><span className="text-[#a6adc8]">{model}</span></div>}
-          <div className="flex justify-between"><span className="text-[#6c7086]">Source</span><span className="text-[#a6adc8]">{task.source_director || 'main'}</span></div>
-          <div className="flex justify-between"><span className="text-[#6c7086]">Created</span><span className="text-[#a6adc8]">{formatTime(task.created_at)}</span></div>
-          {task.duration_ms != null && (
-            <div className="flex justify-between"><span className="text-[#6c7086]">Duration</span><span className="text-[#a6adc8]">{formatDuration(task.duration_ms)}</span></div>
-          )}
-          {task.cost_usd != null && (
-            <div className="flex justify-between"><span className="text-[#6c7086]">Cost</span><span className="text-[#a6adc8]">${task.cost_usd.toFixed(4)}</span></div>
-          )}
-        </div>
-      </div>
-
-      {/* scrollable: output + prompt */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {/* output */}
-        {output && !output.error && output.content && (
-          <div className="border-b border-[#313244] px-3 py-2">
-            <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Output</div>
-            <div className="text-[12px] leading-relaxed text-[#bac2de]">
-              <MarkdownRenderer content={output.content} />
+          {/* meta info */}
+          <div className="px-3 py-2">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Meta</div>
+            <div className="space-y-1 font-mono text-[10px]">
+              <div className="flex justify-between"><span className="text-[#6c7086]">ID</span><span className="text-[#a6adc8]">{task.id}</span></div>
+              <div className="flex justify-between"><span className="text-[#6c7086]">Role</span><span className="text-[#a6adc8]">{task.role}</span></div>
+              {task.agent && <div className="flex justify-between"><span className="text-[#6c7086]">Agent</span><span className="text-[#a6adc8]">{task.agent}</span></div>}
+              {model && <div className="flex justify-between"><span className="text-[#6c7086]">Model</span><span className="text-[#a6adc8]">{model}</span></div>}
+              {projectDir && <div className="flex justify-between"><span className="text-[#6c7086]">Project Dir</span><span className="truncate ml-4 text-[#a6adc8]">{projectDir}</span></div>}
+              <div className="flex justify-between"><span className="text-[#6c7086]">Source</span><span className="text-[#a6adc8]">{task.source_director || 'main'}</span></div>
+              <div className="flex justify-between"><span className="text-[#6c7086]">Created</span><span className="text-[#a6adc8]">{formatTime(task.created_at)}</span></div>
+              {task.duration_ms != null && (
+                <div className="flex justify-between"><span className="text-[#6c7086]">Duration</span><span className="text-[#a6adc8]">{formatDuration(task.duration_ms)}</span></div>
+              )}
+              {task.cost_usd != null && (
+                <div className="flex justify-between"><span className="text-[#6c7086]">Cost</span><span className="text-[#a6adc8]">${task.cost_usd.toFixed(4)}</span></div>
+              )}
             </div>
           </div>
-        )}
-        {output?.error && (
-          <div className="border-b border-[#313244] px-3 py-2">
-            <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Output</div>
-            <div className="rounded bg-[#181825]/60 p-2 font-mono text-[11px] text-[#6c7086]">{output.error}</div>
-          </div>
-        )}
-
-        {/* prompt */}
-        <div className="px-3 py-2">
-          <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Prompt</div>
-          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[#bac2de]">
-            {task.prompt}
-          </pre>
         </div>
       </div>
-    </aside>
+    </div>
   )
 }
 
@@ -796,10 +853,8 @@ function ResultPanel({ task }: { task: Task | null }) {
 
 function DragHandle({
   onDrag,
-  side,
 }: {
   onDrag: (delta: number) => void
-  side: 'left' | 'right'
 }) {
   const dragging = useRef(false)
   const lastX = useRef(0)
@@ -810,7 +865,7 @@ function DragHandle({
     lastX.current = e.clientX
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return
-      const delta = side === 'left' ? ev.clientX - lastX.current : lastX.current - ev.clientX
+      const delta = ev.clientX - lastX.current
       lastX.current = ev.clientX
       onDrag(delta)
     }
@@ -825,7 +880,7 @@ function DragHandle({
     document.body.style.userSelect = 'none'
     document.addEventListener('mousemove', onMove)
     document.addEventListener('mouseup', onUp)
-  }, [onDrag, side])
+  }, [onDrag])
 
   return (
     <div
@@ -851,23 +906,12 @@ export function TasksPage() {
     const saved = localStorage.getItem('persona-shell:v2:tasks-left-width')
     return saved ? Number(saved) : 340
   })
-  const [rightWidth, setRightWidth] = useState(() => {
-    const saved = localStorage.getItem('persona-shell:v2:tasks-right-width')
-    return saved ? Number(saved) : 400
-  })
+  const [showResult, setShowResult] = useState(true)
 
   const handleLeftDrag = useCallback((delta: number) => {
     setLeftWidth(prev => {
       const next = Math.max(220, Math.min(600, prev + delta))
       localStorage.setItem('persona-shell:v2:tasks-left-width', String(next))
-      return next
-    })
-  }, [])
-
-  const handleRightDrag = useCallback((delta: number) => {
-    setRightWidth(prev => {
-      const next = Math.max(280, Math.min(600, prev + delta))
-      localStorage.setItem('persona-shell:v2:tasks-right-width', String(next))
       return next
     })
   }, [])
@@ -927,24 +971,23 @@ export function TasksPage() {
           scope={scope}
           setScope={s => { setScope(s); setSelectedId(null) }}
           selectedId={selectedId}
-          setSelectedId={setSelectedId}
+          setSelectedId={id => { setSelectedId(id); setShowResult(true) }}
           onRefresh={fetchTasks}
           onBack={() => navigate('/')}
           directorLabel={directorLabel}
           workspaceName={activeWorkspace?.name ?? ''}
         />
       </div>
-      <DragHandle onDrag={handleLeftDrag} side="left" />
+      <DragHandle onDrag={handleLeftDrag} />
       <LogsPanel
         task={selected}
         logs={logs}
         totalLines={totalLines}
         loading={logsLoading}
       />
-      <DragHandle onDrag={handleRightDrag} side="right" />
-      <div style={{ width: rightWidth }} className="shrink-0">
-        <ResultPanel task={selected} />
-      </div>
+      {showResult && (
+        <ResultPanel task={selected} onClose={() => setShowResult(false)} />
+      )}
     </div>
   )
 }
