@@ -1,15 +1,17 @@
-import { useEffect, useState } from 'react'
-import { NavLink, Outlet } from 'react-router'
+import { useCallback, useEffect, useState } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import {
+  ArrowLeft,
   Bot,
   ChevronRight,
   FileCode2,
   ListTodo,
   MessageSquare,
   Plus,
-  Settings,
+  RefreshCw,
 } from 'lucide-react'
 import { useStatus } from '@/hooks/use-status'
+import { useApi } from '@/hooks/use-api'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useSessions, type Session } from '@/hooks/use-sessions'
 import { useWorkContext, type ProjectInfo, type WorkspaceInfo } from '@/hooks/use-work-context'
@@ -154,6 +156,7 @@ function Sidebar({
   activeWorkspace,
   setActiveWorkspace,
   onCreateWorkspace,
+  onRestart,
 }: {
   mode: BrowseMode
   setMode: (mode: BrowseMode) => void
@@ -163,6 +166,7 @@ function Sidebar({
   activeWorkspace?: WorkspaceInfo
   setActiveWorkspace: (id: string) => void
   onCreateWorkspace: () => void
+  onRestart: () => void
 }) {
   const title = mode === 'projects' ? 'Projects' : 'Workspaces'
   const [emptyWorkspacesOpen, setEmptyWorkspacesOpen] = useState(false)
@@ -182,7 +186,7 @@ function Sidebar({
       <section className="border-b border-[#313244] p-3">
         <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#6c7086]">Browse Mode</div>
         <div className="grid grid-cols-2 gap-1 rounded-md bg-[#313244] p-1">
-          {(['projects', 'workspaces'] as BrowseMode[]).map(value => (
+          {(['workspaces', 'projects'] as BrowseMode[]).map(value => (
             <button
               key={value}
               onClick={() => setMode(value)}
@@ -277,32 +281,61 @@ function Sidebar({
       </div>
 
       <section className="border-t border-[#313244] p-2">
-        <button className="flex h-8 w-full items-center gap-2 rounded px-2 text-xs text-[#a6adc8] hover:bg-[#313244]">
-          <Settings className="size-3.5" />
-          Settings
+        <button
+          onClick={onRestart}
+          className="flex h-8 w-full items-center gap-2 rounded px-2 text-xs text-[#a6adc8] hover:bg-[#313244]"
+        >
+          <RefreshCw className="size-3.5" />
+          Restart Shell
         </button>
       </section>
     </aside>
   )
 }
 
+const WS_STORAGE_KEY = 'persona-shell:v2:active-workspace-id'
+
 export function RootLayout() {
+  const location = useLocation()
+  const navigate = useNavigate()
   const [mode, setMode] = useState<BrowseMode>('workspaces')
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | undefined>()
+  const [activeWorkspaceId, setActiveWorkspaceIdState] = useState<string | undefined>(
+    () => localStorage.getItem(WS_STORAGE_KEY) || undefined
+  )
+  const setActiveWorkspaceId = useCallback((id: string | undefined) => {
+    if (id) localStorage.setItem(WS_STORAGE_KEY, id)
+    else localStorage.removeItem(WS_STORAGE_KEY)
+    setActiveWorkspaceIdState(id)
+  }, [])
   const { context, createWorkspace } = useWorkContext()
+  const isSubPage = location.pathname !== '/' && location.pathname !== ''
   const activeProject = context.projects[0]
   const activeWorkspaceInfo = context.workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? context.workspaces[0]
   const activeDirectorLabel = activeWorkspaceInfo?.directorLabel ?? 'main'
   const { sessions, activeSession, setActiveSession } = useSessions(activeDirectorLabel)
   const activeSessionInfo = sessions.find(session => session.id === activeSession) ?? sessions[0]
+  const { on } = useWebSocket()
+
+  useEffect(() => {
+    if (Notification.permission === 'default') {
+      Notification.requestPermission()
+    }
+  }, [])
+
+  useEffect(() => {
+    return on('task_callback', (data) => {
+      const text = (data.text as string) || '后台任务完成'
+      if (Notification.permission === 'granted' && document.hidden) {
+        new Notification('Persona Shell', { body: text, icon: '/v2/favicon.ico' })
+      }
+    })
+  }, [on])
 
   useEffect(() => {
     if (!context.workspaces.length) return
-    setActiveWorkspaceId(prev => {
-      if (prev && context.workspaces.some(workspace => workspace.id === prev)) return prev
-      return context.activeWorkspaceId ?? context.workspaces[0]?.id
-    })
-  }, [context.activeWorkspaceId, context.workspaces])
+    if (activeWorkspaceId && context.workspaces.some(workspace => workspace.id === activeWorkspaceId)) return
+    setActiveWorkspaceId(context.activeWorkspaceId ?? context.workspaces[0]?.id)
+  }, [activeWorkspaceId, context.activeWorkspaceId, context.workspaces, setActiveWorkspaceId])
 
   const handleCreateWorkspace = async () => {
     const name = window.prompt('Workspace name')
@@ -316,23 +349,48 @@ export function RootLayout() {
     }
   }
 
+  const { post } = useApi()
+  const handleRestart = useCallback(async () => {
+    if (!window.confirm('确定要重启 Shell 吗？')) return
+    try {
+      await post('/api/send', { text: '/shell-restart' })
+    } catch {
+      window.alert('重启请求失败')
+    }
+  }, [post])
+
+  const isTasksPage = location.pathname === '/tasks'
+
   return (
     <div className="flex h-screen flex-col bg-[#1e1e2e] text-[#cdd6f4]">
       <Header activeProject={activeProject} activeWorkspace={activeWorkspaceInfo} activeSession={activeSessionInfo} mode={mode} />
-      <div className="grid min-h-0 flex-1 grid-cols-[292px_minmax(520px,1fr)]">
-        <Sidebar
-          mode={mode}
-          setMode={setMode}
-          projects={context.projects}
-          workspaces={context.workspaces}
-          activeProject={activeProject}
-          activeWorkspace={activeWorkspaceInfo}
-          setActiveWorkspace={setActiveWorkspaceId}
-          onCreateWorkspace={handleCreateWorkspace}
-        />
-        <main className="flex min-w-0 flex-col overflow-hidden bg-[#1e1e2e]">
+      <div className={cn('min-h-0 flex-1', isTasksPage ? 'flex' : 'grid grid-cols-[292px_minmax(520px,1fr)]')}>
+        {!isTasksPage && (
+          <Sidebar
+            mode={mode}
+            setMode={setMode}
+            projects={context.projects}
+            workspaces={context.workspaces}
+            activeProject={activeProject}
+            activeWorkspace={activeWorkspaceInfo}
+            setActiveWorkspace={setActiveWorkspaceId}
+            onCreateWorkspace={handleCreateWorkspace}
+            onRestart={handleRestart}
+          />
+        )}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
           <div className="flex min-h-[42px] shrink-0 items-center gap-2 border-b border-[#45475a] bg-[#313244] px-4">
-            <span className="font-mono text-[#89b4fa]">&lt;-</span>
+            {isSubPage ? (
+              <button
+                onClick={() => navigate('/')}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-1 font-mono text-[11px] font-bold text-[#89b4fa] hover:bg-[#45475a] transition-colors"
+              >
+                <ArrowLeft className="size-3.5" />
+                Chat
+              </button>
+            ) : (
+              <span className="font-mono text-[#89b4fa]">&lt;-</span>
+            )}
             <div className="min-w-0">
               <div className="truncate text-sm font-bold text-[#cdd6f4]">
                 Project / {activeProject?.name ?? '-'} · Workspace / {activeWorkspaceInfo?.name ?? '-'}
@@ -356,7 +414,6 @@ export function RootLayout() {
                   {item.label}
                 </NavLink>
               ))}
-              <button className="h-6 rounded px-2 font-mono text-[11px] font-bold text-[#7f849c]">Memory</button>
             </nav>
           </div>
           <Outlet context={{

@@ -406,6 +406,12 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
         }
       } catch { /* skip malformed lines */ }
     }
+    // flush pending text from in-progress (not yet completed) turns
+    if (pendingText.trim()) {
+      outputs.push({ text: pendingText, sessionId: lastSessionId, director: lastDirector, timestamp: undefined, tools: cloneTools(pendingTools) });
+      pendingText = '';
+      pendingTools = [];
+    }
   } catch { /* file read error */ }
 
   const markersByDirector = new Map<string, Array<{ sessionId: string; timestamp: string; ms: number }>>();

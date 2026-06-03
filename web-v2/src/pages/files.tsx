@@ -1,227 +1,217 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FileText, Image, File, Download, Loader2, FolderOpen } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { MarkdownRenderer } from '@/components/markdown-renderer'
+import { useOutletContext } from 'react-router'
+import {
+  ChevronRight,
+  File,
+  FileText,
+  Folder,
+  Loader2,
+  FolderOpen,
+} from 'lucide-react'
 import { useApi } from '@/hooks/use-api'
-import { config } from '@/lib/config'
+import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
 
-interface FileEntry {
+interface TreeEntry {
   name: string
   path: string
-  size: number
-  modified: string
-  type: string
+  type: 'file' | 'dir'
+  size?: number
+  children?: TreeEntry[]
 }
 
-function isImagePath(path: string): boolean {
-  return /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(path)
+function isMarkdown(name: string) {
+  return /\.(md|mdx|markdown)$/i.test(name)
 }
 
-function isMarkdownPath(path: string): boolean {
-  return /\.(md|mdx|markdown)$/i.test(path)
-}
-
-function getFileIcon(file: FileEntry) {
-  if (isImagePath(file.name)) return Image
-  if (isMarkdownPath(file.name)) return FileText
-  return File
-}
-
-function formatSize(bytes: number): string {
+function formatSize(bytes?: number) {
+  if (bytes == null) return ''
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function groupByDate(files: FileEntry[]): Map<string, FileEntry[]> {
-  const groups = new Map<string, FileEntry[]>()
-  for (const f of files) {
-    const dateKey = f.path.match(/outbox\/([\d-]+)\//)?.[1]
-      ?? new Date(f.modified).toISOString().split('T')[0]
-    if (!groups.has(dateKey)) groups.set(dateKey, [])
-    groups.get(dateKey)!.push(f)
-  }
-  return new Map([...groups.entries()].sort((a, b) => b[0].localeCompare(a[0])))
+function FileIcon({ name }: { name: string }) {
+  if (isMarkdown(name)) return <FileText className="size-3.5 text-[#89b4fa]" />
+  return <File className="size-3.5 text-[#7f849c]" />
 }
 
-function FilePreview({ filePath }: { filePath: string }) {
+function TreeNode({
+  entry,
+  depth,
+  selectedPath,
+  onSelect,
+}: {
+  entry: TreeEntry
+  depth: number
+  selectedPath: string | null
+  onSelect: (path: string) => void
+}) {
+  const [open, setOpen] = useState(depth < 1)
+
+  if (entry.type === 'dir') {
+    return (
+      <div>
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-[#313244] transition-colors"
+          style={{ paddingLeft: depth * 12 + 4 }}
+        >
+          <ChevronRight className={cn('size-3 text-[#6c7086] transition-transform', open && 'rotate-90')} />
+          {open ? <FolderOpen className="size-3.5 text-[#f9e2af]" /> : <Folder className="size-3.5 text-[#f9e2af]" />}
+          <span className="truncate text-[12px] font-medium text-[#cdd6f4]">{entry.name}</span>
+        </button>
+        {open && entry.children?.map(child => (
+          <TreeNode
+            key={child.path}
+            entry={child}
+            depth={depth + 1}
+            selectedPath={selectedPath}
+            onSelect={onSelect}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => onSelect(entry.path)}
+      className={cn(
+        'flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left transition-colors',
+        entry.path === selectedPath ? 'bg-[#45475a]' : 'hover:bg-[#313244]'
+      )}
+      style={{ paddingLeft: depth * 12 + 18 }}
+    >
+      <FileIcon name={entry.name} />
+      <span className="min-w-0 flex-1 truncate text-[12px] text-[#bac2de]">{entry.name}</span>
+      <span className="shrink-0 font-mono text-[10px] text-[#585b70]">{formatSize(entry.size)}</span>
+    </button>
+  )
+}
+
+function FileContent({ path }: { path: string }) {
+  const { get } = useApi()
   const [content, setContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const { get } = useApi()
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
     setContent(null)
-
-    get<{ content: string }>('/api/files/content', { path: filePath })
-      .then(data => { if (!cancelled) setContent(data.content ?? String(data)) })
-      .catch(err => { if (!cancelled) setError(err.message) })
+    get<{ content: string }>('/api/files/read', { path })
+      .then(data => { if (!cancelled) setContent(data.content) })
+      .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)) })
       .finally(() => { if (!cancelled) setLoading(false) })
-
     return () => { cancelled = true }
-  }, [filePath, get])
+  }, [path, get])
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading...
+      <div className="flex items-center justify-center gap-2 py-12 text-xs text-[#7f849c]">
+        <Loader2 className="size-3.5 animate-spin" /> Loading...
       </div>
     )
   }
 
   if (error) {
-    return <div className="p-4 text-sm text-destructive">Failed to load: {error}</div>
+    return <div className="p-4 text-xs text-[#f38ba8]">{error}</div>
   }
 
-  if (isImagePath(filePath)) {
-    return (
-      <div className="p-4 flex items-center justify-center">
-        <img
-          src={`${config.apiBase}/api/files/content?path=${encodeURIComponent(filePath)}&raw=1`}
-          alt={filePath.split('/').pop()}
-          className="max-w-full max-h-[60vh] rounded"
-        />
-      </div>
-    )
-  }
-
-  if (isMarkdownPath(filePath)) {
-    return (
-      <div className="p-4">
-        <MarkdownRenderer content={content ?? ''} />
-      </div>
-    )
-  }
+  const lines = (content ?? '').split('\n')
 
   return (
-    <pre className="p-4 text-xs font-mono leading-relaxed whitespace-pre-wrap break-words text-foreground">
-      {content}
-    </pre>
+    <div className="overflow-auto font-mono text-[12px] leading-relaxed">
+      <table className="w-full border-collapse">
+        <tbody>
+          {lines.map((line, i) => (
+            <tr key={i} className="hover:bg-[#313244]/40">
+              <td className="select-none border-r border-[#313244] px-3 py-0 text-right align-top text-[#585b70]">{i + 1}</td>
+              <td className="whitespace-pre-wrap break-all px-3 py-0 text-[#cdd6f4]">{line || ' '}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
 export function FilesPage() {
+  const { activeProject } = useOutletContext<ShellOutletContext>()
   const { get } = useApi()
-  const [files, setFiles] = useState<FileEntry[]>([])
+  const [tree, setTree] = useState<TreeEntry[]>([])
+  const [root, setRoot] = useState('')
   const [loading, setLoading] = useState(true)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
 
-  const fetchFiles = useCallback(() => {
-    get<FileEntry[]>('/api/files')
-      .then(setFiles)
+  const projectPath = activeProject?.path
+
+  const fetchTree = useCallback(() => {
+    if (!projectPath) return
+    setLoading(true)
+    get<{ root: string; tree: TreeEntry[] }>('/api/files/tree', { root: projectPath })
+      .then(data => {
+        setRoot(data.root)
+        setTree(data.tree)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [get])
+  }, [get, projectPath])
 
-  useEffect(() => {
-    fetchFiles()
-  }, [fetchFiles])
+  useEffect(() => { fetchTree() }, [fetchTree])
 
-  const grouped = groupByDate(files)
-  const selectedFile = files.find(f => f.path === selectedPath)
-
-  const downloadUrl = (path: string) => {
-    const token = localStorage.getItem('auth_token') || ''
-    return `${config.apiBase}/api/files/download?path=${encodeURIComponent(path)}&token=${encodeURIComponent(token)}`
-  }
+  const fileName = selectedPath?.split('/').pop() ?? ''
 
   return (
-    <div className="flex h-full">
-      {/* File list */}
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="p-4 border-b border-border shrink-0">
-          <h1 className="text-lg font-semibold">Files</h1>
-          <p className="text-xs text-muted-foreground mt-1">
-            {files.length} files in outbox
-          </p>
+    <div className="flex min-h-0 flex-1 overflow-hidden">
+      {/* file tree */}
+      <aside className="flex w-[280px] shrink-0 flex-col overflow-hidden border-r border-[#313244] bg-[#181825]">
+        <div className="shrink-0 border-b border-[#313244] px-3 py-2">
+          <div className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Project Files</div>
+          <div className="mt-0.5 truncate font-mono text-[10px] text-[#6c7086]">{root.replace(/^\/Users\/[^/]+/, '~')}</div>
         </div>
-
-        <ScrollArea className="flex-1">
-          <div className="p-4 space-y-6 max-w-3xl">
-            {loading ? (
-              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin mr-2" /> Loading files...
-              </div>
-            ) : files.length === 0 ? (
-              <div className="text-center py-12 text-sm text-muted-foreground">
-                <FolderOpen className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                No files found.
-              </div>
-            ) : (
-              [...grouped.entries()].map(([date, group]) => (
-                <div key={date}>
-                  <h2 className="text-xs font-medium text-muted-foreground mb-2 uppercase tracking-wide">{date}</h2>
-                  <div className="space-y-1">
-                    {group.map(file => {
-                      const Icon = getFileIcon(file)
-                      return (
-                        <div
-                          key={file.path}
-                          className={cn(
-                            'flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors',
-                            selectedPath === file.path
-                              ? 'bg-accent text-accent-foreground'
-                              : 'hover:bg-accent/50'
-                          )}
-                          onClick={() => setSelectedPath(file.path === selectedPath ? null : file.path)}
-                        >
-                          <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm truncate">{file.name}</p>
-                            <p className="text-[11px] text-muted-foreground">{formatSize(file.size)}</p>
-                          </div>
-                          <a
-                            href={downloadUrl(file.path)}
-                            download
-                            onClick={e => e.stopPropagation()}
-                            className="shrink-0 p-1 rounded hover:bg-muted transition-colors"
-                            title="Download"
-                          >
-                            <Download className="h-3.5 w-3.5 text-muted-foreground" />
-                          </a>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </ScrollArea>
-      </div>
-
-      {/* Preview panel */}
-      {selectedFile && (
-        <div className="hidden md:flex flex-col w-[480px] border-l border-border bg-background shrink-0">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0">
-            {(() => { const Icon = getFileIcon(selectedFile); return <Icon className="h-4 w-4 text-muted-foreground" /> })()}
-            <span className="text-sm font-medium truncate flex-1">{selectedFile.name}</span>
-            <a
-              href={downloadUrl(selectedFile.path)}
-              download
-              className="shrink-0"
-            >
-              <Button variant="ghost" size="icon" className="h-7 w-7">
-                <Download className="h-4 w-4" />
-              </Button>
-            </a>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setSelectedPath(null)}>
-              &times;
-            </Button>
-          </div>
-          <div className="px-4 py-1.5 text-[11px] text-muted-foreground bg-muted/30 border-b border-border font-mono truncate">
-            {selectedFile.path}
-          </div>
-          <ScrollArea className="flex-1">
-            <FilePreview filePath={selectedFile.path} />
-          </ScrollArea>
+        <div className="min-h-0 flex-1 overflow-y-auto p-1">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-12 text-xs text-[#7f849c]">
+              <Loader2 className="size-3.5 animate-spin" /> Loading...
+            </div>
+          ) : tree.length === 0 ? (
+            <div className="py-12 text-center text-xs text-[#7f849c]">No files</div>
+          ) : (
+            tree.map(entry => (
+              <TreeNode
+                key={entry.path}
+                entry={entry}
+                depth={0}
+                selectedPath={selectedPath}
+                onSelect={setSelectedPath}
+              />
+            ))
+          )}
         </div>
-      )}
+      </aside>
+
+      {/* file content */}
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
+        {selectedPath ? (
+          <>
+            <div className="shrink-0 border-b border-[#45475a] bg-[#313244] px-4 py-2">
+              <div className="text-sm font-bold text-[#cdd6f4]">{fileName}</div>
+              <div className="truncate font-mono text-[10px] text-[#7f849c]">{selectedPath}</div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto">
+              <FileContent path={selectedPath} />
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center text-sm text-[#7f849c]">
+            <File className="mb-2 size-8 text-[#45475a]" />
+            Select a file to view
+          </div>
+        )}
+      </main>
     </div>
   )
 }

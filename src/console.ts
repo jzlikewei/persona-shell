@@ -2511,6 +2511,82 @@ export function startConsole(
             }
           }
 
+          // GET /api/files/tree?root=... — list project directory tree (text files only)
+          if (url.pathname === '/api/files/tree' && req.method === 'GET') {
+            const rawRoot = url.searchParams.get('root');
+            if (!rawRoot) return Response.json({ error: 'root is required' }, { status: 400 });
+            const root = resolve(rawRoot);
+            if (!existsSync(root) || !statSync(root).isDirectory()) {
+              return Response.json({ error: 'Not a directory' }, { status: 404 });
+            }
+            const maxDepth = Math.min(Number(url.searchParams.get('depth') ?? 4), 6);
+            const skipDirs = new Set([
+              'node_modules', '.git', '.next', 'dist', 'build', '.turbo',
+              '__pycache__', '.pytest_cache', '.mypy_cache', 'vendor',
+              '.claude', '.persona', 'target', '.venv', 'venv',
+            ]);
+            const binaryExts = new Set([
+              '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
+              '.woff', '.woff2', '.ttf', '.eot', '.otf',
+              '.zip', '.tar', '.gz', '.br', '.7z', '.rar',
+              '.exe', '.dll', '.so', '.dylib', '.o', '.a',
+              '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt',
+              '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv',
+              '.db', '.sqlite', '.sqlite3',
+              '.wasm', '.pyc', '.class',
+            ]);
+            interface TreeEntry { name: string; path: string; type: 'file' | 'dir'; size?: number; children?: TreeEntry[] }
+            function walk(dir: string, depth: number): TreeEntry[] {
+              if (depth > maxDepth) return [];
+              try {
+                const entries = readdirSync(dir, { withFileTypes: true });
+                const result: TreeEntry[] = [];
+                for (const entry of entries) {
+                  if (entry.name.startsWith('.') && depth > 0) continue;
+                  const fullPath = join(dir, entry.name);
+                  if (entry.isDirectory()) {
+                    if (skipDirs.has(entry.name)) continue;
+                    const children = walk(fullPath, depth + 1);
+                    if (children.length > 0 || depth < 2) {
+                      result.push({ name: entry.name, path: fullPath, type: 'dir', children });
+                    }
+                  } else if (entry.isFile()) {
+                    const ext = entry.name.includes('.') ? '.' + entry.name.split('.').pop()!.toLowerCase() : '';
+                    if (binaryExts.has(ext)) continue;
+                    try {
+                      const s = statSync(fullPath);
+                      if (s.size > 512 * 1024) continue;
+                      result.push({ name: entry.name, path: fullPath, type: 'file', size: s.size });
+                    } catch { continue; }
+                  }
+                }
+                result.sort((a, b) => {
+                  if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+                  return a.name.localeCompare(b.name);
+                });
+                return result;
+              } catch { return []; }
+            }
+            return Response.json({ root, tree: walk(root, 0) });
+          }
+
+          // GET /api/files/read?path=... — read a text file from project directory
+          if (url.pathname === '/api/files/read' && req.method === 'GET') {
+            const rawPath = url.searchParams.get('path');
+            if (!rawPath) return Response.json({ error: 'path is required' }, { status: 400 });
+            const path = resolve(rawPath);
+            if (!existsSync(path)) return Response.json({ error: 'Not found' }, { status: 404 });
+            const stat = statSync(path);
+            if (!stat.isFile()) return Response.json({ error: 'Not a file' }, { status: 400 });
+            if (stat.size > 512 * 1024) return Response.json({ error: 'File too large (>512KB)' }, { status: 413 });
+            try {
+              const content = readFileSync(path, 'utf-8');
+              return Response.json({ path, size: stat.size, content });
+            } catch {
+              return Response.json({ error: 'Cannot read file' }, { status: 500 });
+            }
+          }
+
           // POST /api/files/upload — store browser-selected files under persona attachments
           if (url.pathname === '/api/files/upload' && req.method === 'POST') {
             const form = await req.formData();
@@ -2594,6 +2670,29 @@ export function startConsole(
           if (url.pathname === '/api/send' && req.method === 'POST') {
             const body = await req.json() as { text: string; director?: string };
             if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
+
+            // Intercept /shell-restart commands
+            const trimmed = body.text.trim();
+            if (trimmed === '/shell-restart' || trimmed === '/restart-shell' ||
+                trimmed === '/shell-restart --force' || trimmed === '/restart-shell --force') {
+              const isForce = trimmed.includes('--force');
+              const runningTasks = taskRunner?.getRunningTasks() ?? [];
+              if (runningTasks.length > 0 && !isForce) {
+                const listed = runningTasks.slice(0, 5).join(', ');
+                const overflow = runningTasks.length > 5 ? ` ...+${runningTasks.length - 5}` : '';
+                return Response.json({
+                  ok: false,
+                  message: `Shell 重启已拒绝：当前有 ${runningTasks.length} 个后台任务仍在运行：${listed}${overflow}。请使用 /shell-restart --force 强制重启。`,
+                });
+              }
+              broadcastWs(JSON.stringify({ type: 'chat_reply', director: 'main', messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
+              writeAuditEntry('shell.restart', true, { source: 'web', force: isForce });
+              if (pool) await pool.detachAll();
+              await director.shutdown();
+              setTimeout(() => process.exit(0), 500);
+              return Response.json({ ok: true, message: 'restarting' });
+            }
+
             try {
               // Route to pool Director if specified
               if (body.director && pool) {

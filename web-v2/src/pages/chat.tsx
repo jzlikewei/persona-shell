@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { isValidElement, useCallback, useEffect, useRef, useState, type ReactNode, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useOutletContext } from 'react-router'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -59,6 +59,15 @@ function formatBytes(size: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
+function extractText(node: ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (!node) return ''
+  if (Array.isArray(node)) return node.map(extractText).join('')
+  if (isValidElement(node)) return extractText((node.props as { children?: ReactNode }).children)
+  return ''
+}
+
 function MarkdownContent({ content }: { content: string }) {
   return (
     <div className="md-content prose prose-sm prose-invert max-w-none text-[#bac2de] [&_a]:text-[#89b4fa] [&_code]:rounded [&_code]:bg-[#45475a] [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_code]:text-[#fab387] [&_ol]:my-1 [&_p]:my-1.5 [&_pre]:my-2 [&_ul]:my-1">
@@ -70,12 +79,13 @@ function MarkdownContent({ content }: { content: string }) {
             return <>{children}</>
           },
           code({ className, children, ...props }) {
+            const text = extractText(children)
             const isBlock = className?.includes('language-') ||
-              (typeof children === 'string' && children.includes('\n'))
+              text.includes('\n')
             if (isBlock) {
               return (
                 <CodeBlock className={className}>
-                  {String(children).replace(/\n$/, '')}
+                  {text.replace(/\n$/, '')}
                 </CodeBlock>
               )
             }
@@ -347,9 +357,21 @@ export function ChatPage() {
   }
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault()
       handleSend()
+    }
+  }
+
+  const handlePaste = (event: React.ClipboardEvent) => {
+    const items = Array.from(event.clipboardData.items)
+    const imageFiles = items
+      .filter(item => item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter((f): f is File => f !== null)
+    if (imageFiles.length > 0) {
+      event.preventDefault()
+      uploadFiles(imageFiles)
     }
   }
 
@@ -472,7 +494,8 @@ export function ChatPage() {
             value={input}
             onChange={handleTextareaChange}
             onKeyDown={handleKeyDown}
-            placeholder="Message current workspace..."
+            onPaste={handlePaste}
+            placeholder="Message current workspace... (Enter 发送, Shift+Enter 换行)"
             rows={3}
             className="min-h-[82px] max-h-[220px] min-w-0 flex-1 resize-none rounded-md border border-[#45475a] bg-[#313244] px-3 py-2.5 text-sm leading-5 text-[#cdd6f4] outline-none placeholder:text-[#6c7086] focus:border-[#89b4fa]"
           />

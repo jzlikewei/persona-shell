@@ -72,10 +72,33 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   sessionIdRef.current = sessionId
   liveSessionRef.current = liveSession
 
+  const streamTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
   const updateStreaming = useCallback((value: string | ((prev: string) => string)) => {
     setStreaming(prev => {
       const next = typeof value === 'function' ? value(prev) : value
       streamingRef.current = next
+      clearTimeout(streamTimeoutRef.current)
+      if (next) {
+        streamTimeoutRef.current = setTimeout(() => {
+          const text = streamingRef.current
+          if (!text) return
+          streamingRef.current = ''
+          setStreaming('')
+          setMessages(prev => {
+            const last = prev[prev.length - 1]
+            if (last?.role === 'assistant' && sameReplyText(last.content, text)) return prev
+            return [...prev, {
+              id: crypto.randomUUID(),
+              role: 'assistant' as const,
+              content: text,
+              timestamp: new Date().toISOString(),
+              director: directorRef.current,
+              sessionId: sessionIdRef.current,
+            }]
+          })
+        }, 8000)
+      }
       return next
     })
   }, [])
@@ -113,7 +136,28 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     }
   }, [get, director, sessionId])
 
+  const flushStreaming = useCallback(() => {
+    const text = streamingRef.current
+    if (!text) return
+    clearTimeout(streamTimeoutRef.current)
+    streamingRef.current = ''
+    setStreaming('')
+    setMessages(prev => {
+      const last = prev[prev.length - 1]
+      if (last?.role === 'assistant' && sameReplyText(last.content, text)) return prev
+      return [...prev, {
+        id: crypto.randomUUID(),
+        role: 'assistant' as const,
+        content: text,
+        timestamp: new Date().toISOString(),
+        director: directorRef.current,
+        sessionId: sessionIdRef.current,
+      }]
+    })
+  }, [])
+
   const sendMessage = useCallback(async (content: string) => {
+    flushStreaming()
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -123,7 +167,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       sessionId,
     }
     setMessages(prev => [...prev, userMsg])
-    updateStreaming('')
     setSending(true)
 
     try {

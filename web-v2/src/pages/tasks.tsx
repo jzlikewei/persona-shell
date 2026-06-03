@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useOutletContext } from 'react-router'
+import { useNavigate, useOutletContext } from 'react-router'
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
+  ChevronRight,
+  Copy,
+  Download,
   Loader2,
   RefreshCw,
   RotateCcw,
+  Search,
   Terminal,
   XCircle,
 } from 'lucide-react'
@@ -13,6 +18,8 @@ import { MarkdownRenderer } from '@/components/markdown-renderer'
 import { useApi } from '@/hooks/use-api'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
+
+/* ── types ────────────────────────────────────── */
 
 interface Task {
   id: string
@@ -53,16 +60,28 @@ interface TaskLogs {
 
 type StatusFilter = 'all' | 'dispatched' | 'running' | 'completed' | 'failed'
 type SourceScope = 'workspace' | 'all'
-type DetailTab = 'prompt' | 'output' | 'logs'
+type LogTypeFilter = 'all' | 'thinking' | 'tools' | 'results' | 'errors' | 'text' | 'system'
 
-const statusFilters: StatusFilter[] = ['all', 'dispatched', 'running', 'completed', 'failed']
+/* ── constants ────────────────────────────────── */
 
 const statusConfig: Record<Task['status'], { label: string; badge: string; dot: string }> = {
   dispatched: { label: 'Dispatched', badge: 'bg-[#f9e2af]/15 text-[#f9e2af]', dot: 'bg-[#f9e2af]' },
-  running: { label: 'Running', badge: 'bg-[#a6e3a1]/15 text-[#a6e3a1]', dot: 'bg-[#a6e3a1]' },
-  completed: { label: 'Completed', badge: 'bg-[#89b4fa]/15 text-[#89b4fa]', dot: 'bg-[#89b4fa]' },
-  failed: { label: 'Failed', badge: 'bg-[#f38ba8]/15 text-[#f38ba8]', dot: 'bg-[#f38ba8]' },
+  running:    { label: 'Running',    badge: 'bg-[#a6e3a1]/15 text-[#a6e3a1]', dot: 'bg-[#a6e3a1]' },
+  completed:  { label: 'Completed',  badge: 'bg-[#89b4fa]/15 text-[#89b4fa]', dot: 'bg-[#89b4fa]' },
+  failed:     { label: 'Failed',     badge: 'bg-[#f38ba8]/15 text-[#f38ba8]', dot: 'bg-[#f38ba8]' },
 }
+
+const logTypeFilters: { key: LogTypeFilter; label: string }[] = [
+  { key: 'all',      label: 'All' },
+  { key: 'thinking', label: 'Thinking' },
+  { key: 'tools',    label: 'Tools' },
+  { key: 'results',  label: 'Results' },
+  { key: 'errors',   label: 'Errors' },
+  { key: 'text',     label: 'Text' },
+  { key: 'system',   label: 'System' },
+]
+
+/* ── utils ────────────────────────────────────── */
 
 function formatDuration(ms?: number | null) {
   if (ms == null) return '--'
@@ -83,7 +102,7 @@ function formatTime(ts?: string | null) {
   }
 }
 
-function shortText(text: string, max = 120) {
+function shortText(text: string, max = 80) {
   const compact = text.replace(/\s+/g, ' ').trim()
   return compact.length > max ? `${compact.slice(0, max)}...` : compact
 }
@@ -93,9 +112,23 @@ function extraValue(task: Task, key: string) {
   return value == null ? '' : String(value)
 }
 
-function taskSource(task: Task) {
-  return task.source_director || 'main'
+function matchesLogType(entry: TaskLogEntry, filter: LogTypeFilter): boolean {
+  if (filter === 'all') return true
+  if (filter === 'tools') return entry.type === 'tool_use' || entry.type === 'tool_result'
+  if (filter === 'results') return entry.type === 'tool_result'
+  if (filter === 'errors') return entry.type === 'tool_result' && !!entry.meta?.is_error
+  return entry.type === filter
 }
+
+function matchesSearch(entry: TaskLogEntry, query: string): boolean {
+  if (!query) return true
+  const q = query.toLowerCase()
+  if (entry.content.toLowerCase().includes(q)) return true
+  if (entry.meta && JSON.stringify(entry.meta).toLowerCase().includes(q)) return true
+  return false
+}
+
+/* ── small components ─────────────────────────── */
 
 function StatusBadge({ status }: { status: Task['status'] }) {
   const cfg = statusConfig[status] ?? statusConfig.dispatched
@@ -107,206 +140,737 @@ function StatusBadge({ status }: { status: Task['status'] }) {
   )
 }
 
-function MetricCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
-  return (
-    <div className="min-w-0 rounded-md bg-[#181825]/60 px-3 py-2">
-      <div className="mb-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">{label}</div>
-      <div className="truncate font-mono text-sm font-bold text-[#cdd6f4]">{value}</div>
-      {sub && <div className="mt-0.5 truncate font-mono text-[10px] text-[#6c7086]">{sub}</div>}
-    </div>
-  )
-}
+/* ── useTaskLogs hook ─────────────────────────── */
 
-function TaskRow({
-  task,
-  selected,
-  onSelect,
-}: {
-  task: Task
-  selected: boolean
-  onSelect: () => void
-}) {
-  const model = extraValue(task, 'model')
-  const meta = [
-    task.id,
-    task.role || '--',
-    `source ${taskSource(task)}`,
-    task.agent ? `provider ${task.agent}` : '',
-    model ? `model ${model}` : '',
-    task.cost_usd ? `$${task.cost_usd.toFixed(4)}` : '',
-  ].filter(Boolean)
-
-  return (
-    <button
-      onClick={onSelect}
-      className={cn(
-        'grid w-full grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md bg-[#181825]/45 px-2 py-2 text-left transition-colors hover:bg-[#45475a]/70',
-        selected && 'outline outline-1 outline-[#89b4fa] bg-[#45475a]/80'
-      )}
-    >
-      <StatusBadge status={task.status} />
-      <span className="min-w-0">
-        <span className="block truncate text-[13px] font-medium text-[#cdd6f4]">
-          {task.description || shortText(task.prompt, 120)}
-        </span>
-        <span className="mt-0.5 block truncate font-mono text-[11px] text-[#7f849c]">{meta.join(' · ')}</span>
-      </span>
-      <span className="shrink-0 font-mono text-[11px] text-[#6c7086]">
-        {task.duration_ms != null ? formatDuration(task.duration_ms) : formatTime(task.created_at)}
-      </span>
-    </button>
-  )
-}
-
-function TaskDetail({
-  task,
-  onAction,
-}: {
-  task: Task | null
-  onAction: (action: 'cancel' | 'retry') => void
-}) {
-  const { request } = useApi()
-  const [tab, setTab] = useState<DetailTab>('prompt')
-  const [output, setOutput] = useState<TaskOutput | null>(null)
-  const [logs, setLogs] = useState<TaskLogs | null>(null)
-  const logsRef = useRef<HTMLDivElement>(null)
+function useTaskLogs(taskId: string | null, taskStatus: Task['status'] | undefined) {
+  const { get } = useApi()
+  const [logs, setLogs] = useState<TaskLogEntry[]>([])
+  const [totalLines, setTotalLines] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const totalRef = useRef(0)
 
   useEffect(() => {
-    setTab('prompt')
-    setOutput(null)
-    setLogs(null)
-  }, [task?.id])
+    setLogs([])
+    setTotalLines(0)
+    totalRef.current = 0
+    if (!taskId) return
+    setLoading(true)
+  }, [taskId])
 
-  useEffect(() => {
-    if (!task || tab !== 'output') return
-    let cancelled = false
-    request<TaskOutput>(`/api/tasks/${task.id}/output`)
-      .then(data => { if (!cancelled) setOutput(data) })
-      .catch(error => { if (!cancelled) setOutput({ error: error instanceof Error ? error.message : String(error) }) })
-    return () => { cancelled = true }
-  }, [request, tab, task])
-
-  useEffect(() => {
-    if (!task || tab !== 'logs') return
-    let cancelled = false
-    const poll = () => {
-      request<TaskLogs>(`/api/tasks/${task.id}/logs`)
-        .then(data => {
-          if (cancelled) return
-          setLogs(data)
-          requestAnimationFrame(() => {
-            if (logsRef.current) logsRef.current.scrollTop = logsRef.current.scrollHeight
-          })
-        })
-        .catch(() => {})
+  const fetchLogs = useCallback(async (id: string, after: number) => {
+    try {
+      const data = await get<TaskLogs>(`/api/tasks/${id}/logs`, { after: String(after) })
+      if (data.entries.length > 0) {
+        setLogs(prev => [...prev, ...data.entries])
+      }
+      setTotalLines(data.totalLines)
+      totalRef.current = data.totalLines
+      setLoading(false)
+    } catch {
+      setLoading(false)
     }
-    poll()
-    const interval = task.status === 'running' ? setInterval(poll, 3000) : undefined
-    return () => { cancelled = true; clearInterval(interval) }
-  }, [request, tab, task])
+  }, [get])
 
-  if (!task) {
-    return (
-      <section className="flex min-h-0 flex-col rounded-md border border-[#45475a]/70 bg-[#313244]">
-        <div className="border-b border-[#45475a] px-3 py-2">
-          <div className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Task Detail</div>
-        </div>
-        <div className="grid flex-1 place-items-center p-6 text-sm text-[#7f849c]">Select a task</div>
-      </section>
-    )
-  }
+  useEffect(() => {
+    if (!taskId) return
+    fetchLogs(taskId, 0)
+  }, [taskId, fetchLogs])
 
-  const canCancel = task.status === 'running' || task.status === 'dispatched'
-  const canRetry = task.status === 'failed'
+  useEffect(() => {
+    if (!taskId) return
+    const isActive = taskStatus === 'running' || taskStatus === 'dispatched'
+    if (!isActive) return
+
+    const interval = setInterval(() => {
+      fetchLogs(taskId, totalRef.current)
+    }, 2000)
+
+    return () => clearInterval(interval)
+  }, [taskId, taskStatus, fetchLogs])
+
+  return { logs, totalLines, loading }
+}
+
+/* ── Left Panel: Task List ────────────────────── */
+
+function TaskListPanel({
+  tasks,
+  loading,
+  error,
+  filter,
+  setFilter,
+  scope,
+  setScope,
+  selectedId,
+  setSelectedId,
+  onRefresh,
+  onBack,
+  directorLabel,
+  workspaceName,
+}: {
+  tasks: Task[]
+  loading: boolean
+  error: string | null
+  filter: StatusFilter
+  setFilter: (f: StatusFilter) => void
+  scope: SourceScope
+  setScope: (s: SourceScope) => void
+  selectedId: string | null
+  setSelectedId: (id: string) => void
+  onRefresh: () => void
+  onBack: () => void
+  directorLabel: string
+  workspaceName: string
+}) {
+  const counts = useMemo(() => ({
+    all: tasks.length,
+    dispatched: tasks.filter(t => t.status === 'dispatched').length,
+    running: tasks.filter(t => t.status === 'running').length,
+    completed: tasks.filter(t => t.status === 'completed').length,
+    failed: tasks.filter(t => t.status === 'failed').length,
+  }), [tasks])
+
+  const visible = useMemo(() =>
+    tasks.filter(t => filter === 'all' || t.status === filter),
+  [filter, tasks])
+
+  useEffect(() => {
+    setSelectedId(visible[0]?.id ?? '')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter])
 
   return (
-    <section className="flex min-h-0 flex-col rounded-md border border-[#45475a]/70 bg-[#313244]">
-      <div className="shrink-0 border-b border-[#45475a] px-3 py-2">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <StatusBadge status={task.status} />
-            <span className="truncate font-mono text-[11px] font-bold text-[#a6adc8]">{task.id}</span>
+    <aside className="flex h-full min-w-0 flex-col overflow-hidden border-r border-[#313244] bg-[#181825]">
+      {/* header */}
+      <div className="shrink-0 border-b border-[#313244] px-3 py-2">
+        <div className="mb-1 flex items-center justify-between">
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={onBack}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#89b4fa] hover:bg-[#313244] transition-colors"
+            >
+              <ArrowLeft className="size-3" />
+              Chat
+            </button>
+            <span className="text-[#45475a]">|</span>
+            <Activity className="size-3.5 text-[#a6e3a1]" />
+            <span className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Tasks</span>
           </div>
-          <div className="flex shrink-0 gap-1">
-            {canCancel && (
-              <button onClick={() => onAction('cancel')} className="inline-flex h-7 items-center gap-1 rounded bg-[#f38ba8]/15 px-2 font-mono text-[10px] font-bold uppercase text-[#f38ba8] hover:bg-[#f38ba8]/25">
-                <XCircle className="size-3" /> Cancel
-              </button>
-            )}
-            {canRetry && (
-              <button onClick={() => onAction('retry')} className="inline-flex h-7 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[10px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25">
-                <RotateCcw className="size-3" /> Retry
-              </button>
-            )}
+          <div className="flex items-center gap-1">
+            <div className="flex rounded bg-[#313244] p-0.5">
+              {(['workspace', 'all'] as SourceScope[]).map(v => (
+                <button
+                  key={v}
+                  onClick={() => setScope(v)}
+                  className={cn(
+                    'h-5 rounded px-1.5 font-mono text-[9px] font-bold uppercase transition-colors',
+                    scope === v ? 'bg-[#45475a] text-[#cdd6f4]' : 'text-[#7f849c] hover:text-[#cdd6f4]'
+                  )}
+                >
+                  {v === 'workspace' ? 'WS' : 'All'}
+                </button>
+              ))}
+            </div>
+            <button onClick={onRefresh} className="rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]">
+              <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
+            </button>
           </div>
         </div>
-        <div className="text-sm font-medium leading-snug text-[#cdd6f4]">{task.description || shortText(task.prompt, 160)}</div>
-        <div className="mt-1 truncate font-mono text-[11px] text-[#7f849c]">
-          {task.role} · source {taskSource(task)} · created {formatTime(task.created_at)}
+        <div className="truncate font-mono text-[10px] text-[#6c7086]">
+          {scope === 'workspace' ? workspaceName || directorLabel : 'all workspaces'}
         </div>
-        {task.error && (
-          <div className="mt-2 rounded bg-[#f38ba8]/10 px-2 py-1 font-mono text-[11px] text-[#f38ba8]">{task.error}</div>
-        )}
       </div>
 
-      <div className="flex shrink-0 gap-1 border-b border-[#45475a] px-3 py-2">
-        {(['prompt', 'output', 'logs'] as DetailTab[]).map(value => (
+      {/* filter chips */}
+      <div className="flex shrink-0 flex-wrap gap-1 border-b border-[#313244] px-3 py-2">
+        {(['all', 'running', 'completed', 'failed'] as StatusFilter[]).map(v => (
           <button
-            key={value}
-            onClick={() => setTab(value)}
+            key={v}
+            onClick={() => setFilter(v)}
             className={cn(
-              'h-7 rounded px-2 font-mono text-[11px] font-bold uppercase transition-colors',
-              tab === value ? 'bg-[#45475a] text-[#cdd6f4]' : 'text-[#7f849c] hover:text-[#cdd6f4]'
+              'h-6 rounded px-2 font-mono text-[10px] font-bold uppercase transition-colors',
+              filter === v ? 'bg-[#45475a] text-[#cdd6f4]' : 'bg-[#313244]/60 text-[#7f849c] hover:text-[#cdd6f4]'
             )}
           >
-            {value}
+            {v === 'all' ? 'All' : statusConfig[v].label}
+            <span className="ml-1 text-[#6c7086]">{counts[v]}</span>
           </button>
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto p-3" ref={logsRef}>
-        {tab === 'prompt' && (
-          <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-[#bac2de]">{task.prompt}</pre>
-        )}
-        {tab === 'output' && (
-          output === null ? (
-            <div className="flex items-center gap-2 text-sm text-[#7f849c]"><Loader2 className="size-4 animate-spin" /> Loading output...</div>
-          ) : output.error ? (
-            <div className="rounded bg-[#181825]/60 p-3 font-mono text-[12px] text-[#7f849c]">{output.error}</div>
-          ) : (
-            <MarkdownRenderer content={output.content || ''} />
-          )
-        )}
-        {tab === 'logs' && (
-          logs === null ? (
-            <div className="flex items-center gap-2 text-sm text-[#7f849c]"><Loader2 className="size-4 animate-spin" /> Loading logs...</div>
-          ) : logs.entries.length === 0 ? (
-            <div className="flex items-center gap-2 text-sm text-[#7f849c]"><Terminal className="size-4" /> No logs available</div>
-          ) : (
-            <div className="space-y-1">
-              {logs.entries.map(entry => (
-                <div key={`${entry.line}-${entry.type}`} className="grid grid-cols-[64px_1fr] gap-2 rounded bg-[#181825]/55 px-2 py-1.5 font-mono text-[11px]">
-                  <span className="text-[#6c7086]">{entry.line} · {entry.type}</span>
-                  <span className="whitespace-pre-wrap break-words text-[#bac2de]">{entry.content}</span>
-                </div>
-              ))}
-            </div>
-          )
+      {/* task list */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {loading && tasks.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 py-12 text-xs text-[#7f849c]">
+            <Loader2 className="size-3.5 animate-spin" /> Loading...
+          </div>
+        ) : error ? (
+          <div className="mx-2 mt-2 flex items-center gap-2 rounded bg-[#f38ba8]/10 px-2 py-1.5 text-xs text-[#f38ba8]">
+            <AlertTriangle className="size-3.5" /> {error}
+          </div>
+        ) : visible.length === 0 ? (
+          <div className="py-12 text-center text-xs text-[#7f849c]">No tasks</div>
+        ) : (
+          <div className="space-y-0.5 p-1.5">
+            {visible.map(task => (
+              <button
+                key={task.id}
+                onClick={() => setSelectedId(task.id)}
+                className={cn(
+                  'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-[#313244]',
+                  task.id === selectedId && 'bg-[#45475a]'
+                )}
+              >
+                <StatusBadge status={task.status} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] font-medium text-[#cdd6f4]">
+                    {task.description || shortText(task.prompt)}
+                  </span>
+                </span>
+                <span className="shrink-0 font-mono text-[10px] text-[#6c7086]">
+                  {task.duration_ms != null ? formatDuration(task.duration_ms) : ''}
+                </span>
+              </button>
+            ))}
+          </div>
         )}
       </div>
-    </section>
+
+      {/* summary footer */}
+      <div className="shrink-0 border-t border-[#313244] px-3 py-2">
+        <div className="flex items-center gap-3 font-mono text-[10px] text-[#6c7086]">
+          <span>{counts.completed} done</span>
+          <span>{counts.failed} fail</span>
+          <span>{counts.running + counts.dispatched} active</span>
+        </div>
+      </div>
+    </aside>
   )
 }
 
+/* ── Center Panel: Live Logs ──────────────────── */
+
+function LogEntry({ entry }: { entry: TaskLogEntry }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (entry.type === 'system') {
+    return (
+      <div className="rounded bg-[#181825]/40 px-3 py-1.5 font-mono text-[11px] text-[#6c7086]">
+        <span className="mr-2 text-[#585b70]">{entry.line}</span>
+        {entry.content}
+      </div>
+    )
+  }
+
+  if (entry.type === 'thinking') {
+    return (
+      <div className="rounded bg-[#cba6f7]/5 px-3 py-1.5">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex w-full items-center gap-1.5 text-left font-mono text-[11px] text-[#cba6f7]"
+        >
+          <ChevronRight className={cn('size-3 transition-transform', expanded && 'rotate-90')} />
+          <span className="font-bold">Thinking</span>
+          <span className="ml-1 text-[#585b70]">#{entry.line}</span>
+        </button>
+        {expanded && (
+          <pre className="mt-1.5 whitespace-pre-wrap break-words pl-5 font-mono text-[11px] italic leading-relaxed text-[#a6adc8]">
+            {entry.content}
+          </pre>
+        )}
+      </div>
+    )
+  }
+
+  if (entry.type === 'tool_use') {
+    const toolName = entry.content || 'unknown'
+    const hasInput = entry.meta?.input != null
+    return (
+      <div className="rounded bg-[#89b4fa]/5 px-3 py-1.5">
+        <button
+          onClick={() => hasInput && setExpanded(!expanded)}
+          className={cn(
+            'flex w-full items-center gap-1.5 text-left font-mono text-[11px]',
+            hasInput ? 'cursor-pointer' : 'cursor-default'
+          )}
+        >
+          {hasInput && <ChevronRight className={cn('size-3 text-[#89b4fa] transition-transform', expanded && 'rotate-90')} />}
+          {!hasInput && <span className="size-3" />}
+          <span className="font-bold text-[#89b4fa]">▸ {toolName}</span>
+          <span className="ml-1 text-[#585b70]">#{entry.line}</span>
+        </button>
+        {expanded && hasInput && (
+          <pre className="mt-1.5 max-h-[300px] overflow-auto whitespace-pre-wrap break-words rounded bg-[#181825]/60 p-2 pl-5 font-mono text-[11px] leading-relaxed text-[#bac2de]">
+            {typeof entry.meta!.input === 'string' ? entry.meta!.input : JSON.stringify(entry.meta!.input, null, 2)}
+          </pre>
+        )}
+      </div>
+    )
+  }
+
+  if (entry.type === 'tool_result') {
+    const isError = !!entry.meta?.is_error
+    const prefix = isError ? '✗' : '✓'
+    const color = isError ? 'text-[#f38ba8]' : 'text-[#a6e3a1]'
+    const contentTruncated = entry.content.length > 300
+    const displayContent = expanded ? entry.content : entry.content.slice(0, 300)
+
+    return (
+      <div className={cn('rounded px-3 py-1.5', isError ? 'bg-[#f38ba8]/5' : 'bg-[#a6e3a1]/5')}>
+        <div className="flex items-start gap-1.5">
+          <span className={cn('font-mono text-[11px] font-bold', color)}>{prefix}</span>
+          <pre className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[#bac2de]">
+            {displayContent}
+            {contentTruncated && !expanded && '...'}
+          </pre>
+          <span className="shrink-0 font-mono text-[10px] text-[#585b70]">#{entry.line}</span>
+        </div>
+        {contentTruncated && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="mt-1 pl-4 font-mono text-[10px] text-[#89b4fa] hover:underline"
+          >
+            {expanded ? 'collapse' : 'expand'}
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  if (entry.type === 'result') {
+    return (
+      <div className="rounded bg-[#a6e3a1]/10 px-3 py-2">
+        <div className="flex items-center gap-2 font-mono text-[11px] font-bold text-[#a6e3a1]">
+          <span>● {entry.content}</span>
+          <span className="text-[#585b70]">#{entry.line}</span>
+        </div>
+        {entry.meta && (
+          <div className="mt-1 flex gap-3 font-mono text-[10px] text-[#6c7086]">
+            {entry.meta.duration_ms != null && <span>{formatDuration(entry.meta.duration_ms as number)}</span>}
+            {entry.meta.cost_usd != null && <span>${(entry.meta.cost_usd as number).toFixed(4)}</span>}
+            {entry.meta.num_turns != null && <span>{entry.meta.num_turns as number} turns</span>}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // text
+  return (
+    <div className="px-3 py-1.5">
+      <div className="flex items-start gap-1.5">
+        <div className="min-w-0 flex-1 text-[12px] leading-relaxed text-[#bac2de]">
+          <MarkdownRenderer content={entry.content} />
+        </div>
+        <span className="shrink-0 pt-0.5 font-mono text-[10px] text-[#585b70]">#{entry.line}</span>
+      </div>
+    </div>
+  )
+}
+
+function LogsPanel({
+  task,
+  logs,
+  totalLines,
+  loading,
+}: {
+  task: Task | null
+  logs: TaskLogEntry[]
+  totalLines: number
+  loading: boolean
+}) {
+  const [logFilter, setLogFilter] = useState<LogTypeFilter>('all')
+  const [searchQuery, setSearchQuery] = useState('')
+  const logsEndRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const userScrolled = useRef(false)
+
+  useEffect(() => {
+    setLogFilter('all')
+    setSearchQuery('')
+    userScrolled.current = false
+  }, [task?.id])
+
+  const filteredLogs = useMemo(() =>
+    logs.filter(e => matchesLogType(e, logFilter) && matchesSearch(e, searchQuery)),
+  [logs, logFilter, searchQuery])
+
+  const typeCounts = useMemo(() => ({
+    all: logs.length,
+    thinking: logs.filter(e => e.type === 'thinking').length,
+    tools: logs.filter(e => e.type === 'tool_use' || e.type === 'tool_result').length,
+    results: logs.filter(e => e.type === 'tool_result').length,
+    errors: logs.filter(e => e.type === 'tool_result' && !!e.meta?.is_error).length,
+    text: logs.filter(e => e.type === 'text').length,
+    system: logs.filter(e => e.type === 'system').length,
+  }), [logs])
+
+  useEffect(() => {
+    if (!userScrolled.current && logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [filteredLogs.length])
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+    userScrolled.current = !atBottom
+  }, [])
+
+  const handleExport = useCallback(() => {
+    const data = filteredLogs.map(e => JSON.stringify(e)).join('\n')
+    const blob = new Blob([data], { type: 'application/x-ndjson' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `task-${task?.id ?? 'logs'}.ndjson`
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [filteredLogs, task?.id])
+
+  if (!task) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center bg-[#1e1e2e] text-sm text-[#7f849c]">
+        <Terminal className="mb-2 size-8 text-[#45475a]" />
+        Select a task to view logs
+      </div>
+    )
+  }
+
+  const isLive = task.status === 'running' || task.status === 'dispatched'
+
+  return (
+    <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
+      {/* header */}
+      <div className="shrink-0 border-b border-[#45475a] px-3 py-2">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-bold text-[#cdd6f4]">Logs</span>
+            <span className="font-mono text-xs text-[#a6adc8]">{task.id}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {isLive && (
+              <span className="flex items-center gap-1.5 font-mono text-[10px] font-bold text-[#a6e3a1]">
+                <span className="size-1.5 animate-pulse rounded-full bg-[#a6e3a1]" />
+                Live
+              </span>
+            )}
+            <span className="font-mono text-[10px] text-[#6c7086]">{task.status === 'running' ? 'executor' : task.status}</span>
+          </div>
+        </div>
+
+        {/* log type filter chips */}
+        <div className="flex flex-wrap items-center gap-1">
+          {logTypeFilters.map(({ key, label }) => {
+            const count = typeCounts[key]
+            if (key !== 'all' && count === 0) return null
+            return (
+              <button
+                key={key}
+                onClick={() => setLogFilter(key)}
+                className={cn(
+                  'h-6 rounded px-2 font-mono text-[10px] font-bold transition-colors',
+                  logFilter === key
+                    ? 'bg-[#89b4fa]/20 text-[#89b4fa]'
+                    : 'bg-[#313244]/60 text-[#7f849c] hover:text-[#cdd6f4]'
+                )}
+              >
+                {label} <span className="text-[#6c7086]">{count}</span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* search + export bar */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-[#45475a] px-3 py-1.5">
+        <Search className="size-3.5 text-[#6c7086]" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="Search logs"
+          className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-[#cdd6f4] placeholder-[#585b70] outline-none"
+        />
+        <button onClick={handleExport} className="rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]">
+          <Download className="size-3.5" />
+        </button>
+        <span className="font-mono text-[10px] text-[#6c7086]">{filteredLogs.length}/{totalLines}</span>
+      </div>
+
+      {/* log entries */}
+      <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto">
+        {loading && logs.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 py-12 text-xs text-[#7f849c]">
+            <Loader2 className="size-3.5 animate-spin" /> Loading logs...
+          </div>
+        ) : filteredLogs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-xs text-[#7f849c]">
+            <Terminal className="mb-2 size-6 text-[#45475a]" />
+            {logs.length === 0 ? 'No logs yet' : 'No matching entries'}
+          </div>
+        ) : (
+          <div className="space-y-0.5 p-2">
+            {filteredLogs.map(entry => (
+              <LogEntry key={`${entry.line}-${entry.type}`} entry={entry} />
+            ))}
+            <div ref={logsEndRef} />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ── Right Panel: Result + Prompt ─────────────── */
+
+function ResultPanel({ task }: { task: Task | null }) {
+  const { get, post } = useApi()
+  const [output, setOutput] = useState<TaskOutput | null>(null)
+  const [loadingOutput, setLoadingOutput] = useState(false)
+
+  useEffect(() => {
+    setOutput(null)
+    if (!task) return
+    if (task.status !== 'completed' && task.status !== 'failed') return
+    if (!task.result_file) return
+    setLoadingOutput(true)
+    get<TaskOutput>(`/api/tasks/${task.id}/output`)
+      .then(setOutput)
+      .catch(err => setOutput({ error: err instanceof Error ? err.message : String(err) }))
+      .finally(() => setLoadingOutput(false))
+  }, [task?.id, task?.status, task?.result_file, get])
+
+  const handleAction = useCallback(async (action: 'cancel' | 'retry') => {
+    if (!task) return
+    try {
+      await post(`/api/tasks/${task.id}/${action}`)
+    } catch (err) {
+      console.error(`Failed to ${action} task:`, err)
+    }
+  }, [task, post])
+
+  const handleCopy = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {})
+  }, [])
+
+  if (!task) {
+    return (
+      <div className="flex h-full min-w-0 flex-col items-center justify-center border-l border-[#313244] bg-[#181825] text-sm text-[#7f849c]">
+        Select a task
+      </div>
+    )
+  }
+
+  const model = extraValue(task, 'model')
+  const canCancel = task.status === 'running' || task.status === 'dispatched'
+  const canRetry = task.status === 'failed'
+  const hasArtifact = !!task.result_file
+  const hasOutput = output?.content != null
+
+  return (
+    <aside className="flex h-full min-w-0 flex-col overflow-hidden border-l border-[#313244] bg-[#181825]">
+      {/* RESULT header */}
+      <div className="shrink-0 border-b border-[#313244] px-3 py-2">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Result</span>
+          <StatusBadge status={task.status} />
+        </div>
+
+        {/* completion evidence */}
+        {(task.status === 'completed' || task.status === 'failed') && (
+          <div className="mb-2 rounded bg-[#313244]/60 p-2">
+            <div className="mb-1 text-[9px] font-bold uppercase tracking-[.08em] text-[#6c7086]">Completion Evidence</div>
+            <div className="grid grid-cols-3 gap-2 font-mono text-[10px]">
+              <div>
+                <div className="text-[9px] text-[#585b70]">Artifact</div>
+                <div className={hasArtifact ? 'text-[#a6e3a1]' : 'text-[#6c7086]'}>{hasArtifact ? 'ready' : 'none'}</div>
+              </div>
+              <div>
+                <div className="text-[9px] text-[#585b70]">Output</div>
+                <div className={hasOutput ? 'text-[#a6e3a1]' : loadingOutput ? 'text-[#f9e2af]' : 'text-[#6c7086]'}>
+                  {hasOutput ? 'loaded' : loadingOutput ? 'loading' : 'none'}
+                </div>
+              </div>
+              <div>
+                <div className="text-[9px] text-[#585b70]">Sent</div>
+                <div className="text-[#6c7086]">not sent</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* task error */}
+        {task.error && (
+          <div className="mb-2 rounded bg-[#f38ba8]/10 px-2 py-1.5 font-mono text-[11px] text-[#f38ba8]">
+            {task.error}
+          </div>
+        )}
+
+        {/* result file path */}
+        {task.result_file && (
+          <div className="mb-2 overflow-hidden rounded bg-[#313244]/60 px-2 py-1.5">
+            <div className="truncate font-mono text-[10px] text-[#a6adc8]">{task.result_file}</div>
+          </div>
+        )}
+
+        {/* action buttons */}
+        <div className="flex flex-wrap gap-1">
+          {task.result_file && (
+            <button
+              onClick={() => handleCopy(task.result_file!)}
+              className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25"
+            >
+              <Copy className="size-2.5" /> Copy Path
+            </button>
+          )}
+          {canCancel && (
+            <button
+              onClick={() => handleAction('cancel')}
+              className="inline-flex h-6 items-center gap-1 rounded bg-[#f38ba8]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#f38ba8] hover:bg-[#f38ba8]/25"
+            >
+              <XCircle className="size-2.5" /> Cancel
+            </button>
+          )}
+          {canRetry && (
+            <button
+              onClick={() => handleAction('retry')}
+              className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25"
+            >
+              <RotateCcw className="size-2.5" /> Retry
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* meta info */}
+      <div className="shrink-0 border-b border-[#313244] px-3 py-2">
+        <div className="space-y-1 font-mono text-[10px]">
+          <div className="flex justify-between"><span className="text-[#6c7086]">ID</span><span className="text-[#a6adc8]">{task.id}</span></div>
+          <div className="flex justify-between"><span className="text-[#6c7086]">Role</span><span className="text-[#a6adc8]">{task.role}</span></div>
+          {task.agent && <div className="flex justify-between"><span className="text-[#6c7086]">Agent</span><span className="text-[#a6adc8]">{task.agent}</span></div>}
+          {model && <div className="flex justify-between"><span className="text-[#6c7086]">Model</span><span className="text-[#a6adc8]">{model}</span></div>}
+          <div className="flex justify-between"><span className="text-[#6c7086]">Source</span><span className="text-[#a6adc8]">{task.source_director || 'main'}</span></div>
+          <div className="flex justify-between"><span className="text-[#6c7086]">Created</span><span className="text-[#a6adc8]">{formatTime(task.created_at)}</span></div>
+          {task.duration_ms != null && (
+            <div className="flex justify-between"><span className="text-[#6c7086]">Duration</span><span className="text-[#a6adc8]">{formatDuration(task.duration_ms)}</span></div>
+          )}
+          {task.cost_usd != null && (
+            <div className="flex justify-between"><span className="text-[#6c7086]">Cost</span><span className="text-[#a6adc8]">${task.cost_usd.toFixed(4)}</span></div>
+          )}
+        </div>
+      </div>
+
+      {/* scrollable: output + prompt */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {/* output */}
+        {output && !output.error && output.content && (
+          <div className="border-b border-[#313244] px-3 py-2">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Output</div>
+            <div className="text-[12px] leading-relaxed text-[#bac2de]">
+              <MarkdownRenderer content={output.content} />
+            </div>
+          </div>
+        )}
+        {output?.error && (
+          <div className="border-b border-[#313244] px-3 py-2">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Output</div>
+            <div className="rounded bg-[#181825]/60 p-2 font-mono text-[11px] text-[#6c7086]">{output.error}</div>
+          </div>
+        )}
+
+        {/* prompt */}
+        <div className="px-3 py-2">
+          <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Prompt</div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-[#bac2de]">
+            {task.prompt}
+          </pre>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+/* ── Drag Handle ──────────────────────────────── */
+
+function DragHandle({
+  onDrag,
+  side,
+}: {
+  onDrag: (delta: number) => void
+  side: 'left' | 'right'
+}) {
+  const dragging = useRef(false)
+  const lastX = useRef(0)
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    dragging.current = true
+    lastX.current = e.clientX
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return
+      const delta = side === 'left' ? ev.clientX - lastX.current : lastX.current - ev.clientX
+      lastX.current = ev.clientX
+      onDrag(delta)
+    }
+    const onUp = () => {
+      dragging.current = false
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [onDrag, side])
+
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      className="flex w-1 shrink-0 cursor-col-resize items-center justify-center hover:bg-[#89b4fa]/20 active:bg-[#89b4fa]/30 transition-colors"
+    />
+  )
+}
+
+/* ── Page root ────────────────────────────────── */
+
 export function TasksPage() {
   const { activeWorkspace, directorLabel } = useOutletContext<ShellOutletContext>()
-  const { get, post } = useApi()
+  const navigate = useNavigate()
+  const { get } = useApi()
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<StatusFilter>('all')
   const [scope, setScope] = useState<SourceScope>('workspace')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [leftWidth, setLeftWidth] = useState(() => {
+    const saved = localStorage.getItem('persona-shell:v2:tasks-left-width')
+    return saved ? Number(saved) : 340
+  })
+  const [rightWidth, setRightWidth] = useState(() => {
+    const saved = localStorage.getItem('persona-shell:v2:tasks-right-width')
+    return saved ? Number(saved) : 400
+  })
+
+  const handleLeftDrag = useCallback((delta: number) => {
+    setLeftWidth(prev => {
+      const next = Math.max(220, Math.min(600, prev + delta))
+      localStorage.setItem('persona-shell:v2:tasks-left-width', String(next))
+      return next
+    })
+  }, [])
+
+  const handleRightDrag = useCallback((delta: number) => {
+    setRightWidth(prev => {
+      const next = Math.max(280, Math.min(600, prev + delta))
+      localStorage.setItem('persona-shell:v2:tasks-right-width', String(next))
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     setSelectedId(null)
@@ -326,147 +890,60 @@ export function TasksPage() {
       .finally(() => setLoading(false))
   }, [directorLabel, get, scope])
 
-  useEffect(() => {
-    fetchTasks()
-  }, [fetchTasks])
+  useEffect(() => { fetchTasks() }, [fetchTasks])
 
+  // auto-refresh when active tasks exist
   useEffect(() => {
-    const hasActive = tasks.some(task => task.status === 'running' || task.status === 'dispatched')
+    const hasActive = tasks.some(t => t.status === 'running' || t.status === 'dispatched')
     if (!hasActive) return
     const interval = setInterval(fetchTasks, 5000)
     return () => clearInterval(interval)
   }, [fetchTasks, tasks])
 
-  const visibleTasks = useMemo(() => {
-    return tasks.filter(task => filter === 'all' || task.status === filter)
-  }, [filter, tasks])
+  // auto-select first task
+  const visibleTasks = useMemo(() =>
+    tasks.filter(t => filter === 'all' || t.status === filter),
+  [filter, tasks])
 
   useEffect(() => {
     setSelectedId(prev => {
-      if (prev && visibleTasks.some(task => task.id === prev)) return prev
+      if (prev && visibleTasks.some(t => t.id === prev)) return prev
       return visibleTasks[0]?.id ?? null
     })
   }, [visibleTasks])
 
-  const selected = visibleTasks.find(task => task.id === selectedId) ?? null
-
-  const counts = useMemo(() => ({
-    all: tasks.length,
-    dispatched: tasks.filter(task => task.status === 'dispatched').length,
-    running: tasks.filter(task => task.status === 'running').length,
-    completed: tasks.filter(task => task.status === 'completed').length,
-    failed: tasks.filter(task => task.status === 'failed').length,
-  }), [tasks])
-
-  const totalCost = tasks.reduce((sum, task) => sum + (task.cost_usd ?? 0), 0)
-  const completedWithDuration = tasks.filter(task => task.duration_ms != null)
-  const avgDuration = completedWithDuration.length
-    ? Math.round(completedWithDuration.reduce((sum, task) => sum + (task.duration_ms ?? 0), 0) / completedWithDuration.length)
-    : 0
-
-  const handleAction = useCallback(async (taskId: string, action: 'cancel' | 'retry') => {
-    await post(`/api/tasks/${taskId}/${action}`)
-    fetchTasks()
-  }, [fetchTasks, post])
+  const selected = tasks.find(t => t.id === selectedId) ?? null
+  const { logs, totalLines, loading: logsLoading } = useTaskLogs(selectedId, selected?.status)
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden bg-[#1e1e2e] p-3">
-      <section className="shrink-0 rounded-md border border-[#45475a]/70 bg-[#313244] px-3 py-3">
-        <div className="mb-2 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Mission Center</div>
-            <div className="mt-0.5 truncate text-sm font-bold text-[#cdd6f4]">
-              {scope === 'workspace' ? activeWorkspace?.name || directorLabel : 'All Workspaces'}
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <div className="grid grid-cols-2 gap-1 rounded bg-[#181825] p-1">
-              {(['workspace', 'all'] as SourceScope[]).map(value => (
-                <button
-                  key={value}
-                  onClick={() => { setScope(value); setSelectedId(null) }}
-                  className={cn(
-                    'h-7 rounded px-2 font-mono text-[11px] font-bold uppercase transition-colors',
-                    scope === value ? 'bg-[#45475a] text-[#cdd6f4]' : 'text-[#7f849c] hover:text-[#cdd6f4]'
-                  )}
-                >
-                  {value === 'workspace' ? 'Current' : 'All'}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={fetchTasks}
-              className="inline-flex h-8 items-center gap-1.5 rounded bg-[#181825] px-2 font-mono text-[11px] font-bold uppercase text-[#a6adc8] hover:bg-[#45475a]"
-            >
-              <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} /> Refresh
-            </button>
-          </div>
-        </div>
-        <div className="grid gap-2 md:grid-cols-5">
-          <MetricCard label="Loaded" value={tasks.length} sub={scope === 'workspace' ? `source ${directorLabel}` : 'all sources'} />
-          <MetricCard label="Running" value={counts.running + counts.dispatched} sub={`${counts.dispatched} dispatched`} />
-          <MetricCard label="Completed" value={counts.completed} sub={`${counts.failed} failed`} />
-          <MetricCard label="Avg Duration" value={avgDuration ? formatDuration(avgDuration) : '--'} sub={`${completedWithDuration.length} measured`} />
-          <MetricCard label="Cost" value={`$${totalCost.toFixed(4)}`} sub="loaded tasks" />
-        </div>
-      </section>
-
-      <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(0,1fr)_460px]">
-        <section className="flex min-h-0 flex-col rounded-md border border-[#45475a]/70 bg-[#313244]">
-          <div className="shrink-0 border-b border-[#45475a] px-3 py-2">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Activity className="size-4 text-[#a6e3a1]" />
-                <span className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Tasks</span>
-                <span className="font-mono text-[11px] text-[#6c7086]">{visibleTasks.length} visible</span>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {statusFilters.map(value => (
-                <button
-                  key={value}
-                  onClick={() => setFilter(value)}
-                  className={cn(
-                    'h-7 rounded px-2 font-mono text-[11px] font-bold uppercase transition-colors',
-                    filter === value ? 'bg-[#45475a] text-[#cdd6f4]' : 'bg-[#181825]/70 text-[#7f849c] hover:text-[#cdd6f4]'
-                  )}
-                >
-                  {value === 'all' ? 'All' : statusConfig[value].label}
-                  <span className="ml-1 text-[#6c7086]">{counts[value]}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-auto p-2">
-            {loading ? (
-              <div className="flex items-center justify-center gap-2 py-12 text-sm text-[#7f849c]">
-                <Loader2 className="size-4 animate-spin" /> Loading tasks...
-              </div>
-            ) : error ? (
-              <div className="flex items-center gap-2 rounded bg-[#f38ba8]/10 px-3 py-2 text-sm text-[#f38ba8]">
-                <AlertTriangle className="size-4" /> {error}
-              </div>
-            ) : visibleTasks.length === 0 ? (
-              <div className="grid place-items-center rounded bg-[#181825]/45 px-3 py-12 text-sm text-[#7f849c]">
-                {scope === 'workspace' ? 'No tasks in current workspace' : 'No tasks'}
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {visibleTasks.map(task => (
-                  <TaskRow
-                    key={task.id}
-                    task={task}
-                    selected={task.id === selectedId}
-                    onSelect={() => setSelectedId(task.id)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <TaskDetail task={selected} onAction={action => { if (selected) void handleAction(selected.id, action) }} />
+    <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div style={{ width: leftWidth }} className="shrink-0">
+        <TaskListPanel
+          tasks={tasks}
+          loading={loading}
+          error={error}
+          filter={filter}
+          setFilter={setFilter}
+          scope={scope}
+          setScope={s => { setScope(s); setSelectedId(null) }}
+          selectedId={selectedId}
+          setSelectedId={setSelectedId}
+          onRefresh={fetchTasks}
+          onBack={() => navigate('/')}
+          directorLabel={directorLabel}
+          workspaceName={activeWorkspace?.name ?? ''}
+        />
+      </div>
+      <DragHandle onDrag={handleLeftDrag} side="left" />
+      <LogsPanel
+        task={selected}
+        logs={logs}
+        totalLines={totalLines}
+        loading={logsLoading}
+      />
+      <DragHandle onDrag={handleRightDrag} side="right" />
+      <div style={{ width: rightWidth }} className="shrink-0">
+        <ResultPanel task={selected} />
       </div>
     </div>
   )
