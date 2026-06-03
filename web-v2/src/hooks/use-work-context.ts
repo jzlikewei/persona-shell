@@ -1,0 +1,62 @@
+import { useCallback, useEffect, useState } from 'react'
+import { useApi } from './use-api'
+
+export interface ProjectInfo {
+  id: string
+  name: string
+  path: string
+  source: 'process' | 'provider' | 'persona'
+}
+
+export interface WorkspaceInfo {
+  id: string
+  name: string
+  path: string
+  source: 'main' | 'memory'
+  directorLabel?: string
+  routingKey?: string
+  groupName?: string
+  sessionId?: string | null
+  sessionName?: string | null
+  alive?: boolean
+  lastActiveAt?: number
+  localSessionCount?: number
+  localMessageCount?: number
+  lastMessageAt?: string
+}
+
+export interface WorkContext {
+  projects: ProjectInfo[]
+  workspaces: WorkspaceInfo[]
+  activeProjectId?: string
+  activeWorkspaceId?: string
+}
+
+export function useWorkContext() {
+  const { get, post } = useApi()
+  const [context, setContext] = useState<WorkContext>({ projects: [], workspaces: [] })
+  const [loading, setLoading] = useState(false)
+
+  const loadContext = useCallback(async () => {
+    setLoading(true)
+    try {
+      setContext(await get<WorkContext>('/api/work-context'))
+    } catch (error) {
+      console.error('Failed to load work context:', error)
+    } finally {
+      setLoading(false)
+    }
+  }, [get])
+
+  const createWorkspace = useCallback(async (name: string) => {
+    const workspace = await post<WorkspaceInfo>('/api/workspaces', { name })
+    await loadContext()
+    return workspace
+  }, [post, loadContext])
+
+  useEffect(() => {
+    loadContext()
+  }, [loadContext])
+
+  return { context, loading, loadContext, createWorkspace }
+}

@@ -1,0 +1,941 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Persona Shell Workspace Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --base: #1e1e2e;
+      --mantle: #181825;
+      --crust: #11111b;
+      --surface0: #313244;
+      --surface1: #45475a;
+      --surface2: #585b70;
+      --overlay0: #6c7086;
+      --overlay1: #7f849c;
+      --text: #cdd6f4;
+      --subtext0: #a6adc8;
+      --subtext1: #bac2de;
+      --green: #a6e3a1;
+      --red: #f38ba8;
+      --yellow: #f9e2af;
+      --blue: #89b4fa;
+      --teal: #94e2d5;
+      --mauve: #cba6f7;
+      --peach: #fab387;
+      --lavender: #b4befe;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --font-mono: "SF Mono", Menlo, Consolas, "JetBrains Mono", monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--base);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    button, input, textarea { font: inherit; }
+
+    #app {
+      display: flex;
+      height: 100vh;
+      flex-direction: column;
+    }
+
+    #header {
+      display: flex;
+      height: 34px;
+      flex-shrink: 0;
+      align-items: center;
+      gap: 16px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--surface0);
+      background: var(--mantle);
+      font-size: 12px;
+    }
+
+    .logo {
+      color: var(--lavender);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .4px;
+    }
+
+    .hi {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      color: var(--overlay1);
+    }
+
+    .hi strong {
+      color: var(--subtext1);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      flex-shrink: 0;
+      border-radius: 50%;
+    }
+
+    .dot.green { background: var(--green); box-shadow: 0 0 6px rgba(166, 227, 161, .45); }
+    .dot.yellow { background: var(--yellow); box-shadow: 0 0 6px rgba(249, 226, 175, .35); }
+    .dot.red { background: var(--red); box-shadow: 0 0 6px rgba(243, 139, 168, .35); }
+    .dot.off { background: var(--overlay0); }
+
+    .spacer { flex: 1; }
+
+    #body {
+      display: grid;
+      flex: 1;
+      min-height: 0;
+      grid-template-columns: 292px minmax(520px, 1fr) 360px;
+    }
+
+    #workspace-sidebar {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      border-right: 1px solid var(--surface0);
+      background: var(--mantle);
+      overflow: hidden;
+    }
+
+    .sb-section {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--surface0);
+    }
+
+    .sb-title {
+      margin-bottom: 8px;
+      color: var(--overlay0);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .8px;
+      text-transform: uppercase;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 3px 0;
+      font-size: 12px;
+    }
+
+    .status-label { color: var(--overlay1); }
+    .status-value {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--subtext1);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ctx-bar-wrap {
+      height: 6px;
+      margin: 7px 0 4px;
+      overflow: hidden;
+      border-radius: 3px;
+      background: var(--surface1);
+    }
+
+    .ctx-bar-fill {
+      width: 17%;
+      height: 100%;
+      border-radius: 3px;
+      background: var(--green);
+    }
+
+    .workspace-list {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 8px;
+    }
+
+    .workspace-item {
+      display: grid;
+      grid-template-columns: 14px 1fr auto;
+      gap: 8px;
+      align-items: start;
+      margin-bottom: 4px;
+      padding: 7px 8px;
+      border-radius: var(--radius-sm);
+      cursor: default;
+      font-size: 12px;
+      transition: background .15s;
+    }
+
+    .workspace-item:hover { background: var(--surface0); }
+    .workspace-item.active { background: var(--surface1); }
+
+    .workspace-name {
+      overflow: hidden;
+      color: var(--subtext1);
+      font-weight: 650;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .workspace-path {
+      margin-top: 1px;
+      overflow: hidden;
+      color: var(--overlay1);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .workspace-meta {
+      color: var(--overlay0);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .3px;
+      text-transform: uppercase;
+    }
+
+    .badge.running { background: rgba(166, 227, 161, .15); color: var(--green); }
+    .badge.pending { background: rgba(249, 226, 175, .15); color: var(--yellow); }
+    .badge.changed { background: rgba(137, 180, 250, .15); color: var(--blue); }
+    .badge.bound { background: rgba(203, 166, 247, .15); color: var(--mauve); }
+
+    .action-btns {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .mode-switch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      padding: 3px;
+      border-radius: var(--radius-sm);
+      background: var(--surface0);
+    }
+
+    .mode-switch button {
+      height: 26px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--overlay1);
+      cursor: default;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .mode-switch button.active {
+      background: var(--surface1);
+      color: var(--text);
+    }
+
+    .scope-note {
+      margin-top: 8px;
+      overflow: hidden;
+      color: var(--overlay1);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .btn {
+      height: 26px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      color: var(--crust);
+      cursor: default;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .btn-blue { background: var(--blue); }
+    .btn-mauve { background: var(--mauve); }
+    .btn-yellow { background: var(--yellow); }
+
+    #main {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--base);
+    }
+
+    #detail-header {
+      display: flex;
+      min-height: 42px;
+      flex-shrink: 0;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--surface1);
+      background: var(--surface0);
+    }
+
+    .dh-title {
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .dh-sub {
+      overflow: hidden;
+      color: var(--overlay1);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .view-tabs {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .view-tab {
+      height: 24px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--overlay1);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      cursor: default;
+    }
+
+    .view-tab.active {
+      background: var(--surface1);
+      color: var(--text);
+    }
+
+    #chat-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 14px 16px;
+    }
+
+    .chat-msg { margin-bottom: 13px; }
+
+    .chat-msg-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    .chat-msg-role {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .5px;
+      text-transform: uppercase;
+    }
+
+    .chat-msg-role.user { color: var(--blue); }
+    .chat-msg-role.bot { color: var(--green); }
+    .chat-msg-time {
+      color: var(--overlay0);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .chat-msg-body {
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      line-height: 1.62;
+    }
+
+    .chat-msg.in .chat-msg-body {
+      border-left: 3px solid var(--blue);
+      background: rgba(137, 180, 250, .06);
+      color: var(--text);
+    }
+
+    .chat-msg.out .chat-msg-body {
+      border-left: 3px solid var(--green);
+      background: var(--surface0);
+      color: var(--subtext1);
+    }
+
+    .agent-step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 6px 0;
+      padding: 5px 8px;
+      border-radius: 5px;
+      color: var(--overlay1);
+      font-size: 12px;
+    }
+
+    .agent-step:hover { background: rgba(88, 91, 112, .25); }
+    .agent-step strong { color: var(--subtext1); }
+
+    .md-content p { margin: 5px 0; }
+    .md-content code {
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: var(--surface1);
+      color: var(--peach);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .task-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .task-card {
+      min-width: 0;
+      padding: 10px 12px;
+      border-radius: var(--radius-sm);
+      background: var(--surface0);
+    }
+
+    .task-card-title {
+      margin-bottom: 4px;
+      color: var(--overlay1);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .7px;
+      text-transform: uppercase;
+    }
+
+    .task-card-value {
+      overflow: hidden;
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #chat-input-bar {
+      display: flex;
+      flex-shrink: 0;
+      gap: 6px;
+      padding: 7px 8px;
+      border-top: 1px solid var(--surface1);
+      background: var(--mantle);
+    }
+
+    #chat-input-bar textarea {
+      min-height: 34px;
+      max-height: 120px;
+      flex: 1;
+      resize: none;
+      border: 1px solid var(--surface1);
+      border-radius: var(--radius-sm);
+      outline: 0;
+      background: var(--surface0);
+      color: var(--text);
+      padding: 7px 12px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    #chat-input-bar textarea::placeholder { color: var(--overlay0); }
+
+    .send-button {
+      width: 42px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: var(--mauve);
+      color: var(--crust);
+      font-weight: 900;
+    }
+
+    #inspector {
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      gap: 10px;
+      padding: 10px;
+      border-left: 1px solid var(--surface0);
+      background: var(--mantle);
+      overflow-y: auto;
+    }
+
+    .panel {
+      overflow: hidden;
+      border: 1px solid var(--surface0);
+      border-radius: var(--radius);
+      background: rgba(49, 50, 68, .55);
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 11px;
+      border-bottom: 1px solid rgba(88, 91, 112, .55);
+      color: var(--overlay1);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .7px;
+      text-transform: uppercase;
+    }
+
+    .panel-body { padding: 8px 10px 10px; }
+
+    .kv-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 4px 0;
+      font-size: 12px;
+    }
+
+    .kv-row .k {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--subtext0);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .kv-row .v {
+      color: var(--subtext1);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .delta-add { color: var(--green); }
+    .delta-del { color: var(--red); }
+
+    .file-row {
+      display: grid;
+      grid-template-columns: 14px 1fr auto;
+      gap: 7px;
+      align-items: center;
+      padding: 5px 0;
+      color: var(--subtext0);
+      font-size: 12px;
+    }
+
+    .file-row span:nth-child(2) {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .code-preview {
+      margin-top: 8px;
+      overflow: hidden;
+      border-radius: 6px;
+      background: var(--crust);
+      color: var(--subtext0);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      line-height: 1.55;
+    }
+
+    .code-preview div {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      border-bottom: 1px solid rgba(49, 50, 68, .55);
+    }
+
+    .code-preview div:last-child { border-bottom: 0; }
+    .code-preview b {
+      padding: 2px 7px;
+      color: var(--overlay0);
+      font-weight: 400;
+      text-align: right;
+    }
+    .code-preview span { padding: 2px 8px; }
+
+    .browser-card {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      border-radius: var(--radius);
+      background: var(--surface0);
+    }
+
+    .browser-card-top {
+      display: grid;
+      grid-template-columns: 36px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .site-icon {
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border-radius: 10px;
+      background: rgba(137, 180, 250, .12);
+      color: var(--blue);
+      font-size: 19px;
+    }
+
+    .site-title {
+      overflow: hidden;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .site-type {
+      color: var(--overlay1);
+      font-size: 11px;
+    }
+
+    .open-menu {
+      height: 26px;
+      padding: 0 9px;
+      border: 1px solid var(--surface2);
+      border-radius: 8px;
+      background: var(--mantle);
+      color: var(--subtext1);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .browser-thumb {
+      height: 92px;
+      overflow: hidden;
+      border: 1px solid rgba(88, 91, 112, .75);
+      border-radius: 8px;
+      background: var(--crust);
+      position: relative;
+    }
+
+    .browser-thumb::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(90deg, var(--mantle) 0 23%, transparent 23%),
+        linear-gradient(var(--surface0) 0 18px, transparent 18px),
+        linear-gradient(90deg, transparent 0 76%, rgba(49, 50, 68, .9) 76%);
+    }
+
+    .browser-thumb::after {
+      content: "";
+      position: absolute;
+      left: 34%;
+      top: 34px;
+      width: 42%;
+      height: 34px;
+      border-left: 3px solid var(--green);
+      border-radius: 5px;
+      background: var(--surface0);
+      box-shadow:
+        -138px -14px 0 -13px var(--green),
+        -138px 16px 0 -13px var(--yellow),
+        154px -18px 0 -12px var(--blue);
+    }
+
+    .browser-url {
+      overflow: hidden;
+      color: var(--overlay1);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 1180px) {
+      #body { grid-template-columns: 280px minmax(0, 1fr); }
+      #inspector { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header id="header">
+      <div class="logo">Persona Shell</div>
+      <div class="hi"><span class="dot green"></span><strong>Healthy</strong></div>
+      <div class="hi">Project <strong>persona-shell</strong></div>
+      <div class="hi">Workspace <strong>V2 redesign</strong></div>
+      <div class="hi">Browse <strong>Workspaces</strong></div>
+      <div class="hi">Director <strong>Alive +3</strong></div>
+      <div class="spacer"></div>
+      <div class="hi">Uptime <strong>3m 44s</strong></div>
+    </header>
+
+    <div id="body">
+      <aside id="workspace-sidebar">
+        <section class="sb-section">
+          <div class="sb-title">Activity</div>
+          <div class="status-row">
+            <span class="status-label">Active project</span>
+            <span class="status-value">persona-shell</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Active workspace</span>
+            <span class="status-value">V2 redesign</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Primary directory</span>
+            <span class="status-value">~/github/jzlikewei/persona-shell</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label">Mode</span>
+            <span class="status-value"><span class="dot green"></span> live</span>
+          </div>
+          <div class="ctx-bar-wrap"><div class="ctx-bar-fill"></div></div>
+          <div class="status-row">
+            <span class="status-label">Context</span>
+            <span class="status-value">17% / 200k</span>
+          </div>
+        </section>
+
+        <section class="sb-section">
+          <div class="sb-title">Browse Mode</div>
+          <div class="mode-switch">
+            <button>Projects</button>
+            <button class="active">Workspaces</button>
+          </div>
+          <div class="scope-note">showing workspaces inside project: persona-shell</div>
+        </section>
+
+        <section class="sb-section">
+          <div class="sb-title">Current Pair Actions</div>
+          <div class="action-btns">
+            <button class="btn btn-blue">Bind Project</button>
+            <button class="btn btn-mauve">New Workspace</button>
+            <button class="btn btn-yellow">Flush</button>
+          </div>
+        </section>
+
+        <div class="workspace-list">
+          <div class="sb-title" style="padding: 2px 4px 6px;">Workspaces</div>
+
+          <div class="workspace-item active">
+            <span class="dot green" style="margin-top: 5px;"></span>
+            <div>
+              <div class="workspace-name">V2 frontend redesign</div>
+              <div class="workspace-path">~/.persona/workspaces/v2-redesign/context.md</div>
+              <div style="margin-top: 5px;"><span class="badge running">live</span> <span class="badge pending">chat</span></div>
+            </div>
+            <div class="workspace-meta">now</div>
+          </div>
+
+          <div class="workspace-item">
+            <span class="dot yellow" style="margin-top: 5px;"></span>
+            <div>
+              <div class="workspace-name">Main director</div>
+              <div class="workspace-path">~/.persona/daily/state.md</div>
+              <div style="margin-top: 5px;"><span class="badge bound">memory</span></div>
+            </div>
+            <div class="workspace-meta">4h</div>
+          </div>
+
+          <div class="workspace-item">
+            <span class="dot off" style="margin-top: 5px;"></span>
+            <div>
+              <div class="workspace-name">Release checklist</div>
+              <div class="workspace-path">~/.persona/workspaces/release/context.md</div>
+              <div style="margin-top: 5px;"><span class="badge pending">3 tasks</span></div>
+            </div>
+            <div class="workspace-meta">1d</div>
+          </div>
+
+          <div class="workspace-item">
+            <span style="color: var(--mauve); margin-top: 1px; font-family: var(--font-mono); font-weight: 800;">+</span>
+            <div>
+              <div class="workspace-name">Create workspace</div>
+              <div class="workspace-path">new memory scope under selected project</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <main id="main">
+        <div id="detail-header">
+          <span style="color: var(--blue); font-family: var(--font-mono);"><-</span>
+          <div>
+            <div class="dh-title">Project / persona-shell  ·  Workspace / V2 frontend redesign</div>
+            <div class="dh-sub">project cwd: ~/github/jzlikewei/persona-shell  |  workspace memory: ~/.persona/workspaces/v2-redesign/context.md</div>
+          </div>
+          <div class="view-tabs">
+            <button class="view-tab active">Chat</button>
+            <button class="view-tab">Tasks</button>
+            <button class="view-tab">Files</button>
+            <button class="view-tab">Memory</button>
+          </div>
+        </div>
+
+        <div id="chat-scroll">
+          <div class="chat-msg in">
+            <div class="chat-msg-header">
+              <span class="chat-msg-role user">User</span>
+              <span class="chat-msg-time">14:22</span>
+            </div>
+            <div class="chat-msg-body">Project and Workspace are two modes in the left browser. The selected pair still drives the main context.</div>
+          </div>
+
+          <div class="task-strip">
+            <div class="task-card">
+              <div class="task-card-title">Project Directory</div>
+              <div class="task-card-value">persona-shell</div>
+            </div>
+            <div class="task-card">
+              <div class="task-card-title">Workspace Scope</div>
+              <div class="task-card-value">V2 redesign</div>
+            </div>
+            <div class="task-card">
+              <div class="task-card-title">Pair State</div>
+              <div class="task-card-value">live / 17% ctx</div>
+            </div>
+          </div>
+
+          <div class="agent-step"><span class="dot green"></span><strong>Explored</strong><span>web-v2 entry points and V1 visual system</span></div>
+          <div class="agent-step"><span class="dot green"></span><strong>Mapped</strong><span>Project to directories and Workspace to memory, sessions, tasks</span></div>
+          <div class="agent-step"><span class="dot yellow"></span><strong>Drafting</strong><span>compact project/workspace console with V1 dark tokens</span></div>
+
+          <div class="chat-msg out">
+            <div class="chat-msg-header">
+              <span class="chat-msg-role bot">Director</span>
+              <span class="chat-msg-time">14:25</span>
+            </div>
+            <div class="chat-msg-body md-content">
+              <p>The left browser switches between Projects and Workspaces. Projects mode picks the code directory. Workspaces mode picks the memory and session scope.</p>
+              <p>The main panel renders the active pair: selected Project plus selected Workspace.</p>
+            </div>
+          </div>
+
+          <div class="chat-msg out">
+            <div class="chat-msg-header">
+              <span class="chat-msg-role bot">Executor</span>
+              <span class="chat-msg-time">streaming</span>
+            </div>
+            <div class="chat-msg-body md-content">
+              <p>Next layout pass: mode switch behavior, pair-scoped task list, file preview, memory context editor.</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="chat-input-bar">
+          <textarea placeholder="Message current workspace..."></textarea>
+          <button class="send-button">-></button>
+        </div>
+      </main>
+
+      <aside id="inspector">
+        <section class="panel">
+          <div class="panel-head">
+            <span>Environment</span>
+            <span class="badge running">live</span>
+          </div>
+          <div class="panel-body">
+            <div class="kv-row"><span class="k">Project</span><span class="v">persona-shell</span></div>
+            <div class="kv-row"><span class="k">Workspace</span><span class="v">V2 redesign</span></div>
+            <div class="kv-row"><span class="k">Directory</span><span class="v">src/web-v2</span></div>
+            <div class="kv-row"><span class="k">Branch</span><span class="v">dev</span></div>
+            <div class="kv-row"><span class="k">Changes</span><span class="v"><span class="delta-add">+8,047</span> <span class="delta-del">-400</span></span></div>
+            <div class="kv-row"><span class="k">Browser</span><span class="v">127.0.0.1:5173</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <span>Project Directories</span>
+            <span>2</span>
+          </div>
+          <div class="panel-body">
+            <div class="file-row"><span class="dot green"></span><span>~/github/jzlikewei/persona-shell</span><span class="badge running">primary</span></div>
+            <div class="file-row"><span class="dot off"></span><span>~/.persona/workspaces/persona-shell</span><span class="badge bound">memory</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <span>Browser</span>
+            <span class="badge running">open</span>
+          </div>
+          <div class="panel-body">
+            <div class="browser-card">
+              <div class="browser-card-top">
+                <div class="site-icon">◎</div>
+                <div style="min-width: 0;">
+                  <div class="site-title">Persona Shell Workspace Demo</div>
+                  <div class="site-type">website preview</div>
+                </div>
+                <button class="open-menu">OPEN ▾</button>
+              </div>
+              <div class="browser-thumb"></div>
+              <div class="browser-url">file:///.../web-v2/workspace-demo.html</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <span>Project Files</span>
+            <span>active</span>
+          </div>
+          <div class="panel-body">
+            <div class="file-row"><span>*</span><span>web-v2/workspace-demo.html</span><span class="badge changed">draft</span></div>
+            <div class="file-row"><span>*</span><span>web-v2/src/layouts/root-layout.tsx</span><span class="badge pending">idea</span></div>
+            <div class="file-row"><span>*</span><span>src/console.ts</span><span class="badge pending">api</span></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <span>Sources</span>
+            <span class="v">2</span>
+          </div>
+          <div class="panel-body">
+            <div class="file-row"><span>⌁</span><span>V1 Web Console style</span><span class="badge bound">style</span></div>
+            <div class="file-row"><span>⌁</span><span>Workspace user stories</span><span class="badge pending">ia</span></div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+</body>
+</html>
