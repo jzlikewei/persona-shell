@@ -127,7 +127,14 @@ export function resolvePersonaMemoryPath(personaDir: string, scope: PersonaMemor
       return assertInside(personaDir, join(personaDir, 'memory', safeRelative(trimmedKey || 'MEMORY.md')));
     case 'workspace': {
       if (!trimmedKey) throw new Error('workspace key is required');
-      const rel = safeRelative(trimmedKey);
+      let rel = safeRelative(trimmedKey);
+      // Normalize legacy {hash}-{name} keys to {name}
+      const legacyMatch = rel.match(/^[0-9a-f]{8}-(.+)$/i);
+      if (legacyMatch) {
+        const cleanName = legacyMatch[1];
+        const cleanDir = join(personaDir, 'workspaces', cleanName);
+        if (existsSync(cleanDir)) rel = cleanName;
+      }
       const path = rel.endsWith('.md')
         ? join(personaDir, 'workspaces', rel)
         : join(personaDir, 'workspaces', rel, 'context.md');
