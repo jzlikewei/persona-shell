@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { MarkdownRenderer } from '@/components/markdown-renderer'
 import { useApi } from '@/hooks/use-api'
+import { useWebSocket } from '@/hooks/use-websocket'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
 
@@ -921,17 +922,16 @@ export function TasksPage() {
     setScope('workspace')
   }, [directorLabel])
 
-  const fetchTasks = useCallback(() => {
+  const fetchTasks = useCallback((silent = false) => {
     const params: Record<string, string> = { limit: '200' }
     if (scope === 'workspace') params.source_director = directorLabel || 'main'
-    setLoading(true)
-    setError(null)
+    if (!silent) { setLoading(true); setError(null) }
     get<Task[]>('/api/tasks', params)
       .then(list => {
         setTasks(Array.isArray(list) ? list : [])
       })
-      .catch(err => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false))
+      .catch(err => { if (!silent) setError(err instanceof Error ? err.message : String(err)) })
+      .finally(() => { if (!silent) setLoading(false) })
   }, [directorLabel, get, scope])
 
   useEffect(() => { fetchTasks() }, [fetchTasks])
@@ -940,9 +940,15 @@ export function TasksPage() {
   useEffect(() => {
     const hasActive = tasks.some(t => t.status === 'running' || t.status === 'dispatched')
     if (!hasActive) return
-    const interval = setInterval(fetchTasks, 5000)
+    const interval = setInterval(() => fetchTasks(true), 5000)
     return () => clearInterval(interval)
   }, [fetchTasks, tasks])
+
+  // instant refresh on task_callback WebSocket event
+  const { on } = useWebSocket()
+  useEffect(() => {
+    return on('task_callback', () => fetchTasks(true))
+  }, [on, fetchTasks])
 
   // auto-select first task
   const visibleTasks = useMemo(() =>
