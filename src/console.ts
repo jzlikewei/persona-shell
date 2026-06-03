@@ -5,6 +5,7 @@ import { join, resolve, extname, relative, dirname, normalize, basename } from '
 import { homedir } from 'os';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
 import type { DirectorPool } from './director-pool.js';
+import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { parseConversationLog, parseConversationLogFiles, parseSessionsFiles, parseTaskLog } from './log-parser.js';
 
 import type { SessionBridge } from './session-bridge.js';
@@ -301,10 +302,15 @@ export function startConsole(
 
     const memoryRoot = join(config.director.persona_dir, 'workspaces');
     if (existsSync(memoryRoot)) {
-      for (const name of readdirSync(memoryRoot)) {
+      const allNames = readdirSync(memoryRoot);
+      const nameSet = new Set(allNames);
+      for (const name of allNames) {
         const workspacePath = join(memoryRoot, name);
         try {
           if (!statSync(workspacePath).isDirectory()) continue;
+          // Skip legacy {hash}-{name} directories when the migrated {name} directory exists
+          const legacyMatch = name.match(/^[0-9a-f]{8}-(.+)$/i);
+          if (legacyMatch && nameSet.has(legacyMatch[1])) continue;
           const routing = {
             ...unlinkedDirectorForWorkspace(name),
             ...legacyDirectorForWorkspace(name),
@@ -1544,8 +1550,11 @@ export function startConsole(
   director.on('chunk', (text: string) => {
     if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
   });
-  director.on('tool-call', (toolName?: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: director.label, sessionId: sessionIdForDirector(director.label), toolName }));
+  director.on('turn-event', (event: AssistantTurnEvent) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'turn_event', event }));
+  });
+  director.on('tool-call', (toolName?: string, tool?: DirectorToolCall) => {
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: director.label, sessionId: sessionIdForDirector(director.label), toolName, tool }));
   });
   director.on('stream-abort', () => {
     if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: director.label, sessionId: sessionIdForDirector(director.label) }));
@@ -1578,8 +1587,11 @@ export function startConsole(
     pool.on('chunk', (label: string, text: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, sessionId: sessionIdForDirector(label), text }));
     });
-    pool.on('tool-call', (label: string, toolName?: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: label, sessionId: sessionIdForDirector(label), toolName }));
+    pool.on('turn-event', (_label: string, event: AssistantTurnEvent) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'turn_event', event }));
+    });
+    pool.on('tool-call', (label: string, toolName?: string, tool?: DirectorToolCall) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: label, sessionId: sessionIdForDirector(label), toolName, tool }));
     });
     pool.on('stream-abort', (label: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label, sessionId: sessionIdForDirector(label) }));
