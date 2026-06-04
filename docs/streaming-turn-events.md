@@ -365,11 +365,16 @@ type TurnPhase = 'thinking' | 'streaming' | 'tool_running' | null
 
 ### 超时安全阀（前端）
 
-`use-chat.ts` 中实现了一个 120 秒的事件 watchdog：每次收到 turn 事件（`turn_started` / `assistant_delta` / `tool_started` / `tool_completed`）都重置一个 120 秒定时器；若定时器到期时 `turnPhase` 仍非 `null`，强制回退到 `null` 并清除流式状态。
+`use-chat.ts` 中实现了一个 600 秒的事件 watchdog，仅对 `thinking` 和 `streaming` 阶段生效：
 
-设计动机：若 `turn_completed` / `turn_failed` / `turn_aborted` 事件因网络丢包或后端异常而丢失，前端会永远卡在 `thinking` / `streaming` / `tool_running` 状态。120 秒是保守阈值——正常 turn 不会持续这么久（流式输出 + 工具执行通常 < 60 秒），但留出余量应对长工具链。
+- `turn_started` 和 `assistant_delta` 事件重置 600 秒定时器
+- `tool_started` / `tool_completed` 事件**不启动超时**（工具执行时间不可预测，可能持续数分钟）
+- 定时器到期时 `turnPhase` 仍非 `null`，强制回退到 `null` 并清除流式状态
+- `tool_running` 阶段的崩溃由 P0 修复（`handleRuntimeClosed` 补发 `turn_failed`）兜底
 
-实现位置：`turnPhaseTimeoutRef` + `armTurnPhaseTimeout()`，在 `clearLiveTurn()` 和 session reset 时调用 `clearTurnPhaseTimeout()` 取消定时器。
+设计动机：若 `turn_completed` / `turn_failed` / `turn_aborted` 事件因网络丢包或后端异常而丢失，前端会永远卡在非 IDLE 状态。600 秒是保守阈值，留出充足余量。
+
+实现位置：`turnPhaseTimeoutRef` + `armTurnPhaseTimeout()`，在 `clearLiveTurn()` 和 session reset 时调用 `clearTurnPhaseTimeout()` 取消定时器。组件卸载时通过 cleanup effect 清理。
 
 ### P0 修复：handleRuntimeClosed 补发 turn_failed
 

@@ -474,7 +474,16 @@ export function ChatPage() {
             <MessageBlock key={message.id} message={message} onFileClick={setPreviewPath} />
           ))
         )}
-        {turnPhase && <StreamingBlock phase={turnPhase} text={streaming} tools={streamingTools} />}
+        {turnPhase
+          ? <StreamingBlock phase={turnPhase} text={streaming} tools={streamingTools} />
+          : (streaming || activity || streamingTools.length > 0) && (
+            <StreamingBlock
+              phase={streaming ? 'streaming' : 'tool_running'}
+              text={streaming}
+              tools={streamingTools}
+            />
+          )
+        }
       </div>
 
       <div

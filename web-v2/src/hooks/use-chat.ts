@@ -360,6 +360,10 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   }, [clearLiveTurn, liveEventMatches, on, updateStreaming, upsertLiveTool])
 
   useEffect(() => {
+    return () => clearTurnPhaseTimeout()
+  }, [clearTurnPhaseTimeout])
+
+  useEffect(() => {
     if (status === 'connected') loadMessages()
   }, [status, loadMessages])
 
