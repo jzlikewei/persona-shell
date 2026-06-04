@@ -2770,10 +2770,15 @@ export function startConsole(
             }
 
             try {
-              // Route to pool Director if specified
-              if (body.director && body.director !== 'main' && pool) {
-                let poolEntry = pool.getPoolStatus().find((e) => e.label === body.director);
-                let entry = poolEntry ? pool.get(poolEntry.routingKey) : undefined;
+              // Resolve target workspace: prefer director (compat), fallback workspace
+              const targetName = (body.director && body.director !== 'main')
+                ? body.director
+                : (body.workspace && body.workspace !== 'main')
+                  ? body.workspace
+                  : undefined;
+
+              if (targetName && pool) {
+                let entry = pool.resolveWorkspace(targetName);
 
                 // Auto-create pool Director for web workspace
                 if (!entry && body.workspace) {
@@ -2793,17 +2798,17 @@ export function startConsole(
 
                 if (entry) {
                   await pool.send(entry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
-                  writeAuditEntry('director.send', true, { target: body.director, bytes: Buffer.byteLength(body.text, 'utf-8') });
+                  writeAuditEntry('director.send', true, { target: targetName, bytes: Buffer.byteLength(body.text, 'utf-8') });
                   return Response.json({ ok: true, message: 'sent to pool director', label: entry.bridge.label });
                 }
-                writeAuditEntry('director.send', false, { target: body.director, reason: 'pool director not found' });
-                return Response.json({ ok: false, message: `Pool director "${body.director}" not found` }, { status: 404 });
+                writeAuditEntry('director.send', false, { target: targetName, reason: 'pool director not found' });
+                return Response.json({ ok: false, message: `Workspace "${targetName}" not found` }, { status: 404 });
               }
               await director.send(body.text);
               writeAuditEntry('director.send', true, { target: 'main', bytes: Buffer.byteLength(body.text, 'utf-8') });
               return Response.json({ ok: true, message: 'sent' });
             } catch (err) {
-              writeAuditEntry('director.send', false, { target: body.director ?? 'main', error: String(err) });
+              writeAuditEntry('director.send', false, { target: body.workspace ?? body.director ?? 'main', error: String(err) });
               return Response.json({ ok: false, message: String(err) }, { status: 500 });
             }
           }

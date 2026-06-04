@@ -145,6 +145,22 @@ export class DirectorPool extends EventEmitter {
     return undefined;
   }
 
+  /** Resolve a pool Director by workspace name (or label as fallback).
+   *  This is the single entry point for workspace → Director resolution.
+   *  Priority: groupName exact → groupName sanitized → web-workspace derived key → label exact */
+  resolveWorkspace(name: string): PoolEntry | undefined {
+    for (const entry of this.entries.values()) {
+      if (entry.groupName === name) return entry;
+    }
+    const safe = name.replace(/[\/\\:*?"<>|]/g, '_');
+    for (const entry of this.entries.values()) {
+      if (entry.groupName.replace(/[\/\\:*?"<>|]/g, '_') === safe) return entry;
+    }
+    const derived = this.entries.get(`web-workspace:${name}`);
+    if (derived) return derived;
+    return this.findByLabel(name);
+  }
+
   private requireByLabel(label: string): PoolEntry {
     const entry = this.findByLabel(label);
     if (!entry) throw new Error(`Director label not found: ${label}`);

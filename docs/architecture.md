@@ -1,22 +1,174 @@
 # 技术架构
 
+## 领域模型
+
+```
+Workspace（持久容器，name 唯一 key）
+  ├─ defaultSessionId          ← 飞书入口的路由 fallback
+  └─ 1:N Session（路由单元，sessionId 是路由标识）
+                ├─ archived: boolean
+                └─ 1:1 Agent（运行时实例）
+                      ├─ role: string
+                      ├─ context
+                      └─ cwd: string
+
+────────────────────── 领域层 / 基础设施层 ──────────────────────
+
+MessageChannel（基础设施层）
+  ├─ WebUI      — 总是接收所有回复
+  └─ IM（飞书）  — 按需转发
+       ↕ MessagingRouter（转发决策）
+```
+
+### Workspace（工作空间）
+
+一个具体的项目或长期追踪的事项。`name` 是唯一 key。
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| name | `string` | 唯一标识。如 `"main"`、`"p.sh维修"`、`"日报助手"` |
+| contextFile | `string` | 持久化上下文：`workspaces/{name}/context.md` |
+| config | `{ cwd?, agent? }` | 工作目录、默认 agent |
+| sessions | `Session[]` | 该 workspace 下的所有 session（含归档） |
+| defaultSessionId | `string` | 飞书入口使用的默认 session |
+
+Workspace 是 Session 的聚合根，Session 的创建、归档、查询都通过 Workspace 操作。
+
+**来源**：
+- `main`：系统内置
+- 飞书群聊：群名作为 workspace name，首条消息时自动创建
+- Web Console：用户手动创建，或发消息时自动创建
+
+**持久化**：
+
+| 字段 | 存储 |
+|------|------|
+| name | SQLite `workspaces` 表 PK |
+| default_session_id | SQLite `workspaces` 表 |
+| cwd, agent | SQLite `workspaces` 表 |
+| contextFile | 文件系统 `workspaces/{name}/context.md` |
+
+### Session（对话实例）
+
+Workspace 下的一次具体会话。Session 和 Agent 同生同灭。**sessionId 是消息路由标识**。
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| sessionId | `string` | 路由标识，由 Claude/Codex 分配 |
+| workspace | `string` | 所属 workspace name |
+| archived | `boolean` | 归档后 UI 不可见，数据不删除 |
+| agent | `Agent` | 绑定的运行时实例 |
+
+同一 Workspace 可以有多个活跃 Session（不同 agent 同时处理不同任务）。
+
+**生命周期事件**：
+
+| 操作 | 结果 |
+|------|------|
+| 首条消息到达 workspace | 创建 Session + Agent，设为 default |
+| FLUSH | 旧 Session 保留，新建 Session + Agent，更新 default |
+| 切换 Agent | 旧 Session 保留，新建 Session + 新 Agent，更新 default |
+| 切换 Role | 旧 Session 保留，新建 Session + 新 Agent（新 role），更新 default |
+| 归档 | 停止 Agent，Session 标记 archived |
+
+**持久化**：
+
+| 字段 | 存储 |
+|------|------|
+| session_id | SQLite `sessions` 表 PK |
+| workspace | SQLite `sessions` 表 FK |
+| archived | SQLite `sessions` 表 |
+| role, cwd | SQLite `sessions` 表（Agent 快照） |
+
+### Agent（运行时实例）
+
+> 代码中现命名为 Director / SessionBridge，领域概念上是 Agent。
+
+Session 绑定的 AI 运行时。不是持久实体——Session 创建时 Agent 启动，Session 结束时 Agent 销毁。Agent 不感知消息来源。
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| role | `string` | 当前角色（director / philosopher 等） |
+| context | | 对话上下文（历史、system prompt 等） |
+| cwd | `string` | 工作目录 |
+
+### 消息路由
+
+```
+消息到达
+  │
+  ├─ Web（必须携带 sessionId）
+  │     → 直接路由到 Session → Agent 处理
+  │
+  └─ 飞书（携带群名 / 私聊）
+        → 群名映射到 workspace
+        → workspace.defaultSessionId
+        → Session → Agent 处理
+```
+
+Web 端发消息必须带 sessionId。如果是新 workspace 还没有 session，前端先调 `POST /api/sessions` 创建。
+
+### 回复路由
+
+Agent 和 Session 不感知消息来源。回复路由由基础设施层（MessageChannel + MessagingRouter）处理：
+
+- 总是推送到 WebUI
+- 如果上次消息来源是 IM → 同时转发到 IM
+
+### 后台任务回调
+
+Task 完成后回调路由：
+- 先找原 sessionId 对应的 Session
+- 如果该 Session 已归档 → 回到 workspace 的 default session
+
+### Cron 调度
+
+Cron job 使用所属 workspace 的 default session 执行。
+
+### MessageChannel（消息通道）
+
+消息的 UI 展示层，属于基础设施层，不属于领域模型。
+
+| Channel | 说明 |
+|---------|------|
+| WebUI | Web Console，总是接收所有回复 |
+| IM（飞书） | 飞书私聊/群聊，按需转发 |
+
+**MessagingRouter**：负责把 Agent 的回复转发到正确的 Channel。
+
+### 标识符归属
+
+| 标识符 | 归属实体 | 说明 |
+|--------|---------|------|
+| workspace name | Workspace | 唯一 key，对外 |
+| sessionId | Session | 消息路由标识，对外 |
+
 ## 系统概览
 
 Persona Shell 是一个 TypeScript (Bun) 进程，负责：
 - 接收 IM 消息（飞书 WebSocket / Web Console）
-- 路由到对应的 Director 实例
-- 管理 Director 进程的生命周期（启动、通信、FLUSH、容灾）
+- 路由到对应的 Session / Agent
+- 管理 Agent 进程的生命周期（启动、通信、FLUSH、容灾）
 - 派发子角色任务、调度 Cron
 
 Shell 本身不做 AI 推理，所有智能由底层 agent（Claude Code / Codex）提供。
 
+### 运行时组件
+
 ```
-通讯层                     路由层 (index.ts)              Director 层
-─────────                 ─────────────────             ──────────────
-FeishuClient        ─┐                               ┌─ SessionBridge (主)
-WebMessagingClient   ├→  MessagingRouter  ─→  分流  ──┤
-                    ─┘                               ├─ DirectorPool → SessionBridge (群1, 群2...)
-                                                     └─ One-shot (大群, 无状态)
+WorkspaceRegistry          — workspace CRUD + default session 管理
+SessionManager             — Session/Agent 生命周期 + 消息发送
+  entries: Map<sessionId, SessionEntry>
+MessagingRouter            — 回复转发到 Channel（WebUI / IM）
+```
+
+消息流：
+```
+消息到达
+  → WorkspaceRegistry.resolve(workspaceName) → sessionId（飞书路径）
+  → SessionManager.send(sessionId, text)
+  → Agent 处理 → 回复
+  → MessagingRouter 转发到 Channel
 ```
 
 ## 通讯层
@@ -41,30 +193,25 @@ interface MessagingClient {
 
 `IncomingMessage` 使用平台无关字段：`text`、`messageId`、`chatId`、`chatType`、`threadId`（通用子对话）、`quotedText`、`senderOpenId`、`attachments`。不暴露飞书特有概念。
 
-### MessagingRouter
-
-多渠道路由器，所有 client 的入站消息汇入同一个 handler。Director 回复时按 `messageId` 查 origin 路由到正确的 client。`sendMessage`（主动通知）默认走 primary client。新增渠道只需实现 `MessagingClient` + `router.addClient()`。
-
-支持流式回复的渠道可以实现 `startStreamingReply()`：路由层在消息入队时创建句柄，`SessionBridge` 的 `chunk` 事件持续 append，`response` 事件用完整文本 final。飞书实现使用 `interactive` 卡片创建 Thinking 消息，再通过 `PATCH /open-apis/im/v1/messages/{message_id}` 节流更新同一张卡片，最终切到 Done 卡片。
-
 ### 引用消息
 
-通讯层只提取引用原文（`quotedText`），不做截断。路由层根据目标模式决定截断策略：Director/Pool 截断到 `quote_max_length`（原文已在上下文中），One-shot 不截断。
+通讯层只提取引用原文（`quotedText`），不做截断。路由层根据目标模式决定截断策略。
 
-## 消息路由
+## 消息入口路由
 
 ```
 消息到达
   │
-  ├─ 私聊 ──────────────────────────→ 主 Director（长驻 daemon）
+  ├─ 飞书私聊 → main workspace → default session
   │
-  └─ 群聊
-       ├─ 单人群（user_count ≤ 1）──→ DirectorPool（免 @mention）
-       ├─ 大群（> threshold）───────→ One-shot（无状态）
-       └─ 小群（≤ threshold）───────→ DirectorPool（需 @mention）
+  ├─ 飞书群聊
+  │     ├─ 大群（> threshold）→ One-shot（无状态，不创建 session）
+  │     └─ 小群（≤ threshold）→ workspace(群名) → default session
+  │
+  └─ Web Console → sessionId 直达（必须指定）
 ```
 
-## Director 三层架构
+## Agent 三层架构
 
 ```
 SessionBridge (session-bridge.ts)
@@ -169,40 +316,137 @@ kimi --print \
 
 完整的 CLI 参数链和会话恢复机制见 [agent-backends.md](agent-backends.md)。
 
-## Workspace 与 Session
+## 领域模型
 
 ```
-Workspace 1:N Session
+Workspace（持久容器，name 唯一 key）
+  ├─ defaultSessionId
+  └─ 1:N Session（路由单元，sessionId 是路由标识）
+                ├─ archived: boolean
+                └─ 1:1 Agent（运行时实例）
+                      ├─ role: string
+                      ├─ context
+                      └─ cwd: string
+
+────────────────────── 领域层 / 基础设施层 ──────────────────────
+
+MessageChannel（基础设施层）
+  ├─ WebUI      — 总是接收所有回复
+  └─ IM（飞书）  — 按需转发
+       ↕ MessagingRouter（转发决策）
 ```
 
-**Workspace**（工作空间）是长期存在的工作单元，拥有：
-- 一个主上下文文件（`workspaces/{name}/context.md`），记录 Knowledge / State
-- 一个确定的项目目录（`project_dir`），作为 Director 进程的工作目录
+### Workspace（工作空间）
 
-**Session** 是 workspace 下的对话实例。一个 workspace 可以有多个并行的 session（如不同 agent 同时处理不同任务）。Session 代表一段连续的 AI 对话上下文，FLUSH 后产生新 session。
+一个具体的项目或长期追踪的事项。`name` 是唯一 key。
 
-群聊 / Web Console 的对话入口映射到 workspace；workspace 内的 Director 进程持有当前 session。主 Director 对应名为 `main` 的 workspace。
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| name | `string` | 唯一标识。如 `"main"`、`"p.sh维修"`、`"日报助手"` |
+| contextFile | `string` | 持久化上下文：`workspaces/{name}/context.md` |
+| config | `{ cwd?, agent? }` | 工作目录、默认 agent |
+| sessions | `Session[]` | 该 workspace 下的所有 session（含归档） |
+| defaultSessionId | `string` | 默认路由的 session |
 
-## DirectorPool
+Workspace 是 Session 的聚合根，Session 的创建、归档、查询都通过 Workspace 操作。
 
-管理多个非主 Director 实例的生命周期：
+**来源**：
+- `main`：系统内置
+- 飞书群聊：群名作为 workspace name，首条消息时自动创建
+- Web Console：用户手动创建，或发消息时自动创建
+
+### Session（对话实例）
+
+Workspace 下的一次具体会话。Session 和 Agent 同生同灭。**sessionId 是消息路由标识**。
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| sessionId | `string` | 路由标识，由 Claude/Codex 分配 |
+| workspace | `string` | 所属 workspace name |
+| archived | `boolean` | 归档后 UI 不可见，数据不删除 |
+| agent | `Agent` | 绑定的运行时实例 |
+
+同一 Workspace 可以有多个活跃 Session（不同 agent 同时处理不同任务）。
+
+**生命周期事件**：
+
+| 操作 | 结果 |
+|------|------|
+| 首条消息到达 workspace | 创建 Session + Agent，设为 default |
+| FLUSH | 旧 Session 保留，新建 Session + Agent，更新 default |
+| 切换 Agent | 旧 Session 保留，新建 Session + 新 Agent，更新 default |
+| 切换 Role | 旧 Session 保留，新建 Session + 新 Agent（新 role），更新 default |
+| 归档 | 停止 Agent，Session 标记 archived |
+
+### Agent（运行时实例）
+
+> 代码中现命名为 Director / SessionBridge，领域概念上是 Agent。
+
+Session 绑定的 AI 运行时。不是持久实体——Session 创建时 Agent 启动，Session 结束时 Agent 销毁。Agent 不感知消息来源。
+
+| 属性 | 类型 | 说明 |
+|------|------|------|
+| role | `string` | 当前角色（director / philosopher 等） |
+| context | | 对话上下文（历史、system prompt 等） |
+| cwd | `string` | 工作目录 |
+
+### 消息路由
 
 ```
-DirectorPool
-  ├── entries: Map<routingKey, PoolEntry>   # 活跃实例（按 chat_id 路由）
-  ├── closedEntries: Map<routingKey, ...>   # 已退出的 session（UI 可查看历史）
-  ├── creating: Map<routingKey, Promise>    # 竞态锁
+消息到达
   │
-  ├── getOrCreate(key, name)               # 有则复用，无则创建
-  ├── reapIdle()                           # 每分钟检查，≤3 个不回收
-  ├── evictLRU()                           # 满时淘汰最久未活跃的
-  ├── restoreEntries()                     # 重启后从 SQLite 恢复
-  └── killUnknownOrphans()                 # 清理孤儿进程
+  ├─ 携带 sessionId → 直接路由到 Session → Agent 处理
+  │
+  └─ 携带 workspace name（飞书群名映射 / Web 未选 session）
+        → workspace.defaultSessionId → Session → Agent 处理
 ```
 
-Pool entries 持久化到 SQLite（key: `pool:entries` / `pool:closed`），Shell 重启后自动恢复并 reconnect 存活的 Claude daemon 进程。
+### 回复路由
 
-DirectorPool 继承 EventEmitter，将池内 Director 的 `chunk` / `stream-abort` 事件 re-emit 到 pool 级别（附带 label），供 Web Console 统一订阅。
+Agent 和 Session 不感知消息来源。回复路由由基础设施层处理：
+
+- 总是推送到 WebUI
+- 如果上次消息来源是 IM → 同时转发到 IM
+
+### MessageChannel（消息通道）
+
+消息的 UI 展示层，属于基础设施层，不属于领域模型。
+
+| Channel | 说明 |
+|---------|------|
+| WebUI | Web Console，总是接收所有回复 |
+| IM（飞书） | 飞书私聊/群聊，按需转发 |
+
+**MessagingRouter**：负责把 Agent 的回复转发到正确的 Channel。
+
+### 标识符归属
+
+| 标识符 | 归属实体 | 说明 |
+|--------|---------|------|
+| workspace name | Workspace | 唯一 key，对外 |
+| sessionId | Session | 消息路由标识，对外 |
+
+## DirectorPool → SessionManager
+
+> 代码中现为 DirectorPool，目标重构为 SessionManager。
+
+管理活跃 Session/Agent 实例的生命周期：
+
+```
+SessionManager
+  ├── entries: Map<sessionId, SessionEntry>   # 活跃实例
+  ├── creating: Map<sessionId, Promise>       # 竞态锁
+  │
+  ├── send(sessionId, text)                   # 消息发送
+  ├── createSession(workspace, opts)          # 创建 Session + Agent
+  ├── archiveSession(sessionId)               # 归档 Session + 停止 Agent
+  ├── flush(sessionId)                        # FLUSH → 新 Session
+  ├── restoreEntries()                        # 重启后从 SQLite 恢复
+  ├── reapIdle()                              # 空闲回收
+  └── evictLRU()                              # 容量淘汰
+```
+
+entries 持久化到 SQLite，Shell 重启后恢复。
 
 ## FLUSH 机制
 
@@ -225,50 +469,53 @@ DirectorPool 继承 EventEmitter，将池内 Director 的 `chunk` / `stream-abor
 ## 后台任务
 
 ```
-Director ──MCP create_task──→ Shell (task-runner)
-                                │
-                    spawn agent process (Claude -p / Codex exec)
-                                │
-                    产出写入 outbox/YYYY-MM-DD/
-                                │
-                    回调给发起方 Director
+Agent ──MCP create_task──→ Shell (task-runner)
+                               │
+                   spawn agent process (Claude -p / Codex exec)
+                               │
+                   产出写入 outbox/YYYY-MM-DD/
+                               │
+                   回调：先找原 sessionId，已归档则回到 workspace default session
 ```
 
-- 任务通过 MCP Server（`task-mcp-server.ts`）暴露给 Director
+- 任务通过 MCP Server（`task-mcp-server.ts`）暴露给 Agent
 - `task-runner.ts` 管理进程 spawn、超时（默认 30 分钟）、重试
 - `task-store.ts` 使用 SQLite 持久化任务状态和 Cron 定义
-- `scheduler.ts` 轮询 Cron jobs，按时触发
+- `scheduler.ts` 轮询 Cron jobs，使用 workspace 的 default session 执行
 
 ## 进程容灾
 
 ```
 Shell 崩溃时：
-  Claude Director (detached)  → 还活着，通过 named pipe 等待重连
-  Codex Director              → 无常驻进程，无影响
+  Claude Agent (detached)     → 还活着，通过 named pipe 等待重连
+  Codex Agent                 → 无常驻进程，无影响
   子角色任务 (detached, -p)    → 还活着，结果写 outbox/
 
 Shell 重启：
-  → DirectorPool.restoreEntries()：从 SQLite 恢复 pool entries
-  → Claude Director：重新 open named pipe 连接存活进程
-  → 如果 Director 也崩了：spawn 新 Director，读 state.md 恢复
-  → killUnknownOrphans()：清理孤儿进程
+  → SessionManager.restoreEntries()：从 SQLite 恢复活跃 session
+  → Claude Agent：重新 open named pipe 连接存活进程
+  → 如果 Agent 也崩了：spawn 新 Agent，读 context.md 恢复
 ```
 
 ## Web Console
 
 `localhost:3000`，通过 WebSocket 推送两类数据：
 
-**状态快照（每秒）**：系统状态 + DirectorPool 状态（activity / alive / queueLength）
+**状态快照（每秒）**：系统状态 + 各 session 状态
 
 **流式 chunk（实时）**：
 ```jsonc
-{ "type": "chunk", "director": "main", "text": "增量文本" }
-{ "type": "stream-abort", "director": "2da0f077" }
+{ "type": "chunk", "sessionId": "xxx", "text": "增量文本" }
+{ "type": "stream-abort", "sessionId": "xxx" }
 ```
 
 前端渲染 streaming bubble，`stream-abort` 时清除并重新加载完整消息。
 
-API 路由支持 `?director={label}` 参数查看 pool Director 的会话历史。
+**API**：
+- `POST /api/send { sessionId, text }` — 发消息（sessionId 必填）
+- `POST /api/sessions { workspace }` — 创建 session
+- `GET /api/sessions?workspace={name}` — 查询 workspace 下的 session 列表
+- `GET /api/messages?sessionId={id}` — 查询某 session 的消息历史
 
 ## 技术栈
 
@@ -279,10 +526,10 @@ API 路由支持 `?director={label}` 参数查看 pool Director 的会话历史�
 | Shell 进程 | TypeScript (Bun) |
 | 通讯层 | MessagingClient 接口 + MessagingRouter |
 | 飞书接入 | Lark SDK，WebSocket 长连接 |
-| Director 编排 | SessionBridge → Adapter → Runtime 三层 |
-| 多实例管理 | DirectorPool，SQLite 持久化 |
+| Workspace 管理 | WorkspaceRegistry |
+| Session/Agent 编排 | SessionManager（原 DirectorPool）→ SessionBridge → Adapter → Runtime 三层 |
 | 后台任务 | task-runner + task-store (SQLite)，MCP 派发 |
 | Cron | scheduler + task-store (SQLite) |
-| Web 控制台 | Express + WebSocket |
+| Web 控制台 | Bun.serve + WebSocket |
 | 记忆 | Markdown 文件，git 管理 |
-| 状态持久化 | SQLite（pool / tasks / cron） |
+| 状态持久化 | SQLite（workspaces / sessions / tasks / cron） |
