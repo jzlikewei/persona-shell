@@ -103,7 +103,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     turnPhaseTimeoutRef.current = setTimeout(() => {
       setTurnPhase(null)
       turnPhaseTimeoutRef.current = undefined
-    }, 120_000)
+    }, 600_000)
   }, [clearTurnPhaseTimeout])
 
   const updateStreaming = useCallback((value: string | ((prev: string) => string)) => {
@@ -244,7 +244,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         if (event.type === 'tool_started' || event.type === 'tool_completed') {
           if (event.tool) upsertLiveTool(event.tool)
           setTurnPhase('tool_running')
-          armTurnPhaseTimeout()
+          clearTurnPhaseTimeout()
           return
         }
 
