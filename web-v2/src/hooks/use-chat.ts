@@ -15,6 +15,7 @@ export interface ChatMessage {
   director?: string
   tools?: ChatToolCall[]
   attachments?: string[]
+  model?: string
 }
 
 export type TurnPhase = 'thinking' | 'streaming' | 'tool_running' | null
@@ -25,6 +26,7 @@ interface ApiConversationMessage {
   sessionId?: string
   timestamp?: number
   tools?: ChatToolCall[]
+  model?: string
 }
 
 interface AssistantTurnEvent {
@@ -63,6 +65,7 @@ function mapMessage(message: ApiConversationMessage, index: number): ChatMessage
     timestamp,
     sessionId: message.sessionId,
     tools: message.tools,
+    model: message.model,
   }
 }
 

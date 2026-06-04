@@ -195,6 +195,9 @@ function MessageBlock({
             {isUser ? 'User' : message.director || 'Director'}
           </span>
           <span className="font-mono text-[10px] text-[#6c7086]">{formatTime(message.timestamp)}</span>
+          {!isUser && message.model && (
+            <span className="font-mono text-[10px] text-[#585b70]">{message.model}</span>
+          )}
         </div>
         <div className={cn(
           'rounded-md px-3 py-2 text-sm leading-relaxed',
