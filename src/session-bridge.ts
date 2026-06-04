@@ -1570,6 +1570,11 @@ export class SessionBridge extends EventEmitter {
     // turns (checkpoint → terminate → restart → bootstrap) and clearing here
     // would race with the restart that adds new pending turns.
     if (!this.flushing) {
+      for (const pending of this.pendingTurns) {
+        if (this.isVisibleTurn(pending)) {
+          this.emitTurnEvent(pending, { type: 'turn_failed', error: 'Director 进程意外退出' });
+        }
+      }
       this.pendingTurns = [];
       this.systemReplyQueue = [];
       this.partialSystemReplyText = null;

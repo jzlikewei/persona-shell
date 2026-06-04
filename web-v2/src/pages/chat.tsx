@@ -217,16 +217,18 @@ function MessageBlock({
   )
 }
 
-function StreamingBlock({ text, activity, tools }: { text: string; activity?: string | null; tools?: ChatToolCall[] }) {
+function StreamingBlock({ phase, text, tools }: { phase: 'thinking' | 'streaming' | 'tool_running'; text: string; tools?: ChatToolCall[] }) {
+  const statusLabel = phase === 'thinking' ? 'thinking' : phase === 'streaming' ? 'streaming' : 'working'
+  const lastRunningTool = tools?.filter(t => t.status === 'running').slice(-1)[0]
   return (
     <article className="mb-3 flex justify-start">
       <div className="flex max-w-[min(76%,780px)] flex-col items-start">
         <div className="mb-1 flex items-center gap-2">
           <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Director</span>
-          <span className="font-mono text-[10px] text-[#6c7086]">{text ? 'streaming' : 'working'}</span>
+          <span className="font-mono text-[10px] text-[#6c7086]">{statusLabel}</span>
         </div>
         <div className="w-fit rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
-          {text ? (
+          {phase === 'streaming' && text ? (
             <>
               <MarkdownContent content={text} />
               <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-[#a6e3a1]" />
@@ -234,7 +236,8 @@ function StreamingBlock({ text, activity, tools }: { text: string; activity?: st
           ) : (
             <div className="flex items-center gap-2 font-mono text-xs text-[#a6adc8]">
               <Loader2 className="size-3.5 animate-spin text-[#89b4fa]" />
-              <span>running {activity ?? 'tool'}</span>
+              {phase === 'thinking' && <span>思考中…</span>}
+              {phase === 'tool_running' && <span>执行 {lastRunningTool?.name ?? 'tool'}…</span>}
             </div>
           )}
         </div>
@@ -338,7 +341,7 @@ export function ChatPage() {
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, activity, loading, sending, sendMessage } = useChat(directorLabel, activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage } = useChat(directorLabel, activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
@@ -464,14 +467,14 @@ export function ChatPage() {
             <Loader2 className="size-4 animate-spin" />
             Loading session history...
           </div>
-        ) : filteredMessages.length === 0 && !streaming && !activity ? (
+        ) : filteredMessages.length === 0 && !streaming && !activity && !turnPhase ? (
           <EmptyConversation />
         ) : (
           filteredMessages.map(message => (
             <MessageBlock key={message.id} message={message} onFileClick={setPreviewPath} />
           ))
         )}
-        {(streaming || activity || streamingTools.length > 0) && <StreamingBlock text={streaming} activity={activity} tools={streamingTools} />}
+        {turnPhase && <StreamingBlock phase={turnPhase} text={streaming} tools={streamingTools} />}
       </div>
 
       <div

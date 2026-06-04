@@ -17,6 +17,8 @@ export interface ChatMessage {
   attachments?: string[]
 }
 
+export type TurnPhase = 'thinking' | 'streaming' | 'tool_running' | null
+
 interface ApiConversationMessage {
   direction: 'in' | 'out'
   content: string
@@ -69,6 +71,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   const [streaming, setStreaming] = useState('')
   const [streamingTools, setStreamingTools] = useState<ChatToolCall[]>([])
   const [activity, setActivity] = useState<string | null>(null)
+  const [turnPhase, setTurnPhase] = useState<TurnPhase>(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const { get, post } = useApi()
@@ -86,6 +89,22 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   liveSessionRef.current = liveSession
 
   const streamTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const turnPhaseTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  const clearTurnPhaseTimeout = useCallback(() => {
+    if (turnPhaseTimeoutRef.current) {
+      clearTimeout(turnPhaseTimeoutRef.current)
+      turnPhaseTimeoutRef.current = undefined
+    }
+  }, [])
+
+  const armTurnPhaseTimeout = useCallback(() => {
+    clearTurnPhaseTimeout()
+    turnPhaseTimeoutRef.current = setTimeout(() => {
+      setTurnPhase(null)
+      turnPhaseTimeoutRef.current = undefined
+    }, 120_000)
+  }, [clearTurnPhaseTimeout])
 
   const updateStreaming = useCallback((value: string | ((prev: string) => string)) => {
     setStreaming(prev => {
@@ -160,7 +179,9 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     setStreamingTools([])
     updateStreaming('')
     setActivity(null)
-  }, [updateStreaming])
+    setTurnPhase(null)
+    clearTurnPhaseTimeout()
+  }, [updateStreaming, clearTurnPhaseTimeout])
 
   const sendMessage = useCallback(async (content: string) => {
     if (!usingTurnEventsRef.current) flushStreaming()
@@ -200,6 +221,8 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
           setStreamingTools([])
           updateStreaming('')
           setActivity(null)
+          setTurnPhase('thinking')
+          armTurnPhaseTimeout()
           return
         }
 
@@ -213,11 +236,15 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
 
         if (event.type === 'assistant_delta') {
           updateStreaming(prev => prev + (event.text ?? ''))
+          setTurnPhase('streaming')
+          armTurnPhaseTimeout()
           return
         }
 
         if (event.type === 'tool_started' || event.type === 'tool_completed') {
           if (event.tool) upsertLiveTool(event.tool)
+          setTurnPhase('tool_running')
+          armTurnPhaseTimeout()
           return
         }
 
@@ -340,12 +367,14 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     setMessages([])
     updateStreaming('')
     setActivity(null)
+    setTurnPhase(null)
+    clearTurnPhaseTimeout()
     liveToolsRef.current = []
     setStreamingTools([])
     liveTurnIdRef.current = null
     usingTurnEventsRef.current = false
     if (status === 'connected') loadMessages()
-  }, [director, sessionId, status, loadMessages, updateStreaming])
+  }, [director, sessionId, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
 
-  return { messages, streaming, streamingTools, activity, loading, sending, sendMessage, loadMessages }
+  return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages }
 }
