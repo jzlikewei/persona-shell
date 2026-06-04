@@ -1,6 +1,8 @@
 import { loadConfig, resolveAgentProvider, defaultConfigPath, type Config } from './config.js';
 import { SessionBridge } from './session-bridge.js';
 import { DirectorPool } from './director-pool.js';
+import { SessionManager } from './session-manager.js';
+import { WorkspaceRegistry } from './workspace-registry.js';
 import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
 import type { IncomingMessage, StreamingReplyHandle, CardAction } from './messaging/messaging.js';
@@ -262,6 +264,13 @@ async function main() {
 
   // DirectorPool for multi-group chat support
   const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, configPath);
+
+  // New domain components (transition: wrapping DirectorPool)
+  const workspaceRegistry = new WorkspaceRegistry();
+  const sessionManager = new SessionManager(pool, workspaceRegistry);
+
+  // Register main workspace
+  workspaceRegistry.getOrCreate('main');
 
   messaging.onCardAction?.(async (action: CardAction) => {
     if (action.action !== streamCancelAction) return;
@@ -1197,6 +1206,12 @@ async function main() {
         const groupName = msg.groupName ?? chatId.slice(0, 8);
         const directorAgentName = pool.getDirectorAgentName(routingKey);
         const entry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        // Register workspace + session mapping for new domain model
+        workspaceRegistry.getOrCreate(groupName);
+        const sessionId = entry.bridge.getStatus().sessionId;
+        if (sessionId) {
+          sessionManager.registerSession(sessionId, routingKey, groupName, entry);
+        }
         await pool.send(routingKey, directorText, messageId);
         console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
       } catch (err) {
