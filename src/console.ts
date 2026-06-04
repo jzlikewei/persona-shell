@@ -12,7 +12,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, listSessionsFromDb, setSessionNameInDb } from './task/task-store.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
 import { getLogDir } from './logger.js';
 import { resolveCronMessage } from './prompt-loader.js';
@@ -103,11 +103,15 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
     };
   }
 
+  // Try matching as pool director label
   const entry = pool?.getPoolStatus().find((item) => item.label === requested);
   const active = entry ? pool?.get(entry.routingKey) : undefined;
+
   if (active) {
-    const inputLogs = listDirectorLogs(active.bridge.label, 'input');
-    const outputLogs = listDirectorLogs(active.bridge.label, 'output');
+    // Use workspace name path (new), plus old label path for compat
+    const wsName = active.bridge.workspaceName;
+    const inputLogs = deduplicateLogs(listDirectorLogs(wsName, 'input'), listDirectorLogs(active.bridge.label, 'input'));
+    const outputLogs = deduplicateLogs(listDirectorLogs(wsName, 'output'), listDirectorLogs(active.bridge.label, 'output'));
     return {
       label: active.bridge.label,
       inputLogs: inputLogs.length ? inputLogs : [active.bridge.inputLogPath],
@@ -115,12 +119,30 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
     };
   }
 
+  // Closed/unknown director: try workspace name path + old label path
   const closedLabel = entry?.label ?? requested;
-  return {
-    label: closedLabel,
-    inputLogs: listDirectorLogs(closedLabel, 'input'),
-    outputLogs: listDirectorLogs(closedLabel, 'output'),
-  };
+  const groupName = entry?.groupName;
+  const inputLogs = groupName
+    ? deduplicateLogs(listDirectorLogs(groupName, 'input'), listDirectorLogs(closedLabel, 'input'))
+    : listDirectorLogs(closedLabel, 'input');
+  const outputLogs = groupName
+    ? deduplicateLogs(listDirectorLogs(groupName, 'output'), listDirectorLogs(closedLabel, 'output'))
+    : listDirectorLogs(closedLabel, 'output');
+  return { label: closedLabel, inputLogs, outputLogs };
+}
+
+/** Merge log file lists from new (workspace name) and old (label) paths, deduplicating by basename. */
+function deduplicateLogs(primary: string[], secondary: string[]): string[] {
+  if (secondary.length === 0) return primary;
+  const seen = new Set(primary.map((p) => basename(p)));
+  const merged = [...primary];
+  for (const s of secondary) {
+    if (!seen.has(basename(s))) {
+      merged.push(s);
+      seen.add(basename(s));
+    }
+  }
+  return merged.sort();
 }
 
 /** Metrics collector interface — implemented in index.ts */
@@ -278,13 +300,13 @@ export function startConsole(
       sessionName: null,
       alive: false,
     });
-    const localHistoryForWorkspace = (directorLabel?: string): Partial<ConsoleWorkspace> => {
-      if (!directorLabel) return {};
-      const sessions = parseSessionsFiles(listDirectorLogs(directorLabel, 'output'));
+    const localHistoryForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
+      const stats = getWorkspaceSessionStats(workspaceName);
+      if (stats.sessionCount === 0) return {};
       return {
-        localSessionCount: sessions.length,
-        localMessageCount: sessions.reduce((sum, session) => sum + session.messageCount, 0),
-        lastMessageAt: sessions[0]?.lastMessageAt,
+        localSessionCount: stats.sessionCount,
+        localMessageCount: stats.messageCount,
+        lastMessageAt: stats.lastMessageAt ?? undefined,
       };
     };
 
@@ -317,6 +339,7 @@ export function startConsole(
             ...directorForWorkspace(name),
           };
           const wsConfig = getWorkspaceConfig(name);
+          const wsName = routing.groupName ?? name;
           workspaces.push({
             id: `memory-${name}`,
             name,
@@ -325,7 +348,7 @@ export function startConsole(
             cwd: wsConfig?.cwd,
             agent: wsConfig?.agent,
             ...routing,
-            ...localHistoryForWorkspace(routing.directorLabel),
+            ...localHistoryForWorkspace(wsName),
           });
         } catch {
           // Best effort for UI context.
@@ -3025,34 +3048,73 @@ export function startConsole(
             const limit = Number(url.searchParams.get('limit') ?? 100);
             const sessionId = url.searchParams.get('sessionId') ?? undefined;
             const directorLabel = url.searchParams.get('director') ?? undefined;
-            const target = resolveDirectorLogTarget(directorLabel, director, pool);
+            const workspace = url.searchParams.get('workspace') ?? undefined;
+            // Resolve director label from workspace name if provided
+            let effectiveLabel = directorLabel;
+            if (!effectiveLabel && workspace && workspace !== 'main') {
+              const match = pool?.getPoolStatus().find((e) => {
+                const safeName = e.groupName.replace(/[\/\\:*?"<>|]/g, '_');
+                return workspace === safeName || workspace === e.groupName;
+              });
+              effectiveLabel = match?.label;
+            }
+            const target = resolveDirectorLogTarget(effectiveLabel, director, pool);
             return Response.json(parseConversationLogFiles(target.inputLogs, target.outputLogs, limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
             const directorLabel = url.searchParams.get('director') ?? undefined;
-            const target = resolveDirectorLogTarget(directorLabel, director, pool);
-            const sessions = parseSessionsFiles(target.outputLogs);
-            // Inject sessionName from persisted mapping + live Director status
-            const nameMap = getState<Record<string, string>>('session:names') ?? {};
-            for (const s of sessions) {
-              if (!s.sessionName && nameMap[s.sessionId]) {
-                s.sessionName = nameMap[s.sessionId];
-              }
+            const workspace = url.searchParams.get('workspace') ?? undefined;
+
+            // Resolve workspace name: direct param, or derive from director label
+            let wsName: string;
+            if (workspace) {
+              wsName = workspace;
+            } else if (!directorLabel || directorLabel === 'main') {
+              wsName = 'main';
+            } else {
+              const poolEntry = pool?.getPoolStatus().find((e) => e.label === directorLabel);
+              wsName = poolEntry?.groupName ?? directorLabel;
             }
-            const poolEntry = target.label === 'main'
+
+            const dbRows = listSessionsFromDb(wsName);
+            const sessions = dbRows.map((r) => ({
+              sessionId: r.session_id,
+              sessionName: r.session_name ?? undefined,
+              alive: r.alive === 1,
+              messageCount: r.message_count,
+              firstMessageAt: r.first_message_at ?? undefined,
+              lastMessageAt: r.last_message_at ?? undefined,
+            }));
+
+            // Fallback: if DB is empty, parse logs (for pre-migration data)
+            if (sessions.length === 0) {
+              const target = resolveDirectorLogTarget(directorLabel, director, pool);
+              const parsed = parseSessionsFiles(target.outputLogs);
+              const nameMap = getState<Record<string, string>>('session:names') ?? {};
+              for (const s of parsed) {
+                if (!s.sessionName && nameMap[s.sessionId]) {
+                  s.sessionName = nameMap[s.sessionId];
+                }
+              }
+              return Response.json(parsed);
+            }
+
+            // Merge live director status for current session
+            const resolvedLabel = directorLabel ?? 'main';
+            const poolEntry = resolvedLabel === 'main'
               ? undefined
-              : pool?.getPoolStatus().find((e) => e.label === target.label);
+              : pool?.getPoolStatus().find((e) => e.label === resolvedLabel);
             const activePoolEntry = poolEntry ? pool?.get(poolEntry.routingKey) : undefined;
-            const ds = target.label === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
-            if (ds?.sessionId && ds.sessionName) {
+            const ds = resolvedLabel === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
+            if (ds?.sessionId) {
               const live = sessions.find(s => s.sessionId === ds.sessionId);
               if (live) {
-                live.sessionName = ds.sessionName;
+                if (ds.sessionName) live.sessionName = ds.sessionName;
                 live.alive = true;
               } else {
                 sessions.unshift({
                   sessionId: ds.sessionId,
-                  sessionName: ds.sessionName,
+                  sessionName: ds.sessionName ?? undefined,
                   alive: true,
                   messageCount: 0,
                   firstMessageAt: undefined,
@@ -3073,6 +3135,7 @@ export function startConsole(
             if (rawName) nameMap[sessionId] = rawName;
             else delete nameMap[sessionId];
             setState('session:names', nameMap);
+            try { setSessionNameInDb(sessionId, rawName || null); } catch { /* best-effort */ }
 
             const directorLabel = typeof body.director === 'string' && body.director.trim() ? body.director.trim() : 'main';
             let targetDirector = director;

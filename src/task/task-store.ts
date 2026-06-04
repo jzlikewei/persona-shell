@@ -104,6 +104,20 @@ CREATE TABLE IF NOT EXISTS state (
   value TEXT
 )`;
 
+const CREATE_SESSIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id       TEXT PRIMARY KEY,
+  workspace        TEXT NOT NULL,
+  session_name     TEXT,
+  message_count    INTEGER NOT NULL DEFAULT 0,
+  first_message_at TEXT,
+  last_message_at  TEXT,
+  alive            INTEGER NOT NULL DEFAULT 0
+)`;
+
+const CREATE_SESSIONS_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace)`;
+
 const CREATE_CRON_JOBS_TABLE = `
 CREATE TABLE IF NOT EXISTS cron_jobs (
   id          TEXT PRIMARY KEY,
@@ -168,6 +182,8 @@ function openDb(): Database {
   db.run('PRAGMA journal_mode = WAL');
   db.run(CREATE_TABLE);
   db.run(CREATE_STATE_TABLE);
+  db.run(CREATE_SESSIONS_TABLE);
+  db.run(CREATE_SESSIONS_INDEX);
   db.run(CREATE_CRON_JOBS_TABLE);
   // Schema 迁移
   migrateCronJobsTable(db);
@@ -564,4 +580,101 @@ export function toggleCronJob(id: string): CronJob | null {
   const lastRunAt = enabled && isDailySchedule(job.schedule) ? now : job.last_run_at;
   getDb().run('UPDATE cron_jobs SET enabled = ?, last_run_at = ?, updated_at = ? WHERE id = ?', [enabled ? 1 : 0, lastRunAt, now, id]);
   return getCronJob(id);
+}
+
+// --- Sessions CRUD ---
+
+export interface SessionRow {
+  session_id: string;
+  workspace: string;
+  session_name: string | null;
+  message_count: number;
+  first_message_at: string | null;
+  last_message_at: string | null;
+  alive: number;
+}
+
+export interface SessionPatch {
+  messageCountDelta?: number;
+  sessionName?: string | null;
+  firstMessageAt?: string;
+  lastMessageAt?: string;
+}
+
+export function upsertSession(workspace: string, sessionId: string, patch: SessionPatch): void {
+  const now = localNow();
+  const firstAt = patch.firstMessageAt ?? now;
+  const lastAt = patch.lastMessageAt ?? now;
+  const delta = patch.messageCountDelta ?? 0;
+  getDb().run(
+    `INSERT INTO sessions (session_id, workspace, session_name, message_count, first_message_at, last_message_at, alive)
+     VALUES (?, ?, ?, ?, ?, ?, 1)
+     ON CONFLICT(session_id) DO UPDATE SET
+       message_count = message_count + ?,
+       last_message_at = ?,
+       alive = 1`,
+    [sessionId, workspace, patch.sessionName ?? null, delta, firstAt, lastAt, delta, lastAt],
+  );
+}
+
+export function markSessionAlive(sessionId: string, alive: boolean): void {
+  getDb().run('UPDATE sessions SET alive = ? WHERE session_id = ?', [alive ? 1 : 0, sessionId]);
+}
+
+export function setSessionNameInDb(sessionId: string, name: string | null): void {
+  getDb().run('UPDATE sessions SET session_name = ? WHERE session_id = ?', [name, sessionId]);
+}
+
+export function listSessionsFromDb(workspace: string): SessionRow[] {
+  return getDb().query(
+    'SELECT * FROM sessions WHERE workspace = ? ORDER BY last_message_at DESC',
+  ).all(workspace) as SessionRow[];
+}
+
+export interface WorkspaceSessionStats {
+  sessionCount: number;
+  messageCount: number;
+  lastMessageAt: string | null;
+}
+
+export function getWorkspaceSessionStats(workspace: string): WorkspaceSessionStats {
+  const row = getDb().query(
+    `SELECT COUNT(*) AS sessionCount,
+            COALESCE(SUM(message_count), 0) AS messageCount,
+            MAX(last_message_at) AS lastMessageAt
+     FROM sessions WHERE workspace = ?`,
+  ).get(workspace) as { sessionCount: number; messageCount: number; lastMessageAt: string | null } | null;
+  return {
+    sessionCount: Number(row?.sessionCount ?? 0),
+    messageCount: Number(row?.messageCount ?? 0),
+    lastMessageAt: row?.lastMessageAt ?? null,
+  };
+}
+
+export interface ImportedSession {
+  sessionId: string;
+  sessionName?: string;
+  messageCount: number;
+  firstMessageAt?: string;
+  lastMessageAt?: string;
+}
+
+export function importSessionsFromLogs(workspace: string, sessions: ImportedSession[]): void {
+  if (sessions.length === 0) return;
+  const d = getDb();
+  const stmt = d.prepare(
+    `INSERT OR IGNORE INTO sessions (session_id, workspace, session_name, message_count, first_message_at, last_message_at, alive)
+     VALUES (?, ?, ?, ?, ?, ?, 0)`,
+  );
+  const tx = d.transaction(() => {
+    for (const s of sessions) {
+      stmt.run(s.sessionId, workspace, s.sessionName ?? null, s.messageCount, s.firstMessageAt ?? null, s.lastMessageAt ?? null);
+    }
+  });
+  tx();
+}
+
+export function deleteSessionsByWorkspace(workspace: string): number {
+  const result = getDb().run('DELETE FROM sessions WHERE workspace = ?', [workspace]);
+  return result.changes;
 }

@@ -7,6 +7,7 @@ import type { DirectorRuntimeStatus } from './index.js';
 export interface KimiSpawnOptions {
   role: string;
   personaDir: string;
+  projectDir?: string;
   agent: import('../persona-process.js').AgentRuntimeConfig;
   mcpConfigPath?: string;
   sessionId?: string;
@@ -24,6 +25,7 @@ export class KimiDirectorRuntime {
     const { child } = spawnPersona({
       role: options.role,
       personaDir: options.personaDir,
+      projectDir: options.projectDir,
       agent: options.agent,
       mode: 'foreground',
       mcpConfigPath: options.mcpConfigPath,

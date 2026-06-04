@@ -17,6 +17,7 @@ export class KimiSessionAdapter implements DirectorSessionAdapter {
     const pid = this.runtime.spawn({
       role: this.options.personaRole ?? 'director',
       personaDir: this.options.config.persona_dir,
+      projectDir: this.options.directorAgent.cwd,
       agent: this.options.directorAgent,
       mcpConfigPath: join(this.options.config.persona_dir, '.mcp.json'),
       sessionId: restored.sessionId ?? undefined,

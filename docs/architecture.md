@@ -169,6 +169,20 @@ kimi --print \
 
 完整的 CLI 参数链和会话恢复机制见 [agent-backends.md](agent-backends.md)。
 
+## Workspace 与 Session
+
+```
+Workspace 1:N Session
+```
+
+**Workspace**（工作空间）是长期存在的工作单元，拥有：
+- 一个主上下文文件（`workspaces/{name}/context.md`），记录 Knowledge / State
+- 一个确定的项目目录（`project_dir`），作为 Director 进程的工作目录
+
+**Session** 是 workspace 下的对话实例。一个 workspace 可以有多个并行的 session（如不同 agent 同时处理不同任务）。Session 代表一段连续的 AI 对话上下文，FLUSH 后产生新 session。
+
+群聊 / Web Console 的对话入口映射到 workspace；workspace 内的 Director 进程持有当前 session。主 Director 对应名为 `main` 的 workspace。
+
 ## DirectorPool
 
 管理多个非主 Director 实例的生命周期：

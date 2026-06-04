@@ -26,6 +26,7 @@ export interface ClaudeProcessPaths {
 export interface ClaudeSpawnOptions {
   role: string;
   personaDir: string;
+  projectDir?: string;
   agents: Config['agents'];
   mcpConfigPath?: string;
   sessionId?: string;
@@ -96,6 +97,7 @@ export class ClaudeProcess {
     const { child } = spawnPersona({
       role: opts.role,
       personaDir: opts.personaDir,
+      projectDir: opts.projectDir,
       agent: claudeAgent,
       mode: 'foreground',
       mcpConfigPath: opts.mcpConfigPath,

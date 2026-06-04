@@ -71,7 +71,7 @@ export function useSessions(director?: string) {
     requestSeq.current = seq
     setLoading(true)
     try {
-      const params = directorKey === 'main' ? undefined : { director: directorKey }
+      const params = directorKey === 'main' ? undefined : { workspace: directorKey }
       const data = await get<ApiSession[]>('/api/sessions', params)
       if (seq !== requestSeq.current) return
       const mapped = data.map(session => {

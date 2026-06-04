@@ -111,6 +111,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
 
   private spawnProcess(savedSession: string | null): void {
     const personaDir = this.options.config.persona_dir;
+    const effectiveCwd = this.options.directorAgent.cwd ?? personaDir;
     if (savedSession) {
       console.log(`[bridge:${this.options.label}] Resuming session: ${savedSession}`);
     } else {
@@ -123,6 +124,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
     const pid = this.runtime.spawn({
       role: this.options.personaRole ?? 'director',
       personaDir,
+      projectDir: effectiveCwd !== personaDir ? effectiveCwd : undefined,
       agents: this.options.agents,
       mcpConfigPath: join(personaDir, '.mcp.json'),
       sessionId: savedSession ?? undefined,

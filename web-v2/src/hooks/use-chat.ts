@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useApi } from './use-api'
-import { ACTIVE_SESSION_EVENT, storageKeyForDirector } from './use-sessions'
 import { useWebSocket } from './use-websocket'
 import { mergeChatToolCall, type ChatToolCall } from './chat-tools'
 import { uuid } from '@/lib/utils'
@@ -104,10 +103,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     const eventSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : undefined
     const selectedSessionId = sessionIdRef.current
     if (selectedSessionId && eventSessionId && eventSessionId !== selectedSessionId) {
-      const eventDirector = (data.director as string | undefined) || directorRef.current || 'main'
-      localStorage.setItem(storageKeyForDirector(eventDirector), eventSessionId)
-      window.dispatchEvent(new CustomEvent(ACTIVE_SESSION_EVENT, { detail: { director: eventDirector, id: eventSessionId } }))
-      return true
+      return false
     }
     if (selectedSessionId && !eventSessionId && !liveSessionRef.current) return false
     return true
@@ -119,7 +115,8 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     setLoading(true)
     try {
       const params: Record<string, string> = { limit: '100' }
-      if (director) params.director = director
+      const ws = workspace || director
+      if (ws) params.workspace = ws
       if (sessionId) params.sessionId = sessionId
       const data = await get<ApiConversationMessage[]>('/api/messages', params)
       if (seq === requestSeq.current) setMessages(data.map(mapMessage).reverse())
@@ -181,8 +178,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     try {
       await post('/api/send', {
         text: content,
-        director: director || undefined,
-        workspace: workspace || undefined,
+        workspace: workspace || director || undefined,
       })
     } catch (e) {
       console.error('Failed to send message:', e)
