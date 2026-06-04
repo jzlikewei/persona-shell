@@ -69,7 +69,7 @@ function mapMessage(message: ApiConversationMessage, index: number): ChatMessage
   }
 }
 
-export function useChat(director?: string, sessionId?: string, liveSession = false, workspace?: string) {
+export function useChat(sessionId?: string, liveSession = false, workspace?: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState('')
   const [streamingTools, setStreamingTools] = useState<ChatToolCall[]>([])
@@ -79,7 +79,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   const [sending, setSending] = useState(false)
   const { get, post } = useApi()
   const { on, status } = useWebSocket()
-  const directorRef = useRef(director)
   const sessionIdRef = useRef(sessionId)
   const liveSessionRef = useRef(liveSession)
   const requestSeq = useRef(0)
@@ -87,7 +86,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   const liveToolsRef = useRef<ChatToolCall[]>([])
   const liveTurnIdRef = useRef<string | null>(null)
   const usingTurnEventsRef = useRef(false)
-  directorRef.current = director
   sessionIdRef.current = sessionId
   liveSessionRef.current = liveSession
 
@@ -119,9 +117,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   }, [])
 
   const liveEventMatches = useCallback((data: Record<string, unknown>) => {
-    const eventDirector = data.director as string | undefined
-    if (directorRef.current && eventDirector && eventDirector !== directorRef.current) return false
-
     const eventSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : undefined
     const selectedSessionId = sessionIdRef.current
     if (selectedSessionId && eventSessionId && eventSessionId !== selectedSessionId) {
@@ -137,8 +132,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     setLoading(true)
     try {
       const params: Record<string, string> = { limit: '100' }
-      const ws = workspace || director
-      if (ws) params.workspace = ws
+      if (workspace) params.workspace = workspace
       if (sessionId) params.sessionId = sessionId
       const data = await get<ApiConversationMessage[]>('/api/messages', params)
       if (seq === requestSeq.current) setMessages(data.map(mapMessage).reverse())
@@ -147,7 +141,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [get, director, sessionId])
+  }, [get, sessionId, workspace])
 
   const flushStreaming = useCallback(() => {
     const text = streamingRef.current
@@ -163,7 +157,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         role: 'assistant' as const,
         content: text,
         timestamp: new Date().toISOString(),
-        director: directorRef.current,
         sessionId: sessionIdRef.current,
       }]
     })
@@ -193,7 +186,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
-      director,
       sessionId,
     }
     setMessages(prev => [...prev, userMsg])
@@ -202,14 +194,15 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     try {
       await post('/api/send', {
         text: content,
-        workspace: workspace || director || undefined,
+        sessionId: sessionId || undefined,
+        workspace: workspace || undefined,
       })
     } catch (e) {
       console.error('Failed to send message:', e)
     } finally {
       setSending(false)
     }
-  }, [post, director, sessionId, workspace, flushStreaming])
+  }, [post, sessionId, workspace, flushStreaming])
 
   useEffect(() => {
     const unsubs = [
@@ -314,7 +307,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       on('chat_reply', (data) => {
         if (usingTurnEventsRef.current) return
         if (!liveEventMatches(data)) return
-        const replyDirector = data.director as string | undefined
         const replySessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : sessionIdRef.current
         const text = data.text as string || ''
         const liveTools = liveToolsRef.current
@@ -323,7 +315,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
           role: 'assistant',
           content: text,
           timestamp: new Date().toISOString(),
-          director: replyDirector,
           sessionId: replySessionId,
           tools: liveTools.length ? liveTools : undefined,
           attachments: data.attachments as string[] | undefined,
@@ -341,7 +332,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       }),
       on('chat_input', (data) => {
         if (!liveEventMatches(data)) return
-        const inputDirector = data.director as string | undefined
         const inputSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : sessionIdRef.current
         const text = data.text as string || ''
         const msg: ChatMessage = {
@@ -349,7 +339,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
           role: 'user',
           content: text,
           timestamp: typeof data.timestamp === 'string' ? data.timestamp : new Date().toISOString(),
-          director: inputDirector,
           sessionId: inputSessionId,
         }
         setMessages(prev => {
@@ -381,7 +370,7 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     liveTurnIdRef.current = null
     usingTurnEventsRef.current = false
     if (status === 'connected') loadMessages()
-  }, [director, sessionId, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
+  }, [sessionId, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
 
   return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages }
 }

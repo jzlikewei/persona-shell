@@ -13,6 +13,8 @@ import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
 import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, listSessionsFromDb, setSessionNameInDb } from './task/task-store.js';
+import type { SessionManager } from './session-manager.js';
+import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
 import { getLogDir } from './logger.js';
 import { resolveCronMessage } from './prompt-loader.js';
@@ -167,6 +169,8 @@ export function startConsole(
   messaging?: MessagingClient,
   metrics?: MetricsCollector,
   pool?: DirectorPool,
+  sessionManager?: SessionManager,
+  workspaceRegistry?: WorkspaceRegistry,
 ): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
@@ -2744,7 +2748,7 @@ export function startConsole(
 
           // POST /api/send — send arbitrary text to Director (bypass messaging)
           if (url.pathname === '/api/send' && req.method === 'POST') {
-            const body = await req.json() as { text: string; director?: string; workspace?: string };
+            const body = await req.json() as { text: string; sessionId?: string; director?: string; workspace?: string };
             if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
 
             // Intercept /shell-restart commands
@@ -2770,7 +2774,19 @@ export function startConsole(
             }
 
             try {
-              // Resolve target workspace: prefer director (compat), fallback workspace
+              // New path: route by sessionId (preferred)
+              if (body.sessionId && sessionManager) {
+                const session = sessionManager.getSession(body.sessionId);
+                if (session) {
+                  await sessionManager.send(body.sessionId, body.text, `web-${randomUUID()}`, { webOnly: true });
+                  writeAuditEntry('director.send', true, { target: body.sessionId, bytes: Buffer.byteLength(body.text, 'utf-8') });
+                  return Response.json({ ok: true, message: 'sent to session', sessionId: body.sessionId });
+                }
+                writeAuditEntry('director.send', false, { target: body.sessionId, reason: 'session not found' });
+                return Response.json({ ok: false, message: `Session "${body.sessionId}" not found` }, { status: 404 });
+              }
+
+              // Legacy path: resolve by director/workspace name
               const targetName = (body.director && body.director !== 'main')
                 ? body.director
                 : (body.workspace && body.workspace !== 'main')
@@ -3583,6 +3599,31 @@ export function startConsole(
             return Response.json({ ok: true, id });
           }
           // Web session API routes
+          // New: POST /api/sessions — create session via SessionManager
+          if (url.pathname === '/api/sessions' && req.method === 'POST') {
+            if (!sessionManager || !pool) return Response.json({ error: 'Session manager not available' }, { status: 503 });
+            try {
+              const body = await req.json() as { workspace: string; agent?: string; cwd?: string };
+              if (!body.workspace) {
+                return Response.json({ ok: false, error: 'workspace is required' }, { status: 400 });
+              }
+              const wsName = sanitizeWorkspaceName(body.workspace);
+              if (!wsName) {
+                return Response.json({ ok: false, error: 'invalid workspace name' }, { status: 400 });
+              }
+              const entry = await sessionManager.getOrCreateForWorkspace(wsName, {
+                feishuChatId: 'web-console',
+                directorAgentName: body.agent,
+              });
+              writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
+              return Response.json({ ok: true, sessionId: entry.sessionId, workspace: wsName });
+            } catch (err) {
+              writeAuditEntry('session.create', false, { error: String(err) });
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+
+          // Legacy: POST /api/web-sessions
           if (url.pathname === '/api/web-sessions' && req.method === 'POST') {
             if (!pool) return Response.json({ error: 'Pool not available' }, { status: 503 });
             try {

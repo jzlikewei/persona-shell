@@ -558,7 +558,7 @@ async function main() {
 
 
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
-  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, pool);
+  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, pool, sessionManager, workspaceRegistry);
   messaging.addClient(webClient);
 
   // 7.4: Scheduler — interval-driven cron job automation

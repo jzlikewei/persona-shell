@@ -344,7 +344,7 @@ export function ChatPage() {
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage } = useChat(directorLabel, activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
