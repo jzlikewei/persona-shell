@@ -931,7 +931,7 @@ async function main() {
       let poolEntry = getTargetEntry();
       if (routingKey && !poolEntry) {
         // Director not active — spin it up first so we can flush
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>| -]/g, '_').trim() || chatId.slice(0, 8);
+        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
         const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
         poolEntry = await sessionManager.getPool().getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
@@ -998,7 +998,7 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
 
       if (routingKey && chatType === 'group') {
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>| -]/g, '_').trim() || chatId.slice(0, 8);
+        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
         const currentAgent = sessionManager.getDirectorAgentName(routingKey)
           ?? sessionManager.get(routingKey)?.bridge.getDirectorAgentName()
           ?? config.agents.defaults.director
@@ -1102,7 +1102,7 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       let label = 'main';
       if (routingKey && chatType === 'group') {
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>| -]/g, '_').trim() || chatId.slice(0, 8);
+        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
         const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
         const poolEntry = await sessionManager.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
@@ -1216,7 +1216,7 @@ async function main() {
     if (routingKey) {
       // 小群/话题群 → DirectorPool
       try {
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>| -]/g, '_').trim() || chatId.slice(0, 8);
+        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
         const directorAgentName = sessionManager.getDirectorAgentName(routingKey);
         const entry = await sessionManager.getPool().getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
         // Register workspace + session mapping for new domain model
