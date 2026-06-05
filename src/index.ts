@@ -1163,6 +1163,10 @@ async function main() {
       console.warn('[shell] Failed to add reaction:', err);
     });
 
+    // Track message channel for reply routing
+    const messageChannel = msg.chatId === 'web-console' ? 'web' as const : 'im' as const;
+    messaging.trackMessageChannel(messageId, messageChannel);
+
     /** Format quoted text as blockquote prefix.
      *  @param maxLen — truncate to this length (0 = no truncation, for stateless one-shot) */
     const formatQuote = (raw: string, maxLen: number): string => {

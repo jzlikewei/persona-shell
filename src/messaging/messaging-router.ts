@@ -2,9 +2,17 @@ import type { MessagingClient, MessageHandler, IncomingMessage, StreamingReplyHa
 
 const MAX_ORIGIN_ENTRIES = 10_000;
 
+export type MessageChannel = 'web' | 'im';
+
 /**
  * 多渠道路由器 — 包装多个 MessagingClient，按 messageId 路由回复到正确渠道。
  * 自身实现 MessagingClient 接口，对上层透明。
+ *
+ * 回复策略：
+ * - 总是推送到 WebUI（通过事件系统，不经过 MessagingRouter）
+ * - 如果消息来源是 IM → 同时转发到 IM client
+ *
+ * Agent/Session 不直接调用 MessagingRouter，由基础设施层（wireEvents / console.ts）负责。
  */
 export class MessagingRouter implements MessagingClient {
   private primary: MessagingClient;
@@ -12,6 +20,7 @@ export class MessagingRouter implements MessagingClient {
   private handler: MessageHandler | null = null;
   private cardActionHandlers: CardActionHandler[] = [];
   private messageOrigin = new Map<string, MessagingClient>();
+  private messageChannel = new Map<string, MessageChannel>();
 
   constructor(primary: MessagingClient) {
     this.primary = primary;
@@ -21,17 +30,27 @@ export class MessagingRouter implements MessagingClient {
   addClient(client: MessagingClient): void {
     this.clients.push(client);
     client.onMessage((msg) => {
-      // Track origin for reply routing
       this.messageOrigin.set(msg.messageId, client);
       if (this.messageOrigin.size > MAX_ORIGIN_ENTRIES) {
         const first = this.messageOrigin.keys().next().value as string;
         this.messageOrigin.delete(first);
+        this.messageChannel.delete(first);
       }
       this.handler?.(msg);
     });
     for (const handler of this.cardActionHandlers) {
       client.onCardAction?.(handler);
     }
+  }
+
+  /** Track which channel a message came from (for reply routing decisions) */
+  trackMessageChannel(messageId: string, channel: MessageChannel): void {
+    this.messageChannel.set(messageId, channel);
+  }
+
+  /** Get the channel a message originated from */
+  getMessageChannel(messageId: string): MessageChannel | undefined {
+    return this.messageChannel.get(messageId);
   }
 
   start(): void {

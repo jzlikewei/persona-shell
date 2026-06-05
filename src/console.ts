@@ -1565,7 +1565,7 @@ export function startConsole(
     }
   }
 
-  function sessionIdForDirector(label: string): string | null {
+  function resolveSessionId(label: string): string | null {
     if (label === director.label || label === 'main') return director.getStatus().sessionId;
     const entry = sessionManager?.getPoolStatus().find((item) => item.label === label);
     if (!entry) return null;
@@ -1573,36 +1573,35 @@ export function startConsole(
   }
 
   director.on('chunk', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', sessionId: resolveSessionId(director.label), text }));
   });
   director.on('turn-event', (event: AssistantTurnEvent) => {
     if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'turn_event', event }));
   });
   director.on('tool-call', (toolName?: string, tool?: DirectorToolCall) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: director.label, sessionId: sessionIdForDirector(director.label), toolName, tool }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', sessionId: resolveSessionId(director.label), toolName, tool }));
   });
   director.on('stream-abort', () => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: director.label, sessionId: sessionIdForDirector(director.label) }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', sessionId: resolveSessionId(director.label) }));
   });
   director.on('input-message', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', director: director.label, sessionId: sessionIdForDirector(director.label), text, timestamp: new Date().toISOString() }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', sessionId: resolveSessionId(director.label), text, timestamp: new Date().toISOString() }));
   });
   director.on('system-chunk', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', sessionId: resolveSessionId(director.label), text }));
   });
   director.on('system-response', (text: string, messageId: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', director: director.label, sessionId: sessionIdForDirector(director.label), messageId, text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId(director.label), messageId, text }));
   });
   director.on('response', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', director: director.label, sessionId: sessionIdForDirector(director.label), messageId: null, text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId(director.label), messageId: null, text }));
   });
   director.on('web-alert', (message: string) => {
     if (clients.size === 0) return;
     const taskCallback = message.startsWith('✅ 后台任务') || message.startsWith('❌ 后台任务');
     broadcastWs(JSON.stringify({
       type: taskCallback ? 'task_callback' : 'chat_reply',
-      director: director.label,
-      sessionId: sessionIdForDirector(director.label),
+      sessionId: resolveSessionId(director.label),
       messageId: null,
       text: taskCallback ? message : '⚠️ ' + message,
     }));
@@ -1610,30 +1609,28 @@ export function startConsole(
 
   if (sessionManager) {
     sessionManager.on('chunk', (label: string, text: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, sessionId: sessionIdForDirector(label), text }));
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', sessionId: resolveSessionId(label), text }));
     });
     sessionManager.on('turn-event', (_label: string, event: AssistantTurnEvent) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'turn_event', event }));
     });
     sessionManager.on('tool-call', (label: string, toolName?: string, tool?: DirectorToolCall) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: label, sessionId: sessionIdForDirector(label), toolName, tool }));
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', sessionId: resolveSessionId(label), toolName, tool }));
     });
     sessionManager.on('stream-abort', (label: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label, sessionId: sessionIdForDirector(label) }));
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', sessionId: resolveSessionId(label) }));
     });
     sessionManager.on('input-message', (label: string, text: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', director: label, sessionId: sessionIdForDirector(label), text, timestamp: new Date().toISOString() }));
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', sessionId: resolveSessionId(label), text, timestamp: new Date().toISOString() }));
     });
-    // Web session reply/alert routing
     sessionManager.on('web-reply', (label: string, messageId: string, text: string) => {
-      broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, sessionId: sessionIdForDirector(label), messageId, text }));
+      broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId(label), messageId, text }));
     });
     sessionManager.on('web-alert', (label: string, message: string) => {
       const taskCallback = message.startsWith('✅ 后台任务') || message.startsWith('❌ 后台任务');
       broadcastWs(JSON.stringify({
         type: taskCallback ? 'task_callback' : 'chat_reply',
-        director: label,
-        sessionId: sessionIdForDirector(label),
+        sessionId: resolveSessionId(label),
         messageId: null,
         text: taskCallback ? message : '⚠️ ' + message,
       }));
@@ -2763,7 +2760,7 @@ export function startConsole(
                   message: `Shell 重启已拒绝：当前有 ${runningTasks.length} 个后台任务仍在运行：${listed}${overflow}。请使用 /shell-restart --force 强制重启。`,
                 });
               }
-              broadcastWs(JSON.stringify({ type: 'chat_reply', director: 'main', messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
+              broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId('main'), messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
               writeAuditEntry('shell.restart', true, { source: 'web', force: isForce });
               if (sessionManager) await sessionManager.detachAll();
               await director.shutdown();
