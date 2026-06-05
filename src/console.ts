@@ -2786,38 +2786,36 @@ export function startConsole(
                 return Response.json({ ok: false, message: `Session "${body.sessionId}" not found` }, { status: 404 });
               }
 
-              // Legacy path: resolve by director/workspace name
+              // Legacy path: resolve by director/workspace name → SessionManager
               const targetName = (body.director && body.director !== 'main')
                 ? body.director
                 : (body.workspace && body.workspace !== 'main')
                   ? body.workspace
                   : undefined;
 
-              if (targetName && pool) {
-                let entry = pool.resolveWorkspace(targetName);
+              if (targetName && sessionManager && pool) {
+                let sessionEntry = sessionManager.getPool().resolveWorkspace(targetName);
 
-                // Auto-create pool Director for web workspace
-                if (!entry && body.workspace) {
+                if (!sessionEntry && body.workspace) {
                   const wsName = sanitizeWorkspaceName(body.workspace);
                   if (wsName) {
-                    const routingKey = `web-workspace:${wsName}`;
-                    const wsConfig = getWorkspaceConfig(wsName);
-                    entry = await pool.getOrCreate(routingKey, {
-                      groupName: wsName,
+                    const result = await sessionManager.getOrCreateForWorkspace(wsName, {
                       feishuChatId: 'web-console',
-                      directorAgentName: wsConfig?.agent,
+                      directorAgentName: body.director,
                     });
-                    broadcastWs(JSON.stringify({ type: 'context_update', workspace: wsName, label: entry.bridge.label }));
-                    writeAuditEntry('workspace.director.create', true, { workspace: wsName, routingKey, label: entry.bridge.label });
+                    sessionEntry = pool.get(`web-workspace:${wsName}`);
+                    if (sessionEntry) {
+                      broadcastWs(JSON.stringify({ type: 'context_update', workspace: wsName, label: sessionEntry.bridge.label }));
+                    }
                   }
                 }
 
-                if (entry) {
-                  await pool.send(entry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
+                if (sessionEntry) {
+                  await pool.send(sessionEntry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
                   writeAuditEntry('director.send', true, { target: targetName, bytes: Buffer.byteLength(body.text, 'utf-8') });
-                  return Response.json({ ok: true, message: 'sent to pool director', label: entry.bridge.label });
+                  return Response.json({ ok: true, message: 'sent to pool director', label: sessionEntry.bridge.label });
                 }
-                writeAuditEntry('director.send', false, { target: targetName, reason: 'pool director not found' });
+                writeAuditEntry('director.send', false, { target: targetName, reason: 'workspace not found' });
                 return Response.json({ ok: false, message: `Workspace "${targetName}" not found` }, { status: 404 });
               }
               await director.send(body.text);

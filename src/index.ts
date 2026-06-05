@@ -15,7 +15,7 @@ import { Scheduler } from './task/scheduler.js';
 import { isBashAction, extractBashCommand, runBashAction } from './task/shell-bash.js';
 import { resolveCronMessage } from './prompt-loader.js';
 import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task/task-store.js';
-import { writeFileSync, existsSync } from 'fs';
+import { writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
 import { parseShellRestartCommand, buildShellRestartBlockedMessage } from './shell-restart.js';
@@ -269,8 +269,21 @@ async function main() {
   const workspaceRegistry = new WorkspaceRegistry();
   const sessionManager = new SessionManager(pool, workspaceRegistry);
 
-  // Register main workspace
+  // Register main workspace + migrate legacy KV data
   workspaceRegistry.getOrCreate('main');
+  {
+    const wsDir = join(config.director.persona_dir, 'workspaces');
+    const knownNames: string[] = ['main'];
+    try {
+      if (existsSync(wsDir)) {
+        for (const name of readdirSync(wsDir)) {
+          if (statSync(join(wsDir, name)).isDirectory()) knownNames.push(name);
+        }
+      }
+    } catch { /* best effort */ }
+    const migrated = workspaceRegistry.migrateFromLegacyKV(knownNames);
+    if (migrated > 0) console.log(`[shell] Migrated ${migrated} workspace config(s) from legacy KV to workspaces table`);
+  }
 
   messaging.onCardAction?.(async (action: CardAction) => {
     if (action.action !== streamCancelAction) return;

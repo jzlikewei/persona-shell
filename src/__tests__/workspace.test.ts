@@ -12,6 +12,8 @@ import {
   getSessionRecord,
   archiveSession,
   listSessionRecords,
+  setState,
+  getState,
 } from '../task/task-store.js';
 import { WorkspaceRegistry } from '../workspace-registry.js';
 
@@ -250,5 +252,49 @@ describe('WorkspaceRegistry', () => {
     registry.getOrCreate('a');
     registry.getOrCreate('b');
     expect(registry.list()).toHaveLength(2);
+  });
+
+  describe('migrateFromLegacyKV()', () => {
+    test('migrates legacy workspace:config KV to workspaces table', () => {
+      const registry = new WorkspaceRegistry();
+      setState('workspace:config:my-project', { cwd: '/home/user/code', agent: 'claude' });
+      setState('workspace:config:another', { cwd: '/tmp/other' });
+
+      const count = registry.migrateFromLegacyKV(['my-project', 'another']);
+      expect(count).toBe(2);
+
+      const ws1 = getWorkspace('my-project');
+      expect(ws1).not.toBeNull();
+      expect(ws1!.cwd).toBe('/home/user/code');
+      expect(ws1!.agent).toBe('claude');
+
+      const ws2 = getWorkspace('another');
+      expect(ws2).not.toBeNull();
+      expect(ws2!.cwd).toBe('/tmp/other');
+
+      // Legacy KV should be deleted
+      expect(getState('workspace:config:my-project')).toBeNull();
+      expect(getState('workspace:config:another')).toBeNull();
+    });
+
+    test('skips already-migrated workspaces', () => {
+      const registry = new WorkspaceRegistry();
+      registry.getOrCreate('existing', { cwd: '/already/here' });
+      setState('workspace:config:existing', { cwd: '/old/path', agent: 'codex' });
+
+      const count = registry.migrateFromLegacyKV(['existing']);
+      expect(count).toBe(0);
+
+      // Should not overwrite existing cwd
+      expect(getWorkspace('existing')!.cwd).toBe('/already/here');
+      // But should fill in missing agent
+      expect(getWorkspace('existing')!.agent).toBe('codex');
+    });
+
+    test('handles missing KV entries gracefully', () => {
+      const registry = new WorkspaceRegistry();
+      const count = registry.migrateFromLegacyKV(['no-such-workspace']);
+      expect(count).toBe(0);
+    });
   });
 });

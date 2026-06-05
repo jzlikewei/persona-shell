@@ -1,4 +1,9 @@
-import { createWorkspace, getWorkspace, listWorkspaces, updateWorkspace, setDefaultSession, type Workspace } from './task/task-store.js';
+import { createWorkspace, getWorkspace, listWorkspaces, updateWorkspace, setDefaultSession, getState, deleteState, type Workspace } from './task/task-store.js';
+
+interface LegacyWorkspaceConfig {
+  cwd?: string;
+  agent?: string;
+}
 
 export class WorkspaceRegistry {
   getOrCreate(name: string, opts?: { cwd?: string; agent?: string }): Workspace {
@@ -30,5 +35,26 @@ export class WorkspaceRegistry {
   resolveDefaultSession(workspaceName: string): string | null {
     const ws = getWorkspace(workspaceName);
     return ws?.default_session_id ?? null;
+  }
+
+  /** Migrate legacy workspace:config:{name} KV entries to the workspaces table.
+   *  Safe to call multiple times — skips already-migrated workspaces. */
+  migrateFromLegacyKV(knownNames: string[]): number {
+    let migrated = 0;
+    for (const name of knownNames) {
+      const key = `workspace:config:${name}`;
+      const legacy = getState<LegacyWorkspaceConfig>(key);
+      if (!legacy) continue;
+      const existing = getWorkspace(name);
+      if (!existing) {
+        createWorkspace(name, { cwd: legacy.cwd, agent: legacy.agent });
+        migrated++;
+      } else {
+        if (legacy.cwd && !existing.cwd) updateWorkspace(name, { cwd: legacy.cwd });
+        if (legacy.agent && !existing.agent) updateWorkspace(name, { agent: legacy.agent });
+      }
+      deleteState(key);
+    }
+    return migrated;
   }
 }
