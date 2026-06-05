@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
 import type { DirectorPool, PoolEntry } from './director-pool.js';
 import type { SessionBridge } from './session-bridge.js';
-import type { MessageQueue } from './queue.js';
+import type { MessageQueue, QueueItem } from './queue.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
+import type { CardAction } from './messaging/messaging.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
 import { createSessionRecord, getSessionRecord, archiveSession as archiveSessionInDb, listSessionRecords, type SessionRow } from './task/task-store.js';
 
@@ -19,8 +20,8 @@ export interface SessionEntry {
 /**
  * SessionManager — manages Session/Agent lifecycle with sessionId as the routing key.
  *
- * During the transition period, this wraps DirectorPool and delegates to it.
- * The goal is to eventually replace DirectorPool entirely.
+ * Wraps DirectorPool and delegates lifecycle operations to it.
+ * Adds workspace-centric routing on top.
  */
 export class SessionManager extends EventEmitter {
   private pool: DirectorPool;
@@ -33,6 +34,8 @@ export class SessionManager extends EventEmitter {
     this.workspaceRegistry = workspaceRegistry;
     this.forwardPoolEvents();
   }
+
+  // --- Session routing (new sessionId-based API) ---
 
   /** Send a message to a session by sessionId */
   async send(sessionId: string, text: string, messageId: string, options?: { webOnly?: boolean }): Promise<void> {
@@ -50,13 +53,13 @@ export class SessionManager extends EventEmitter {
     return this.toSessionEntry(poolEntry);
   }
 
-  /** Get or create a session for a workspace (used by feishu path) */
+  /** Get or create a session for a workspace */
   async getOrCreateForWorkspace(workspaceName: string, opts: {
     feishuChatId: string;
     directorAgentName?: string;
     groupName?: string;
   }): Promise<SessionEntry> {
-    const ws = this.workspaceRegistry.getOrCreate(workspaceName);
+    this.workspaceRegistry.getOrCreate(workspaceName);
     const routingKey = opts.feishuChatId === 'web-console'
       ? `web-workspace:${workspaceName}`
       : opts.feishuChatId;
@@ -114,6 +117,110 @@ export class SessionManager extends EventEmitter {
   /** Resolve workspace default sessionId (for feishu path) */
   resolveDefaultSession(workspaceName: string): string | null {
     return this.workspaceRegistry.resolveDefaultSession(workspaceName);
+  }
+
+  // --- Delegated pool operations (lifecycle management) ---
+
+  async restoreEntries(): Promise<void> {
+    await this.pool.restoreEntries();
+  }
+
+  async killUnknownOrphans(): Promise<void> {
+    await this.pool.killUnknownOrphans();
+  }
+
+  async cancelByCardAction(action: CardAction): Promise<boolean> {
+    return this.pool.cancelByCardAction(action);
+  }
+
+  async abortStreamingReply(correlationId: string, text?: string): Promise<void> {
+    return this.pool.abortStreamingReply(correlationId, text);
+  }
+
+  async notifyTaskDone(label: string, taskId: string, success: boolean, notifyMsgId?: string): Promise<void> {
+    return this.pool.notifyTaskDone(label, taskId, success, notifyMsgId);
+  }
+
+  async flushAll(): Promise<void> {
+    return this.pool.flushAll();
+  }
+
+  async detachAll(): Promise<void> {
+    return this.pool.detachAll();
+  }
+
+  async shutdownAll(): Promise<void> {
+    return this.pool.shutdownAll();
+  }
+
+  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+    return this.pool.resetSession(routingKey, opts);
+  }
+
+  async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<PoolEntry> {
+    return this.pool.setDirectorAgent(routingKey, opts);
+  }
+
+  async switchAgentByLabel(label: string, agentName: string): Promise<PoolEntry> {
+    return this.pool.switchAgentByLabel(label, agentName);
+  }
+
+  async switchPersonaByLabel(label: string, roleName: string): Promise<PoolEntry> {
+    return this.pool.switchPersonaByLabel(label, roleName);
+  }
+
+  async flushByLabel(label: string): Promise<boolean> {
+    return this.pool.flushByLabel(label);
+  }
+
+  async clearContextByLabel(label: string): Promise<boolean> {
+    return this.pool.clearContextByLabel(label);
+  }
+
+  async restartByLabel(label: string): Promise<void> {
+    return this.pool.restartByLabel(label);
+  }
+
+  async interruptOldestByLabel(label: string): Promise<QueueItem | undefined> {
+    return this.pool.interruptOldestByLabel(label);
+  }
+
+  async detachByLabel(label: string): Promise<PoolEntry> {
+    return this.pool.detachByLabel(label);
+  }
+
+  // --- Lookup helpers (delegated) ---
+
+  findByLabel(label: string): PoolEntry | undefined {
+    return this.pool.findByLabel(label);
+  }
+
+  get(routingKey: string): PoolEntry | undefined {
+    return this.pool.get(routingKey);
+  }
+
+  getChatIdByLabel(label: string): string | null {
+    return this.pool.getChatIdByLabel(label);
+  }
+
+  getDirectorAgentName(routingKey: string): string | undefined {
+    return this.pool.getDirectorAgentName(routingKey);
+  }
+
+  getProcessingMessageIdByLabel(label: string): string | null {
+    return this.pool.getProcessingMessageIdByLabel(label);
+  }
+
+  async cancelQueuedByLabel(label: string, correlationId: string) {
+    return this.pool.cancelQueuedByLabel(label, correlationId);
+  }
+
+  getPoolStatus() {
+    return this.pool.getPoolStatus();
+  }
+
+  get size(): number {
+    return this.pool.size;
   }
 
   /** Access the underlying pool (transition period) */

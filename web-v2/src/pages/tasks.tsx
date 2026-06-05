@@ -207,7 +207,6 @@ function TaskListPanel({
   setSelectedId,
   onRefresh,
   onBack,
-  directorLabel,
   workspaceName,
 }: {
   tasks: Task[]
@@ -221,8 +220,7 @@ function TaskListPanel({
   setSelectedId: (id: string) => void
   onRefresh: () => void
   onBack: () => void
-  directorLabel: string
-  workspaceName: string
+  workspaceName?: string
 }) {
   const counts = useMemo(() => ({
     all: tasks.length,
@@ -279,7 +277,7 @@ function TaskListPanel({
           </div>
         </div>
         <div className="truncate font-mono text-[10px] text-[#6c7086]">
-          {scope === 'workspace' ? workspaceName || directorLabel : 'all workspaces'}
+          {scope === 'workspace' ? workspaceName || 'main' : 'all workspaces'}
         </div>
       </div>
 
@@ -894,7 +892,7 @@ function DragHandle({
 /* ── Page root ────────────────────────────────── */
 
 export function TasksPage() {
-  const { activeWorkspace, directorLabel } = useOutletContext<ShellOutletContext>()
+  const { activeWorkspace, workspaceName } = useOutletContext<ShellOutletContext>()
   const navigate = useNavigate()
   const { get } = useApi()
   const [tasks, setTasks] = useState<Task[]>([])
@@ -920,11 +918,11 @@ export function TasksPage() {
   useEffect(() => {
     setSelectedId(null)
     setScope('workspace')
-  }, [directorLabel])
+  }, [workspaceName])
 
   const fetchTasks = useCallback((silent = false) => {
     const params: Record<string, string> = { limit: '200' }
-    if (scope === 'workspace') params.source_director = directorLabel || 'main'
+    if (scope === 'workspace') params.source_director = workspaceName || 'main'
     if (!silent) { setLoading(true); setError(null) }
     get<Task[]>('/api/tasks', params)
       .then(list => {
@@ -932,7 +930,7 @@ export function TasksPage() {
       })
       .catch(err => { if (!silent) setError(err instanceof Error ? err.message : String(err)) })
       .finally(() => { if (!silent) setLoading(false) })
-  }, [directorLabel, get, scope])
+  }, [workspaceName, get, scope])
 
   useEffect(() => { fetchTasks() }, [fetchTasks])
 
@@ -980,8 +978,7 @@ export function TasksPage() {
           setSelectedId={id => { setSelectedId(id); setShowResult(true) }}
           onRefresh={fetchTasks}
           onBack={() => navigate('/')}
-          directorLabel={directorLabel}
-          workspaceName={activeWorkspace?.name ?? ''}
+          workspaceName={workspaceName ?? activeWorkspace?.name}
         />
       </div>
       <DragHandle onDrag={handleLeftDrag} />

@@ -261,14 +261,12 @@ function WorkspaceSummary({
   projectName,
   workspaceName,
   workspacePath,
-  directorLabel,
   sessionLabel,
   sessionId,
 }: {
   projectName?: string
   workspaceName?: string
   workspacePath?: string
-  directorLabel: string
   sessionLabel?: string
   sessionId?: string
 }) {
@@ -287,7 +285,7 @@ function WorkspaceSummary({
         <div className="rounded-md bg-[#313244] px-3 py-2">
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Selected Session</div>
           <div className="truncate font-mono text-sm font-bold text-[#cdd6f4]">{sessionLabel ?? '-'}</div>
-          <div className="mt-0.5 truncate font-mono text-[10px] text-[#7f849c]">{directorLabel} · {sessionId ?? '-'}</div>
+          <div className="mt-0.5 truncate font-mono text-[10px] text-[#7f849c]">{sessionId ?? '-'}</div>
         </div>
       </div>
     </>
@@ -337,7 +335,6 @@ export function ChatPage() {
   const {
     activeProject,
     activeWorkspace,
-    directorLabel,
     workspaceName,
     sessions,
     activeSession,
@@ -460,7 +457,6 @@ export function ChatPage() {
           projectName={activeProject?.name}
           workspaceName={activeWorkspace?.name}
           workspacePath={activeWorkspace?.path}
-          directorLabel={directorLabel}
           sessionLabel={activeSessionInfo?.label}
           sessionId={activeSession}
         />

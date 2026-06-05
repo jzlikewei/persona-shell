@@ -290,12 +290,12 @@ async function main() {
     if (config.feishu.master_id && action.senderOpenId !== config.feishu.master_id) return;
     const cancelled = await cancelStreamingReplyByCard(action);
     if (cancelled) return;
-    await pool.cancelByCardAction(action);
+    await sessionManager.cancelByCardAction(action);
   });
 
   // Restore pool entries from previous Shell session + clean up orphans
-  await pool.restoreEntries();
-  await pool.killUnknownOrphans();
+  await sessionManager.restoreEntries();
+  await sessionManager.killUnknownOrphans();
 
   // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
@@ -322,16 +322,16 @@ async function main() {
     const source = task.source_director;
     if (source && source !== 'main') {
       // Pool Director — look up or revive
-      const poolChatId = pool.getChatIdByLabel(source);
+      const poolChatId = sessionManager.getChatIdByLabel(source);
       if (poolChatId) {
         // Check if this is a web session (chatId === 'web-console' is not a valid messaging target)
-        const entry = pool.findByLabel(source);
+        const entry = sessionManager.findByLabel(source);
         const isWeb = poolChatId === 'web-console' || (entry?.routingKey.startsWith('web-') ?? false);
         return {
           chatId: isWeb ? null : poolChatId,
           isWeb,
           webLabel: isWeb ? source : null,
-          notifyDirector: (taskId, success, msgId) => pool.notifyTaskDone(source, taskId, success, msgId),
+          notifyDirector: (taskId, success, msgId) => sessionManager.notifyTaskDone(source, taskId, success, msgId),
         };
       }
       // Pool entry lost (no routing context to revive) — fall through to main
@@ -365,7 +365,7 @@ async function main() {
 
   function taskParentMetadata(sourceDirector?: string | null): Record<string, unknown> {
     const source = sourceDirector || 'main';
-    const poolEntry = source === 'main' ? undefined : pool.findByLabel(source);
+    const poolEntry = source === 'main' ? undefined : sessionManager.findByLabel(source);
     const ds = source === 'main' ? director.getStatus() : poolEntry?.bridge.getStatus();
     if (!ds) {
       return {
@@ -480,7 +480,7 @@ async function main() {
     const notifyMsg = `✅ 后台任务「${desc}」(${result.taskId}) 已完成，我来读下结果`;
     if (target.isWeb && target.webLabel) {
       // Web session — broadcast via WebSocket instead of messaging
-      pool.emit('web-alert', target.webLabel, notifyMsg);
+      sessionManager.emit('web-alert', target.webLabel, notifyMsg);
     } else if (target.chatId) {
       try {
         notifyMsgId = (await messaging.sendMessage(target.chatId, notifyMsg)) ?? undefined;
@@ -527,7 +527,7 @@ async function main() {
       : `❌ 后台任务「${taskDesc}」(${result.taskId}) 失败 — ${result.error}`;
     if (target.isWeb && target.webLabel) {
       // Web session — broadcast via WebSocket instead of messaging
-      pool.emit('web-alert', target.webLabel, failMsg);
+      sessionManager.emit('web-alert', target.webLabel, failMsg);
     } else if (target.chatId) {
       try {
         notifyMsgId = (await messaging.sendMessage(target.chatId, failMsg)) ?? undefined;
@@ -571,7 +571,7 @@ async function main() {
 
 
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
-  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, pool, sessionManager, workspaceRegistry);
+  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, sessionManager, workspaceRegistry);
   messaging.addClient(webClient);
 
   // 7.4: Scheduler — interval-driven cron job automation
@@ -615,7 +615,7 @@ async function main() {
         // Route to source Director if available
         const source = job.source_director;
         if (source && source !== 'main') {
-          const entry = pool.findByLabel(source);
+          const entry = sessionManager.findByLabel(source);
           if (entry) {
             await entry.bridge.sendCronMessage(msg);
             return;
@@ -667,7 +667,7 @@ async function main() {
           case 'flush':
             console.log('[scheduler] shell_action: flush — flushing all Directors');
             try {
-              await pool.flushAll();
+              await sessionManager.flushAll();
               console.log('[scheduler] flush: pool Directors flushed, flushing main Director');
               await director.flush();
               console.log('[scheduler] flush completed');
@@ -691,7 +691,7 @@ async function main() {
         let targetChatId: string | null = null;
 
         if (source && source !== 'main') {
-          targetChatId = pool.getChatIdByLabel(source);
+          targetChatId = sessionManager.getChatIdByLabel(source);
         }
         if (!targetChatId) {
           targetChatId = messaging.getLastChatId();
@@ -891,7 +891,7 @@ async function main() {
       : undefined;                               // 私聊: 默认 Director
 
     // Helper: resolve the target Director/queue for the current message context
-    const getTargetEntry = () => routingKey ? pool.get(routingKey) : undefined;
+    const getTargetEntry = () => routingKey ? sessionManager.get(routingKey) : undefined;
 
     /** 本体检查：配置了 master_id 时，仅本体可执行危险命令 */
     const isMaster = !config.feishu.master_id || msg.senderOpenId === config.feishu.master_id;
@@ -904,7 +904,7 @@ async function main() {
         const cancelled = poolEntry.queue.cancelOldest();
         if (cancelled) {
           console.log(`[shell] /esc (group ${poolEntry.groupName}): cancelling ${cancelled.messageId}`);
-          await pool.abortStreamingReply(cancelled.correlationId, '已取消');
+          await sessionManager.abortStreamingReply(cancelled.correlationId, '已取消');
           await poolEntry.bridge.interrupt();
           await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`).catch(() => {});
         } else {
@@ -932,9 +932,9 @@ async function main() {
       if (routingKey && !poolEntry) {
         // Director not active — spin it up first so we can flush
         const groupName = msg.groupName ?? chatId.slice(0, 8);
-        const directorAgentName = pool.getDirectorAgentName(routingKey)
+        const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
-        poolEntry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        poolEntry = await sessionManager.getPool().getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
       }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
@@ -999,8 +999,8 @@ async function main() {
 
       if (routingKey && chatType === 'group') {
         const groupName = msg.groupName ?? chatId.slice(0, 8);
-        const currentAgent = pool.getDirectorAgentName(routingKey)
-          ?? pool.get(routingKey)?.bridge.getDirectorAgentName()
+        const currentAgent = sessionManager.getDirectorAgentName(routingKey)
+          ?? sessionManager.get(routingKey)?.bridge.getDirectorAgentName()
           ?? config.agents.defaults.director
           ?? 'claude';
         if (currentAgent === targetAgent) {
@@ -1008,7 +1008,7 @@ async function main() {
           return;
         }
         try {
-          await pool.setDirectorAgent(routingKey, { groupName, feishuChatId: chatId, directorAgentName: targetAgent });
+          await sessionManager.setDirectorAgent(routingKey, { groupName, feishuChatId: chatId, directorAgentName: targetAgent });
           await messaging.reply(messageId, `群「${groupName}」已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`).catch(() => {});
         } catch (err) {
           console.error('[shell] group switch-agent failed:', err);
@@ -1103,9 +1103,9 @@ async function main() {
       let label = 'main';
       if (routingKey && chatType === 'group') {
         const groupName = msg.groupName ?? chatId.slice(0, 8);
-        const directorAgentName = pool.getDirectorAgentName(routingKey)
+        const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
-        const poolEntry = await pool.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        const poolEntry = await sessionManager.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
         label = `group "${poolEntry.groupName}"`;
       } else {
         await director.resetSession();
@@ -1132,7 +1132,7 @@ async function main() {
 
       await messaging.reply(messageId, shellRestart.force ? 'Shell 正在强制重启...' : 'Shell 正在重启...').catch(() => {});
       console.log(`[shell] /shell-restart${shellRestart.force ? ' --force' : ''}: detaching pool Directors and exiting for launchd respawn`);
-      await pool.detachAll();
+      await sessionManager.detachAll();
       await director.shutdown();
       process.exit(0);
     }
@@ -1217,15 +1217,15 @@ async function main() {
       // 小群/话题群 → DirectorPool
       try {
         const groupName = msg.groupName ?? chatId.slice(0, 8);
-        const directorAgentName = pool.getDirectorAgentName(routingKey);
-        const entry = await pool.getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        const directorAgentName = sessionManager.getDirectorAgentName(routingKey);
+        const entry = await sessionManager.getPool().getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
         // Register workspace + session mapping for new domain model
         workspaceRegistry.getOrCreate(groupName);
         const sessionId = entry.bridge.getStatus().sessionId;
         if (sessionId) {
           sessionManager.registerSession(sessionId, routingKey, groupName, entry);
         }
-        await pool.send(routingKey, directorText, messageId);
+        await sessionManager.getPool().send(routingKey, directorText, messageId);
         console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
       } catch (err) {
         if (String(err).includes('flushing')) {
@@ -1382,7 +1382,7 @@ async function main() {
     if (runningTaskIds.length > 0) {
       console.log(`[shell] Orphaning ${runningTaskIds.length} running task(s): ${runningTaskIds.join(', ')} (will re-adopt on restart)`);
     }
-    await Promise.allSettled([pool.detachAll(), director.stop()]);
+    await Promise.allSettled([sessionManager.detachAll(), director.stop()]);
     process.exit(0);
   }
 

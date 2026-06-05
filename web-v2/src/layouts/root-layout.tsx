@@ -23,7 +23,6 @@ type BrowseMode = 'projects' | 'workspaces'
 export interface ShellOutletContext {
   activeProject?: ProjectInfo
   activeWorkspace?: WorkspaceInfo
-  directorLabel: string
   workspaceName?: string
   sessions: Session[]
   activeSession?: string
@@ -321,8 +320,8 @@ export function RootLayout() {
   const isSubPage = location.pathname !== '/' && location.pathname !== ''
   const activeProject = context.projects[0]
   const activeWorkspaceInfo = context.workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? context.workspaces[0]
-  const activeDirectorLabel = activeWorkspaceInfo?.directorLabel ?? 'main'
-  const { sessions, activeSession, setActiveSession } = useSessions(activeDirectorLabel)
+  const activeWorkspaceName = activeWorkspaceInfo?.source === 'memory' ? activeWorkspaceInfo.name : (activeWorkspaceInfo?.name === 'Main director' ? 'main' : activeWorkspaceInfo?.name)
+  const { sessions, activeSession, setActiveSession } = useSessions(activeWorkspaceName)
   const activeSessionInfo = sessions.find(session => session.id === activeSession) ?? sessions[0]
   const { on } = useWebSocket()
 
@@ -423,7 +422,7 @@ export function RootLayout() {
                 Project / {activeProject?.name ?? '-'} · Workspace / {activeWorkspaceInfo?.name ?? '-'}
               </div>
               <div className="truncate font-mono text-[11px] text-[#7f849c]">
-                project cwd: {shortPath(activeProject?.path)} | workspace: {shortPath(activeWorkspaceInfo?.path)} | director: {activeDirectorLabel} | session id: {activeSessionInfo?.id ?? '-'}
+                project cwd: {shortPath(activeProject?.path)} | workspace: {activeWorkspaceName ?? '-'} | session id: {activeSessionInfo?.id ?? '-'}
               </div>
             </div>
             <nav className="ml-auto flex shrink-0 gap-1">
@@ -446,8 +445,7 @@ export function RootLayout() {
           <Outlet context={{
             activeProject,
             activeWorkspace: activeWorkspaceInfo,
-            directorLabel: activeDirectorLabel,
-            workspaceName: activeWorkspaceInfo?.source === 'memory' ? activeWorkspaceInfo.name : undefined,
+            workspaceName: activeWorkspaceName,
             sessions,
             activeSession: activeSessionInfo?.id,
             activeSessionInfo,

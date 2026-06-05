@@ -4,7 +4,6 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, read
 import { join, resolve, extname, relative, dirname, normalize, basename } from 'path';
 import { homedir } from 'os';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
-import type { DirectorPool } from './director-pool.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { parseConversationLog, parseConversationLogFiles, parseSessionsFiles, parseTaskLog } from './log-parser.js';
 
@@ -93,7 +92,7 @@ function listDirectorLogs(label: string, kind: 'input' | 'output'): string[] {
   }
 }
 
-function resolveDirectorLogTarget(label: string | null | undefined, director: SessionBridge, pool?: DirectorPool): DirectorLogTarget {
+function resolveDirectorLogTarget(label: string | null | undefined, director: SessionBridge, sessionMgr?: SessionManager): DirectorLogTarget {
   const requested = safeDirectorLabel(label);
   if (requested === 'main') {
     const inputLogs = listDirectorLogs('main', 'input');
@@ -105,9 +104,9 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
     };
   }
 
-  // Try matching as pool director label
-  const entry = pool?.getPoolStatus().find((item) => item.label === requested);
-  const active = entry ? pool?.get(entry.routingKey) : undefined;
+  // Try matching as workspace director label
+  const entry = sessionMgr?.getPoolStatus().find((item) => item.label === requested);
+  const active = entry ? sessionMgr?.get(entry.routingKey) : undefined;
 
   if (active) {
     // Use workspace name path (new), plus old label path for compat
@@ -168,7 +167,6 @@ export function startConsole(
   taskRunner?: TaskRunner,
   messaging?: MessagingClient,
   metrics?: MetricsCollector,
-  pool?: DirectorPool,
   sessionManager?: SessionManager,
   workspaceRegistry?: WorkspaceRegistry,
 ): MessagingClient {
@@ -264,7 +262,7 @@ export function startConsole(
     });
 
     const mainStatus = director.getStatus();
-    const poolStatus = pool?.getPoolStatus() ?? [];
+    const poolStatus = sessionManager?.getPoolStatus() ?? [];
     const safeGroupName = (name: string) => name.replace(/[\/\\:*?"<>|]/g, '_');
     const directorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
       const match = poolStatus.find((entry) => {
@@ -548,7 +546,7 @@ export function startConsole(
           summary: taskSummary,
           recent: recentTasks,
         },
-        pool: pool ? pool.getPoolStatus().map((entry) => ({
+        pool: sessionManager ? sessionManager.getPoolStatus().map((entry) => ({
           routingKey: entry.routingKey,
           groupName: entry.groupName,
           label: entry.label,
@@ -961,9 +959,9 @@ export function startConsole(
     if (!q) return { query: q, results, scanned };
 
     const directors: Array<{ label: string; bridge: SessionBridge }> = [{ label: 'main', bridge: director }];
-    if (pool) {
-      for (const entry of pool.getPoolStatus()) {
-        const poolEntry = pool.get(entry.routingKey);
+    if (sessionManager) {
+      for (const entry of sessionManager.getPoolStatus()) {
+        const poolEntry = sessionManager.get(entry.routingKey);
         if (poolEntry) directors.push({ label: entry.label, bridge: poolEntry.bridge });
       }
     }
@@ -1569,9 +1567,9 @@ export function startConsole(
 
   function sessionIdForDirector(label: string): string | null {
     if (label === director.label || label === 'main') return director.getStatus().sessionId;
-    const entry = pool?.getPoolStatus().find((item) => item.label === label);
+    const entry = sessionManager?.getPoolStatus().find((item) => item.label === label);
     if (!entry) return null;
-    return pool?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
+    return sessionManager?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
   }
 
   director.on('chunk', (text: string) => {
@@ -1610,27 +1608,27 @@ export function startConsole(
     }));
   });
 
-  if (pool) {
-    pool.on('chunk', (label: string, text: string) => {
+  if (sessionManager) {
+    sessionManager.on('chunk', (label: string, text: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, sessionId: sessionIdForDirector(label), text }));
     });
-    pool.on('turn-event', (_label: string, event: AssistantTurnEvent) => {
+    sessionManager.on('turn-event', (_label: string, event: AssistantTurnEvent) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'turn_event', event }));
     });
-    pool.on('tool-call', (label: string, toolName?: string, tool?: DirectorToolCall) => {
+    sessionManager.on('tool-call', (label: string, toolName?: string, tool?: DirectorToolCall) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: label, sessionId: sessionIdForDirector(label), toolName, tool }));
     });
-    pool.on('stream-abort', (label: string) => {
+    sessionManager.on('stream-abort', (label: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label, sessionId: sessionIdForDirector(label) }));
     });
-    pool.on('input-message', (label: string, text: string) => {
+    sessionManager.on('input-message', (label: string, text: string) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', director: label, sessionId: sessionIdForDirector(label), text, timestamp: new Date().toISOString() }));
     });
     // Web session reply/alert routing
-    pool.on('web-reply', (label: string, messageId: string, text: string) => {
+    sessionManager.on('web-reply', (label: string, messageId: string, text: string) => {
       broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, sessionId: sessionIdForDirector(label), messageId, text }));
     });
-    pool.on('web-alert', (label: string, message: string) => {
+    sessionManager.on('web-alert', (label: string, message: string) => {
       const taskCallback = message.startsWith('✅ 后台任务') || message.startsWith('❌ 后台任务');
       broadcastWs(JSON.stringify({
         type: taskCallback ? 'task_callback' : 'chat_reply',
@@ -1663,8 +1661,8 @@ export function startConsole(
 
   function taskParentMetadata(sourceDirector: string): Record<string, unknown> {
     const source = sourceDirector || 'main';
-    const ds = source === 'main' || !pool ? director.getStatus() : pool.findByLabel(source)?.bridge.getStatus();
-    const poolEntry = source === 'main' || !pool ? undefined : pool.findByLabel(source);
+    const ds = source === 'main' || !sessionManager ? director.getStatus() : sessionManager.findByLabel(source)?.bridge.getStatus();
+    const poolEntry = source === 'main' || !sessionManager ? undefined : sessionManager.findByLabel(source);
     if (!ds) {
       return {
         parent_director_label: source,
@@ -1730,8 +1728,8 @@ export function startConsole(
       const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
       const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
       const source = job.source_director;
-      if (source && source !== 'main' && pool) {
-        const entry = pool.findByLabel(source);
+      if (source && source !== 'main' && sessionManager) {
+        const entry = sessionManager.findByLabel(source);
         if (entry) {
           await entry.bridge.sendCronMessage(msg);
           updateCronJob(job.id, { last_run_at: localNow() });
@@ -1763,7 +1761,7 @@ export function startConsole(
           updateCronJob(job.id, { last_run_at: localNow() });
           return { ok: true, action_type: actionType, action_name: actionName, message: 'reserved action acknowledged' };
         case 'flush':
-          if (pool) await pool.flushAll();
+          if (sessionManager) await sessionManager.flushAll();
           await director.flush();
           updateCronJob(job.id, { last_run_at: localNow() });
           return { ok: true, action_type: actionType, action_name: actionName };
@@ -1788,12 +1786,12 @@ export function startConsole(
         agent_type: director.getDirectorAgentType(),
       };
     }
-    if (!pool) {
-      const err = new Error('Director pool is not available') as Error & { status?: number };
+    if (!sessionManager) {
+      const err = new Error('Director session manager is not available') as Error & { status?: number };
       err.status = 503;
       throw err;
     }
-    const entry = await pool.switchAgentByLabel(targetLabel, agentName.trim());
+    const entry = await sessionManager.switchAgentByLabel(targetLabel, agentName.trim());
     return {
       ok: true,
       director_label: entry.bridge.label,
@@ -1817,12 +1815,12 @@ export function startConsole(
       if (!ok) throw new Error(`failed to switch main Director persona to ${role}`);
       return { ok: true, director_label: 'main', role: director.getPersonaRole() };
     }
-    if (!pool) {
-      const err = new Error('Director pool is not available') as Error & { status?: number };
+    if (!sessionManager) {
+      const err = new Error('Director session manager is not available') as Error & { status?: number };
       err.status = 503;
       throw err;
     }
-    const entry = await pool.switchPersonaByLabel(targetLabel, role);
+    const entry = await sessionManager.switchPersonaByLabel(targetLabel, role);
     return { ok: true, director_label: entry.bridge.label, role: entry.bridge.getPersonaRole() };
   }
 
@@ -1856,8 +1854,8 @@ export function startConsole(
       const result = await handleCommand(normalized);
       return { ...result, director_label: 'main', command: normalized };
     }
-    if (!pool) {
-      const err = new Error('Director pool is not available') as Error & { status?: number };
+    if (!sessionManager) {
+      const err = new Error('Director session manager is not available') as Error & { status?: number };
       err.status = 503;
       throw err;
     }
@@ -1866,7 +1864,7 @@ export function startConsole(
     try {
       switch (normalized) {
         case 'flush': {
-          const success = await pool.flushByLabel(targetLabel);
+          const success = await sessionManager.flushByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）',
@@ -1874,7 +1872,7 @@ export function startConsole(
           break;
         }
         case 'clear': {
-          const success = await pool.clearContextByLabel(targetLabel);
+          const success = await sessionManager.clearContextByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）',
@@ -1882,7 +1880,7 @@ export function startConsole(
           break;
         }
         case 'esc': {
-          const cancelled = await pool.interruptOldestByLabel(targetLabel);
+          const cancelled = await sessionManager.interruptOldestByLabel(targetLabel);
           result = cancelled
             ? {
               ok: true,
@@ -1893,11 +1891,11 @@ export function startConsole(
           break;
         }
         case 'session-restart':
-          await pool.restartByLabel(targetLabel);
+          await sessionManager.restartByLabel(targetLabel);
           result = { ok: true, message: 'Director 已重启' };
           break;
         case 'detach': {
-          const entry = await pool.detachByLabel(targetLabel);
+          const entry = await sessionManager.detachByLabel(targetLabel);
           result = {
             ok: true,
             message: 'Director 已 Detach，底层进程未主动关闭',
@@ -2456,9 +2454,9 @@ export function startConsole(
             if (directorLabel === 'main') {
               await director.notifyTaskDone(taskId, success, replyToMessageId);
             } else {
-              if (!pool) return Response.json({ ok: false, error: 'Director pool is unavailable' }, { status: 503 });
-              if (!pool.findByLabel(directorLabel)) return Response.json({ ok: false, error: `Director not found: ${directorLabel}` }, { status: 404 });
-              await pool.notifyTaskDone(directorLabel, taskId, success, replyToMessageId);
+              if (!sessionManager) return Response.json({ ok: false, error: 'Session manager is unavailable' }, { status: 503 });
+              if (!sessionManager.findByLabel(directorLabel)) return Response.json({ ok: false, error: `Director not found: ${directorLabel}` }, { status: 404 });
+              await sessionManager.notifyTaskDone(directorLabel, taskId, success, replyToMessageId);
             }
             writeAuditEntry('debug.simulate_task_completion', true, {
               target: taskId,
@@ -2767,7 +2765,7 @@ export function startConsole(
               }
               broadcastWs(JSON.stringify({ type: 'chat_reply', director: 'main', messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
               writeAuditEntry('shell.restart', true, { source: 'web', force: isForce });
-              if (pool) await pool.detachAll();
+              if (sessionManager) await sessionManager.detachAll();
               await director.shutdown();
               setTimeout(() => process.exit(0), 500);
               return Response.json({ ok: true, message: 'restarting' });
@@ -2793,7 +2791,7 @@ export function startConsole(
                   ? body.workspace
                   : undefined;
 
-              if (targetName && sessionManager && pool) {
+              if (targetName && sessionManager && sessionManager) {
                 let sessionEntry = sessionManager.getPool().resolveWorkspace(targetName);
 
                 if (!sessionEntry && body.workspace) {
@@ -2803,7 +2801,7 @@ export function startConsole(
                       feishuChatId: 'web-console',
                       directorAgentName: body.director,
                     });
-                    sessionEntry = pool.get(`web-workspace:${wsName}`);
+                    sessionEntry = sessionManager.get(`web-workspace:${wsName}`);
                     if (sessionEntry) {
                       broadcastWs(JSON.stringify({ type: 'context_update', workspace: wsName, label: sessionEntry.bridge.label }));
                     }
@@ -2811,9 +2809,9 @@ export function startConsole(
                 }
 
                 if (sessionEntry) {
-                  await pool.send(sessionEntry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
+                  await sessionManager.getPool().send(sessionEntry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
                   writeAuditEntry('director.send', true, { target: targetName, bytes: Buffer.byteLength(body.text, 'utf-8') });
-                  return Response.json({ ok: true, message: 'sent to pool director', label: sessionEntry.bridge.label });
+                  return Response.json({ ok: true, message: 'sent to workspace director', label: sessionEntry.bridge.label });
                 }
                 writeAuditEntry('director.send', false, { target: targetName, reason: 'workspace not found' });
                 return Response.json({ ok: false, message: `Workspace "${targetName}" not found` }, { status: 404 });
@@ -2865,12 +2863,12 @@ export function startConsole(
             const isImage = imageExts.has(ext);
 
             try {
-              // Resolve target chatId: pool Director → its group chat, main → lastChatId
+              // Resolve target chatId: workspace Director → its group chat, main → lastChatId
               let targetChatId: string | null = null;
               if (body.target_channel === 'web') {
                 targetChatId = 'web-console';
-              } else if (sourceDirector && sourceDirector !== 'main' && pool) {
-                targetChatId = pool.getChatIdByLabel(sourceDirector);
+              } else if (sourceDirector && sourceDirector !== 'main' && sessionManager) {
+                targetChatId = sessionManager.getChatIdByLabel(sourceDirector);
               }
               if (!targetChatId) {
                 targetChatId = messaging?.getLastChatId() ?? null;
@@ -2884,8 +2882,8 @@ export function startConsole(
               // Only fall back to main queue when source IS main — otherwise the reply API
               // routes by parent-message chat, sending the attachment to the wrong conversation.
               let replyMessageId: string | null = null;
-              if (sourceDirector && sourceDirector !== 'main' && pool) {
-                replyMessageId = pool.getProcessingMessageIdByLabel(sourceDirector);
+              if (sourceDirector && sourceDirector !== 'main' && sessionManager) {
+                replyMessageId = sessionManager.getProcessingMessageIdByLabel(sourceDirector);
               } else {
                 const peeked = queue.peek();
                 replyMessageId = peeked?.messageId ?? null;
@@ -2974,11 +2972,11 @@ export function startConsole(
               writeAuditEntry('queue.cancel', false, { target: directorLabel || null, correlationId: correlationId || null, error: 'missing director_label or correlation_id' });
               return Response.json({ ok: false, error: 'director_label and correlation_id are required' }, { status: 400 });
             }
-            if (!pool) {
-              writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'pool unavailable' });
-              return Response.json({ ok: false, error: 'director pool unavailable' }, { status: 503 });
+            if (!sessionManager) {
+              writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'session manager unavailable' });
+              return Response.json({ ok: false, error: 'director session manager unavailable' }, { status: 503 });
             }
-            const cancelled = await pool.cancelQueuedByLabel(directorLabel, correlationId);
+            const cancelled = await sessionManager.cancelQueuedByLabel(directorLabel, correlationId);
             if (!cancelled) {
               writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'queue item not found or already cancelled' });
               return Response.json({ ok: false, error: 'queue item not found or already cancelled' }, { status: 404 });
@@ -3071,13 +3069,13 @@ export function startConsole(
             // Resolve director label from workspace name if provided
             let effectiveLabel = directorLabel;
             if (!effectiveLabel && workspace && workspace !== 'main') {
-              const match = pool?.getPoolStatus().find((e) => {
+              const match = sessionManager?.getPoolStatus().find((e) => {
                 const safeName = e.groupName.replace(/[\/\\:*?"<>|]/g, '_');
                 return workspace === safeName || workspace === e.groupName;
               });
               effectiveLabel = match?.label;
             }
-            const target = resolveDirectorLogTarget(effectiveLabel, director, pool);
+            const target = resolveDirectorLogTarget(effectiveLabel, director, sessionManager);
             return Response.json(parseConversationLogFiles(target.inputLogs, target.outputLogs, limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
@@ -3091,7 +3089,7 @@ export function startConsole(
             } else if (!directorLabel || directorLabel === 'main') {
               wsName = 'main';
             } else {
-              const poolEntry = pool?.getPoolStatus().find((e) => e.label === directorLabel);
+              const poolEntry = sessionManager?.getPoolStatus().find((e) => e.label === directorLabel);
               wsName = poolEntry?.groupName ?? directorLabel;
             }
 
@@ -3107,7 +3105,7 @@ export function startConsole(
 
             // Fallback: if DB is empty, parse logs (for pre-migration data)
             if (sessions.length === 0) {
-              const target = resolveDirectorLogTarget(directorLabel, director, pool);
+              const target = resolveDirectorLogTarget(directorLabel, director, sessionManager);
               const parsed = parseSessionsFiles(target.outputLogs);
               const nameMap = getState<Record<string, string>>('session:names') ?? {};
               for (const s of parsed) {
@@ -3122,8 +3120,8 @@ export function startConsole(
             const resolvedLabel = directorLabel ?? 'main';
             const poolEntry = resolvedLabel === 'main'
               ? undefined
-              : pool?.getPoolStatus().find((e) => e.label === resolvedLabel);
-            const activePoolEntry = poolEntry ? pool?.get(poolEntry.routingKey) : undefined;
+              : sessionManager?.getPoolStatus().find((e) => e.label === resolvedLabel);
+            const activePoolEntry = poolEntry ? sessionManager?.get(poolEntry.routingKey) : undefined;
             const ds = resolvedLabel === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
             if (ds?.sessionId) {
               const live = sessions.find(s => s.sessionId === ds.sessionId);
@@ -3158,10 +3156,10 @@ export function startConsole(
 
             const directorLabel = typeof body.director === 'string' && body.director.trim() ? body.director.trim() : 'main';
             let targetDirector = director;
-            if (directorLabel !== 'main' && pool) {
-              const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
+            if (directorLabel !== 'main' && sessionManager) {
+              const entry = sessionManager.getPoolStatus().find((e) => e.label === directorLabel);
               if (entry) {
-                const poolEntry = pool.get(entry.routingKey);
+                const poolEntry = sessionManager.get(entry.routingKey);
                 if (poolEntry) targetDirector = poolEntry.bridge;
               }
             }
@@ -3354,18 +3352,18 @@ export function startConsole(
                 err.status = 400;
                 throw err;
               }
-              if (!pool) {
-                const err = new Error('Director pool is unavailable') as Error & { status?: number };
+              if (!sessionManager) {
+                const err = new Error('Session manager is unavailable') as Error & { status?: number };
                 err.status = 503;
                 throw err;
               }
-              const target = pool.getPoolStatus().find((entry) => entry.label === targetLabel && !entry.closed);
+              const target = sessionManager.getPoolStatus().find((entry) => entry.label === targetLabel && !entry.closed);
               if (!target) {
                 const err = new Error(`Director "${targetLabel}" is not active`) as Error & { status?: number };
                 err.status = 404;
                 throw err;
               }
-              await pool.shutdown(target.routingKey);
+              await sessionManager.getPool().shutdown(target.routingKey);
               writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, groupName: target.groupName ?? null });
               return Response.json({ ok: true, director_label: targetLabel, routing_key: target.routingKey });
             } catch (err) {
@@ -3599,7 +3597,7 @@ export function startConsole(
           // Web session API routes
           // New: POST /api/sessions — create session via SessionManager
           if (url.pathname === '/api/sessions' && req.method === 'POST') {
-            if (!sessionManager || !pool) return Response.json({ error: 'Session manager not available' }, { status: 503 });
+            if (!sessionManager || !sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
             try {
               const body = await req.json() as { workspace: string; agent?: string; cwd?: string };
               if (!body.workspace) {
@@ -3623,12 +3621,12 @@ export function startConsole(
 
           // Legacy: POST /api/web-sessions
           if (url.pathname === '/api/web-sessions' && req.method === 'POST') {
-            if (!pool) return Response.json({ error: 'Pool not available' }, { status: 503 });
+            if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
             try {
               const id = randomUUID().slice(0, 8);
               const routingKey = `web-${id}`;
               const timeStr = new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-              const entry = await pool.getOrCreate(routingKey, {
+              const entry = await sessionManager.getPool().getOrCreate(routingKey, {
                 groupName: `Web Chat ${timeStr}`,
                 feishuChatId: 'web-console',
               });
@@ -3640,19 +3638,19 @@ export function startConsole(
             }
           }
           if (url.pathname.startsWith('/api/web-sessions/') && req.method === 'DELETE') {
-            if (!pool) return Response.json({ error: 'Pool not available' }, { status: 503 });
+            if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
             const routingKey = decodeURIComponent(url.pathname.slice('/api/web-sessions/'.length));
             if (!routingKey) {
               writeAuditEntry('web_session.close', false, { target: null, routingKey: null, error: 'routing key is required' });
               return Response.json({ ok: false, error: 'routing key is required' }, { status: 400 });
             }
             try {
-              const entry = pool.get(routingKey);
+              const entry = sessionManager.get(routingKey);
               if (!entry) {
                 writeAuditEntry('web_session.close', false, { target: routingKey, routingKey, error: 'web session not found' });
                 return Response.json({ ok: false, error: `web session not found: ${routingKey}` }, { status: 404 });
               }
-              await pool.shutdown(routingKey);
+              await sessionManager.getPool().shutdown(routingKey);
               writeAuditEntry('web_session.close', true, { target: entry.bridge.label, routingKey, groupName: entry.groupName });
               return Response.json({ ok: true });
             } catch (err) {
@@ -3724,14 +3722,14 @@ export function startConsole(
           } else if (msg.type === 'chat' && msg.text) {
             // Web chat 消息 — route to specific Director if specified
             const targetLabel: string | null = msg.director ?? null;
-            if (targetLabel && pool) {
-              // Route to pool Director via queue (ensures response correlation)
-              const poolStatus = pool.getPoolStatus().find((e) => e.label === targetLabel);
+            if (targetLabel && sessionManager) {
+              // Route to workspace Director via queue (ensures response correlation)
+              const poolStatus = sessionManager.getPoolStatus().find((e) => e.label === targetLabel);
               if (poolStatus) {
                 const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
                 messageWsMap.set(messageId, { ws, createdAt: Date.now() });
                 try {
-                  await pool.send(poolStatus.routingKey, quotedText ? formatWebQuote(quotedText) + msg.text : msg.text, messageId);
+                  await sessionManager.getPool().send(poolStatus.routingKey, quotedText ? formatWebQuote(quotedText) + msg.text : msg.text, messageId);
                 } catch (err) {
                   console.error(`[console] Web chat send to pool "${targetLabel}" failed:`, err);
                 }

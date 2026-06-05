@@ -15,8 +15,6 @@ export interface WorkspaceInfo {
   source: 'main' | 'memory'
   cwd?: string
   agent?: string
-  directorLabel?: string
-  routingKey?: string
   groupName?: string
   sessionId?: string | null
   sessionName?: string | null
