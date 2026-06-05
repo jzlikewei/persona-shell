@@ -2796,7 +2796,7 @@ export function startConsole(
                   if (wsName) {
                     const result = await sessionManager.getOrCreateForWorkspace(wsName, {
                       feishuChatId: 'web-console',
-                      directorAgentName: body.director,
+                      directorAgentName: getWorkspaceConfig(wsName)?.agent,
                     });
                     sessionEntry = sessionManager.get(`web-workspace:${wsName}`);
                     if (sessionEntry) {

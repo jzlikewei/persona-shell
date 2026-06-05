@@ -87,7 +87,7 @@ export class SessionManager extends EventEmitter {
         sessionId,
         workspace,
         role: entry.bridge.getPersonaRole(),
-        cwd: entry.bridge.getStatus().agentType,
+        cwd: entry.bridge.getWorkspaceCwd(),
       });
     }
     const ws = this.workspaceRegistry.get(workspace);
@@ -106,7 +106,18 @@ export class SessionManager extends EventEmitter {
       }
     }
     this.sessionToRoutingKey.delete(sessionId);
-    return archiveSessionInDb(sessionId);
+    const archived = archiveSessionInDb(sessionId);
+    if (archived) {
+      const record = getSessionRecord(sessionId);
+      if (record) {
+        const ws = this.workspaceRegistry.get(record.workspace);
+        if (ws && ws.default_session_id === sessionId) {
+          const remaining = listSessionRecords(record.workspace).filter(s => s.session_id !== sessionId);
+          this.workspaceRegistry.setDefaultSession(record.workspace, remaining[0]?.session_id ?? null);
+        }
+      }
+    }
+    return archived;
   }
 
   /** List sessions for a workspace */

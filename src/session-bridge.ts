@@ -637,6 +637,10 @@ export class SessionBridge extends EventEmitter {
     };
   }
 
+  getWorkspaceCwd(): string | undefined {
+    return this.workspaceCwd;
+  }
+
   async restartProcess(): Promise<void> {
     if (!this.adapter.hasActiveTurn()) return;
     this.explicitRestart = true;

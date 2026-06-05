@@ -129,8 +129,12 @@ export function useSessions(workspace?: string) {
     const handleLiveEvent = (data: Record<string, unknown>) => {
       const eventSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : undefined
       if (!eventSessionId) return
-      localStorage.setItem(storageKey, eventSessionId)
-      setActiveSessionState(eventSessionId)
+      setSessions(prev => {
+        if (prev.length > 0 && !prev.some(s => s.id === eventSessionId)) return prev
+        localStorage.setItem(storageKey, eventSessionId)
+        setActiveSessionState(eventSessionId)
+        return prev
+      })
       void loadSessions()
     }
     const unsubs = [
