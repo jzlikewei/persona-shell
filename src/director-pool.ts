@@ -117,6 +117,13 @@ export class DirectorPool extends EventEmitter {
     return this.entries.get(routingKey);
   }
 
+  /** List active (non-closed) pool entries. Used by SessionManager to backfill
+   *  the sessionId→routingKey map after restoreEntries() reconnects orphan Directors;
+   *  without this, /api/send by sessionId would 404 on every restored workspace session. */
+  listActiveEntries(): PoolEntry[] {
+    return [...this.entries.values()];
+  }
+
   /** Reset an existing or remembered group Director session. */
   async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
     const existing = this.entries.get(routingKey);
@@ -146,15 +153,18 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Resolve a pool Director by workspace name (or label as fallback).
-   *  This is the single entry point for workspace → Director resolution.
-   *  Priority: groupName exact → groupName sanitized → web-workspace derived key → label exact */
+   *  When multiple sessions exist for the same workspace, returns the most recently active.
+   *  Priority: groupName match (most recent) → web-workspace derived key → label exact */
   resolveWorkspace(name: string): PoolEntry | undefined {
-    for (const entry of this.entries.values()) {
-      if (entry.groupName === name) return entry;
-    }
+    const candidates: PoolEntry[] = [];
     const safe = name.replace(/[\/\\:*?"<>|]/g, '_');
     for (const entry of this.entries.values()) {
-      if (entry.groupName.replace(/[\/\\:*?"<>|]/g, '_') === safe) return entry;
+      if (entry.groupName === name || entry.groupName.replace(/[\/\\:*?"<>|]/g, '_') === safe) {
+        candidates.push(entry);
+      }
+    }
+    if (candidates.length > 0) {
+      return candidates.reduce((best, e) => e.lastActiveAt > best.lastActiveAt ? e : best);
     }
     const derived = this.entries.get(`web-workspace:${name}`);
     if (derived) return derived;
@@ -247,9 +257,10 @@ export class DirectorPool extends EventEmitter {
     // Skip bootstrap if resuming an existing session (e.g. after shell restart).
     // The Director already has context from the previous session.
     if (!bridge.hasRestoredSession) {
-      // Pass session state file so the Director can restore group context if available.
       const statePath = bridge.getSessionStatePath();
-      await bridge.bootstrap(statePath);
+      bridge.bootstrap(statePath).catch(err => {
+        console.error(`[pool] Bootstrap failed for "${name}":`, err);
+      });
     } else {
       console.log(`[pool] Skipping bootstrap for "${name}" — resumed existing session`);
     }

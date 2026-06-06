@@ -666,9 +666,16 @@ export function setSessionNameInDb(sessionId: string, name: string | null): void
   getDb().run('UPDATE sessions SET session_name = ? WHERE session_id = ?', [name, sessionId]);
 }
 
-export function listSessionsFromDb(workspace: string): SessionRow[] {
+export function listSessionsFromDb(workspace: string, opts?: { includeArchived?: boolean }): SessionRow[] {
+  // 与 listSessionRecords 行为对齐:默认隐藏 archived=1,供 UI 默认列表使用;
+  // 显式 includeArchived=true 时返回全部(管理面板/审计场景)。
+  if (opts?.includeArchived) {
+    return getDb().query(
+      'SELECT * FROM sessions WHERE workspace = ? ORDER BY last_message_at DESC',
+    ).all(workspace) as SessionRow[];
+  }
   return getDb().query(
-    'SELECT * FROM sessions WHERE workspace = ? ORDER BY last_message_at DESC',
+    'SELECT * FROM sessions WHERE workspace = ? AND archived = 0 ORDER BY last_message_at DESC',
   ).all(workspace) as SessionRow[];
 }
 
@@ -683,13 +690,20 @@ export function getWorkspaceSessionStats(workspace: string): WorkspaceSessionSta
     `SELECT COUNT(*) AS sessionCount,
             COALESCE(SUM(message_count), 0) AS messageCount,
             MAX(last_message_at) AS lastMessageAt
-     FROM sessions WHERE workspace = ?`,
+     FROM sessions WHERE workspace = ? AND archived = 0`,
   ).get(workspace) as { sessionCount: number; messageCount: number; lastMessageAt: string | null } | null;
   return {
     sessionCount: Number(row?.sessionCount ?? 0),
     messageCount: Number(row?.messageCount ?? 0),
     lastMessageAt: row?.lastMessageAt ?? null,
   };
+}
+
+export function hasAnySessionHistory(workspace: string): boolean {
+  const row = getDb().query(
+    'SELECT COUNT(*) AS cnt FROM sessions WHERE workspace = ?',
+  ).get(workspace) as { cnt: number } | null;
+  return (row?.cnt ?? 0) > 0;
 }
 
 export interface ImportedSession {

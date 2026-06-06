@@ -1,14 +1,20 @@
-import { isValidElement, useCallback, useEffect, useRef, useState, type ReactNode, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { isValidElement, memo, useCallback, useMemo, useRef, useState, type ReactNode, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useOutletContext } from 'react-router'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import { CheckCircle2, Loader2, Paperclip, Send, Terminal, XCircle } from 'lucide-react'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { CheckCircle2, Loader2, Paperclip, Terminal, XCircle } from 'lucide-react'
 import { CodeBlock } from '@/components/code-block'
 import { DocumentPanel, extractFilePaths } from '@/components/document-panel'
+import { StopOrSend } from '@/components/stop-button'
+import { MessageActions } from '@/components/message-actions'
+import { MessageSearch } from '@/components/message-search'
+import { MessagePagination } from '@/components/message-pagination'
+import { DateSeparator } from '@/components/date-separator'
 import { useApi } from '@/hooks/use-api'
 import { useChat, type ChatMessage, type ChatToolCall } from '@/hooks/use-chat'
-import type { Session } from '@/hooks/use-sessions'
+import { useDirectorActions } from '@/hooks/use-director-actions'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
 
@@ -23,9 +29,6 @@ function formatTime(ts: string) {
 function visibleMessages(messages: ChatMessage[]) {
   return messages.filter(msg => {
     if (msg.role === 'system') return false
-    const text = msg.content
-    if (text.startsWith('[系统]') || text.startsWith('[STARTUP]')) return false
-    if (/^\[20\d{2}\/\d+\/\d+/.test(text) && text.includes('[STARTUP]')) return false
     return true
   })
 }
@@ -73,12 +76,16 @@ function looksLikeFilePath(text: string): boolean {
   return /^(\/|~\/|\.\/)[^\s]+\.\w{1,10}$/.test(trimmed)
 }
 
-function MarkdownContent({ content, onFileClick }: { content: string; onFileClick?: (path: string) => void }) {
+// 用 memo 包,避免父组件重渲时整段 markdown 重新 parse(rehype-highlight 是大头)
+// rehype-highlight 关闭 detect:false —— 无 language-X className 的 code 不再自动猜测语言,
+// inline `code` 这种小片段就走"原始文本"路径,省掉一大波 highlight.js tokenization
+const REHYPE_HIGHLIGHT_OPTIONS = { detect: false, ignoreMissing: true } as const
+const MarkdownContent = memo(function MarkdownContent({ content, onFileClick }: { content: string; onFileClick?: (path: string) => void }) {
   return (
     <div className="md-content prose prose-sm prose-invert max-w-none text-[#bac2de] [&_a]:text-[#89b4fa] [&_code]:rounded [&_code]:bg-[#45475a] [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs [&_code]:text-[#fab387] [&_ol]:my-1 [&_p]:my-1.5 [&_pre]:my-2 [&_ul]:my-1">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={[[rehypeHighlight, REHYPE_HIGHLIGHT_OPTIONS]]}
         components={{
           pre({ children }) {
             return <>{children}</>
@@ -114,15 +121,60 @@ function MarkdownContent({ content, onFileClick }: { content: string; onFileClic
       </ReactMarkdown>
     </div>
   )
-}
+})
 
-function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
+// 单个 tool call 的折叠详情 —— 默认折叠时不渲染 body,展开后再 mount
+// 这是 chat 卡顿的最大头:不 lazy 的话,N 条消息 × 平均 3 个 tool × 2 个 <pre> 全部进 DOM
+const ToolDetail = memo(function ToolDetail({ tool, index }: { tool: ChatToolCall; index: number }) {
+  const [opened, setOpened] = useState(false)
+  const isError = !!tool.isError
+  const isRunning = tool.status === 'running' || (!tool.result && !isError)
+  return (
+    <details
+      key={tool.id ?? `${tool.name}-${index}`}
+      className={cn(
+        'rounded border bg-[#11111b] text-xs',
+        isError ? 'border-[#f38ba8]/35' : 'border-[#313244]'
+      )}
+      onToggle={(e) => setOpened((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 font-mono text-[11px] text-[#a6adc8] marker:hidden">
+        <span className="text-[#89b4fa]">&gt;_</span>
+        <span className="truncate font-bold text-[#cdd6f4]">{tool.name}</span>
+        <span className={cn('ml-auto inline-flex items-center gap-1', isError ? 'text-[#f38ba8]' : isRunning ? 'text-[#89b4fa]' : 'text-[#a6e3a1]')}>
+          {isError ? <XCircle className="size-3" /> : isRunning ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
+          {isError ? 'error' : isRunning ? 'running' : 'done'}
+        </span>
+      </summary>
+      {opened && (
+        <div className="space-y-1.5 border-t border-[#313244] px-2 py-2">
+          {tool.input && (
+            <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded bg-[#181825] p-2 font-mono text-[10px] leading-relaxed text-[#bac2de]">{tool.input}</pre>
+          )}
+          {tool.result && (
+            <pre className={cn(
+              'max-h-44 overflow-auto whitespace-pre-wrap rounded p-2 font-mono text-[10px] leading-relaxed',
+              isError ? 'bg-[#f38ba8]/10 text-[#f5c2e7]' : 'bg-[#181825] text-[#a6adc8]'
+            )}>{tool.result}</pre>
+          )}
+        </div>
+      )}
+    </details>
+  )
+})
+
+const ToolCalls = memo(function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
+  // 外层 Tools 折叠组也 lazy,默认收起时不 mount 任何 ToolDetail
+  const [opened, setOpened] = useState(false)
   if (!tools?.length) return null
   const hasRunning = tools.some(tool => tool.status === 'running' || (!tool.result && !tool.isError))
   const hasError = tools.some(tool => tool.isError || tool.status === 'failed')
 
   return (
-    <details className="mt-1.5 rounded-md border border-[#45475a] bg-[#181825] text-xs">
+    <details
+      className="mt-1.5 rounded-md border border-[#45475a] bg-[#181825] text-xs"
+      onToggle={(e) => setOpened((e.currentTarget as HTMLDetailsElement).open)}
+    >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-1.5 font-mono text-[11px] text-[#a6adc8] marker:hidden">
         <Terminal className="size-3.5 text-[#89b4fa]" />
         <span className="font-bold text-[#cdd6f4]">Tools</span>
@@ -135,58 +187,46 @@ function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
           {hasError ? 'has error' : hasRunning ? 'running' : 'done'}
         </span>
       </summary>
-      <div className="space-y-1 border-t border-[#313244] p-1.5">
-        {tools.map((tool, index) => {
-          const isError = !!tool.isError
-          const isRunning = tool.status === 'running' || (!tool.result && !isError)
-          return (
-            <details
-              key={tool.id ?? `${tool.name}-${index}`}
-              className={cn(
-                'rounded border bg-[#11111b] text-xs',
-                isError ? 'border-[#f38ba8]/35' : 'border-[#313244]'
-              )}
-            >
-              <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 font-mono text-[11px] text-[#a6adc8] marker:hidden">
-                <span className="text-[#89b4fa]">&gt;_</span>
-                <span className="truncate font-bold text-[#cdd6f4]">{tool.name}</span>
-                <span className={cn('ml-auto inline-flex items-center gap-1', isError ? 'text-[#f38ba8]' : isRunning ? 'text-[#89b4fa]' : 'text-[#a6e3a1]')}>
-                  {isError ? <XCircle className="size-3" /> : isRunning ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
-                  {isError ? 'error' : isRunning ? 'running' : 'done'}
-                </span>
-              </summary>
-              <div className="space-y-1.5 border-t border-[#313244] px-2 py-2">
-                {tool.input && (
-                  <pre className="max-h-36 overflow-auto whitespace-pre-wrap rounded bg-[#181825] p-2 font-mono text-[10px] leading-relaxed text-[#bac2de]">{tool.input}</pre>
-                )}
-                {tool.result && (
-                  <pre className={cn(
-                    'max-h-44 overflow-auto whitespace-pre-wrap rounded p-2 font-mono text-[10px] leading-relaxed',
-                    isError ? 'bg-[#f38ba8]/10 text-[#f5c2e7]' : 'bg-[#181825] text-[#a6adc8]'
-                  )}>{tool.result}</pre>
-                )}
-              </div>
-            </details>
-          )
-        })}
-      </div>
+      {opened && (
+        <div className="space-y-1 border-t border-[#313244] p-1.5">
+          {tools.map((tool, index) => (
+            <ToolDetail key={tool.id ?? `${tool.name}-${index}`} tool={tool} index={index} />
+          ))}
+        </div>
+      )}
     </details>
   )
-}
+})
 
-function MessageBlock({
+// memo:列表项最贵的就是 markdown 重 parse;父组件每次重渲不应触发整列表 re-mount
+const MessageBlock = memo(function MessageBlock({
   message,
   onFileClick,
+  hidden = false,
+  onCopy,
+  onHide,
+  onShow,
+  onRegenerate,
 }: {
   message: ChatMessage
   onFileClick: (path: string) => void
+  hidden?: boolean
+  onCopy?: () => void
+  onHide?: () => void
+  onShow?: () => void
+  onRegenerate?: () => void
 }) {
   const isUser = message.role === 'user'
   const filePaths = extractFilePaths(message.content)
+  // WP6: user 消息也走 MarkdownContent,但无 markdown 提示时回退到 pre-wrap,
+  // 避免无意义 reparse。
+  const hasMarkdown = /[*_`#\[\]]/.test(message.content)
 
   return (
-    <article className={cn('mb-3 flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div className={cn('flex flex-col', isUser ? 'max-w-[min(72%,760px)] items-end' : 'max-w-[min(76%,780px)] items-start')}>
+    <article
+      className={cn('group relative mb-3 flex w-full overflow-hidden px-4', isUser ? 'justify-end' : 'justify-start', hidden && 'opacity-40')}
+    >
+      <div className={cn('flex flex-col overflow-hidden', isUser ? 'max-w-[min(72%,760px)] items-end' : 'max-w-[min(76%,780px)] items-start')}>
         <div className={cn('mb-1 flex items-center gap-2', isUser && 'justify-end')}>
           <span className={cn(
             'font-mono text-[11px] font-extrabold uppercase tracking-[.05em]',
@@ -200,12 +240,16 @@ function MessageBlock({
           )}
         </div>
         <div className={cn(
-          'rounded-md px-3 py-2 text-sm leading-relaxed',
+          'max-w-full rounded-md px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]',
           isUser
             ? 'border-r-[3px] border-[#89b4fa] bg-[#89b4fa]/[.08] text-right text-[#cdd6f4]'
             : 'border-l-[3px] border-[#a6e3a1] bg-[#313244] text-[#bac2de]'
         )}>
-          {isUser ? <div className="whitespace-pre-wrap text-left">{message.content}</div> : <MarkdownContent content={message.content} onFileClick={onFileClick} />}
+          {isUser
+            ? (hasMarkdown
+                ? <MarkdownContent content={message.content} onFileClick={onFileClick} />
+                : <div className="whitespace-pre-wrap text-left">{message.content}</div>)
+            : <MarkdownContent content={message.content} onFileClick={onFileClick} />}
         </div>
         {!isUser && <ToolCalls tools={message.tools} />}
         {filePaths.length > 0 && (
@@ -215,16 +259,25 @@ function MessageBlock({
             ))}
           </div>
         )}
+        <MessageActions
+          messageId={message.id}
+          content={message.content}
+          hidden={hidden}
+          onCopy={onCopy ?? (() => navigator.clipboard.writeText(message.content))}
+          onHide={onHide}
+          onShow={onShow}
+          onRegenerate={onRegenerate}
+        />
       </div>
     </article>
   )
-}
+})
 
 function StreamingBlock({ phase, text, tools }: { phase: 'thinking' | 'streaming' | 'tool_running'; text: string; tools?: ChatToolCall[] }) {
   const statusLabel = phase === 'thinking' ? 'thinking' : phase === 'streaming' ? 'streaming' : 'working'
   const lastRunningTool = tools?.filter(t => t.status === 'running').slice(-1)[0]
   return (
-    <article className="mb-3 flex justify-start">
+    <article className="mb-3 flex justify-start px-4">
       <div className="flex max-w-[min(76%,780px)] flex-col items-start">
         <div className="mb-1 flex items-center gap-2">
           <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Director</span>
@@ -272,7 +325,7 @@ function WorkspaceSummary({
 }) {
   return (
     <>
-      <div className="mb-3 grid gap-2 md:grid-cols-3">
+      <div className="mb-3 grid gap-2 px-4 md:grid-cols-3">
         <div className="rounded-md bg-[#313244] px-3 py-2">
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Project Directory</div>
           <div className="truncate font-mono text-sm font-bold text-[#cdd6f4]">{projectName ?? '-'}</div>
@@ -294,39 +347,8 @@ function WorkspaceSummary({
 
 function EmptyConversation() {
   return (
-    <div className="rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
+    <div className="mx-4 rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
       <p>没有历史对话</p>
-    </div>
-  )
-}
-
-function SessionRail({
-  sessions,
-  activeSession,
-  onSelect,
-}: {
-  sessions: Session[]
-  activeSession?: string
-  onSelect: (id: string) => void
-}) {
-  if (sessions.length === 0) return null
-
-  return (
-    <div className="mb-3 flex gap-1.5 overflow-x-auto pb-1">
-      {sessions.map(session => (
-        <button
-          key={session.id}
-          onClick={() => onSelect(session.id)}
-          className={cn(
-            'flex h-7 shrink-0 items-center gap-1.5 rounded px-2 font-mono text-[11px] font-bold transition-colors',
-            session.id === activeSession ? 'bg-[#45475a] text-[#cdd6f4]' : 'bg-[#313244] text-[#7f849c] hover:text-[#cdd6f4]'
-          )}
-        >
-          <span className={cn('size-[6px] rounded-full', session.alive ? 'bg-[#a6e3a1]' : 'bg-[#6c7086]')} />
-          <span className="max-w-[220px] truncate">{session.label}</span>
-          <span className="text-[#6c7086]">{session.messageCount}</span>
-        </button>
-      ))}
     </div>
   )
 }
@@ -336,40 +358,41 @@ export function ChatPage() {
     activeProject,
     activeWorkspace,
     workspaceName,
-    sessions,
     activeSession,
     activeSessionInfo,
-    setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden, regenerate } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
+  // Stop 按钮:仅主 director 调 /api/esc;pool director 的 stop 在 DirectorPanel 里
+  const { interrupt } = useDirectorActions({ directorLabel: 'main' })
+  const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0
+  // WP6: 搜索 + 隐藏状态在 ChatPage 内管(不污染 use-chat 抽象)
+  const [searchQuery, setSearchQuery] = useState('')
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [previewPath, setPreviewPath] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
-  const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const userScrolled = useRef(false)
-  const filteredMessages = visibleMessages(messages)
-
-  const scrollToBottom = useCallback(() => {
-    if (scrollRef.current && !userScrolled.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  // Virtuoso 自带 followOutput / atBottom 检测,不需要手写 scrollRef/handleScroll/userScrolled
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  // 用户是否已贴底:决定流式新内容是平滑滚动还是停滞(尊重用户上滑阅读历史)
+  const atBottomRef = useRef(true)
+  const filteredMessages = useMemo(() => {
+    let result = visibleMessages(messages)
+    // 隐藏过滤
+    if (hiddenIds.size > 0) {
+      result = result.filter(m => !hiddenIds.has(m.id))
     }
-  }, [])
-
-  useEffect(() => {
-    scrollToBottom()
-  }, [messages, streaming, scrollToBottom])
-
-  const handleScroll = useCallback(() => {
-    if (!scrollRef.current) return
-    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-    userScrolled.current = scrollHeight - scrollTop - clientHeight > 100
-  }, [])
+    // 搜索过滤:substring 大小写不敏感
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      result = result.filter(m => m.content.toLowerCase().includes(q))
+    }
+    return result
+  }, [messages, hiddenIds, searchQuery])
 
   const attachmentText = useCallback((files: UploadedAttachment[]) => {
     if (files.length === 0) return ''
@@ -388,7 +411,9 @@ export function ChatPage() {
     setInput('')
     setAttachments([])
     setUploadError(null)
-    userScrolled.current = false
+    // 发出消息后强制重新贴底:用户可能正在上面看历史,此刻应跟着新消息走
+    atBottomRef.current = true
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
     if (textareaRef.current) textareaRef.current.style.height = ''
   }
 
@@ -446,48 +471,114 @@ export function ChatPage() {
     setAttachments(prev => prev.filter(file => file.path !== path))
   }
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-3"
-      >
-        <WorkspaceSummary
-          projectName={activeProject?.name}
-          workspaceName={activeWorkspace?.name}
-          workspacePath={activeWorkspace?.path}
-          sessionLabel={activeSessionInfo?.label}
-          sessionId={activeSession}
-        />
-        <SessionRail sessions={sessions} activeSession={activeSession} onSelect={setActiveSession} />
-        {loading ? (
-          <div className="flex items-center gap-2 rounded-md bg-[#313244] px-3 py-2 text-sm text-[#7f849c]">
+  // Virtuoso 列表的数据 —— 把 streaming/loading 拼到末尾,作为虚拟列表的最后一项,
+  // 它们高度变化由 Virtuoso 的 ResizeObserver 自动跟随,无需手动 scrollTo
+  type StreamingTail = { __kind: 'streaming'; phase: 'thinking' | 'streaming' | 'tool_running' }
+  type LoadingTail = { __kind: 'loading' }
+  type EmptyTail = { __kind: 'empty' }
+  type DateSeparatorTail = { __kind: 'date'; date: string }
+  type VirtuosoItem = ChatMessage | StreamingTail | LoadingTail | EmptyTail | DateSeparatorTail
+
+  const virtuosoItems = useMemo<VirtuosoItem[]>(() => {
+    // WP6: 在相邻消息日期变化处插入 DateSeparator;搜索过滤时不插入(以免污染过滤视图)
+    const items: VirtuosoItem[] = []
+    if (searchQuery) {
+      // 搜索模式:直接铺平,不插日期分隔
+      items.push(...filteredMessages)
+    } else {
+      let prevDate: string | null = null
+      for (const msg of filteredMessages) {
+        const msgDate = msg.timestamp.slice(0, 10) // YYYY-MM-DD
+        if (msgDate !== prevDate) {
+          items.push({ __kind: 'date', date: msg.timestamp })
+          prevDate = msgDate
+        }
+        items.push(msg)
+      }
+    }
+    if (loading && filteredMessages.length === 0) {
+      items.push({ __kind: 'loading' })
+    } else if (filteredMessages.length === 0 && !streaming && !activity && !turnPhase && !searchQuery) {
+      items.push({ __kind: 'empty' })
+    }
+    if (turnPhase) {
+      items.push({ __kind: 'streaming', phase: turnPhase })
+    } else if (streaming || activity || streamingTools.length > 0) {
+      items.push({ __kind: 'streaming', phase: streaming ? 'streaming' : 'tool_running' })
+    }
+    return items
+  }, [filteredMessages, loading, streaming, activity, turnPhase, streamingTools.length, searchQuery])
+
+  const renderItem = useCallback((_index: number, item: VirtuosoItem) => {
+    if ('__kind' in item) {
+      if (item.__kind === 'loading') {
+        return (
+          <div className="mx-4 flex items-center gap-2 rounded-md bg-[#313244] px-3 py-2 text-sm text-[#7f849c]">
             <Loader2 className="size-4 animate-spin" />
             Loading session history...
           </div>
-        ) : filteredMessages.length === 0 && !streaming && !activity && !turnPhase ? (
-          <EmptyConversation />
-        ) : (
-          filteredMessages.map(message => (
-            <MessageBlock key={message.id} message={message} onFileClick={setPreviewPath} />
-          ))
-        )}
-        {turnPhase
-          ? <StreamingBlock phase={turnPhase} text={streaming} tools={streamingTools} />
-          : (streaming || activity || streamingTools.length > 0) && (
-            <StreamingBlock
-              phase={streaming ? 'streaming' : 'tool_running'}
-              text={streaming}
-              tools={streamingTools}
-            />
-          )
-        }
-      </div>
+        )
+      }
+      if (item.__kind === 'empty') return <EmptyConversation />
+      if (item.__kind === 'date') return <DateSeparator date={item.date} />
+      // streaming
+      return <StreamingBlock phase={item.phase} text={streaming} tools={streamingTools} />
+    }
+    return (
+      <MessageBlock
+        message={item}
+        onFileClick={setPreviewPath}
+        onCopy={() => undefined /* wired via MessageActions per-instance */}
+        hidden={hiddenIds.has(item.id)}
+        onHide={() => hideMessage(item.id)}
+        onShow={() => showMessage(item.id)}
+        onRegenerate={() => regenerate(item.id)}
+      />
+    )
+  }, [streaming, streamingTools, hiddenIds, hideMessage, showMessage, regenerate])
+
+  const renderHeader = useCallback(() => (
+    <WorkspaceSummary
+      projectName={activeProject?.name}
+      workspaceName={activeWorkspace?.name}
+      workspacePath={activeWorkspace?.path}
+      sessionLabel={activeSessionInfo?.label}
+      sessionId={activeSession}
+    />
+  ), [activeProject?.name, activeWorkspace?.name, activeWorkspace?.path, activeSessionInfo?.label, activeSession])
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
+      <MessageSearch value={searchQuery} onChange={setSearchQuery} matchCount={filteredMessages.length} />
+      <MessagePagination
+        loading={loading}
+        loadedCount={filteredMessages.length}
+        onLoadMore={loadMore}
+        hiddenCount={hiddenIds.size}
+        onShowAllHidden={showAllHidden}
+      />
+      <Virtuoso
+        // key 绑定 session:切 session 时强制 remount,避免上一会话的滚动位置和 ResizeObserver
+        // 测高过程继续 follow 进新会话,产生"持续滚动几秒"的视觉
+        key={activeSession ?? 'no-session'}
+        ref={virtuosoRef}
+        data={virtuosoItems}
+        itemContent={renderItem}
+        components={{ Header: renderHeader }}
+        // 'auto' = 瞬间贴底,'smooth' 会"追着布局变化跑"产生持续滚动观感
+        // 流式追加消息(streaming 来时 data 长度增长)也是 auto:对 chat 来说足够好,
+        // 而且避免 mount 期高度收敛过程被平滑动画放大
+        followOutput={atBottomRef.current ? 'auto' : false}
+        atBottomStateChange={(atBottom) => { atBottomRef.current = atBottom }}
+        // 切换 session 时跳到最底(像普通 chat 一样从最新看起)
+        initialTopMostItemIndex={virtuosoItems.length > 0 ? virtuosoItems.length - 1 : 0}
+        increaseViewportBy={{ top: 200, bottom: 400 }}
+        className="min-h-0 flex-1 overflow-x-hidden py-3"
+      />
 
       <div
         className={cn(
-          'flex shrink-0 flex-col gap-2 border-t border-[#45475a] bg-[#181825] p-3',
+          'flex shrink-0 flex-col gap-2 overflow-hidden border-t border-[#45475a] bg-[#181825] p-3',
           dragOver && 'bg-[#313244]'
         )}
         onDragOver={event => { event.preventDefault(); setDragOver(true) }}
@@ -543,14 +634,13 @@ export function ChatPage() {
             rows={3}
             className="min-h-[82px] max-h-[220px] min-w-0 flex-1 resize-none rounded-md border border-[#45475a] bg-[#313244] px-3 py-2.5 text-sm leading-5 text-[#cdd6f4] outline-none placeholder:text-[#6c7086] focus:border-[#89b4fa]"
           />
-          <button
-            onClick={handleSend}
-            disabled={(!input.trim() && attachments.length === 0) || sending || uploading}
-            className="grid h-[42px] w-[48px] shrink-0 place-items-center rounded-md bg-[#cba6f7] font-bold text-[#11111b] transition-opacity disabled:opacity-40"
-            title="Send"
-          >
-            {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-          </button>
+          <StopOrSend
+            isStreaming={isStreaming}
+            isSending={sending}
+            isDisabled={!input.trim() && attachments.length === 0}
+            onSend={handleSend}
+            onStop={() => interrupt()}
+          />
         </div>
       </div>
 

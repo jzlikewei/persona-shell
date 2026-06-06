@@ -1,21 +1,35 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import {
   ArrowLeft,
+  Archive,
   Bot,
   ChevronRight,
+  EyeOff,
+  Eye,
   FileCode2,
   ListTodo,
+  Menu,
   MessageSquare,
   Plus,
-  RefreshCw,
+  Settings2,
 } from 'lucide-react'
 import { useStatus } from '@/hooks/use-status'
-import { useApi } from '@/hooks/use-api'
 import { useWebSocket } from '@/hooks/use-websocket'
 import { useSessions, type Session } from '@/hooks/use-sessions'
 import { useWorkContext, type ProjectInfo, type WorkspaceInfo } from '@/hooks/use-work-context'
 import { WorkspaceCreateSheet } from '@/components/workspace-create-sheet'
+import { StatusBar } from '@/components/status-bar'
+import { DirectorPanel } from '@/components/director-panel'
+import { RestartShellButton } from '@/components/restart-shell-button'
+import { CommandPalette } from '@/components/command-palette'
+import { SwitchSheet } from '@/components/switch-sheet'
+import { NewSessionDialog } from '@/components/new-session-dialog'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import { useSessionsMut } from '@/hooks/use-sessions-mut'
+import { ShortcutRoot } from '@/hooks/use-shortcut'
+import { useIsMobile } from '@/hooks/use-is-mobile'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 
 type BrowseMode = 'projects' | 'workspaces'
@@ -66,16 +80,17 @@ function Header({
   activeWorkspace,
   activeSession,
   mode,
+  onSwitchClick,
 }: {
   activeProject?: ProjectInfo
   activeWorkspace?: WorkspaceInfo
   activeSession?: Session
   mode: BrowseMode
+  onSwitchClick: () => void
 }) {
   const status = useStatus()
   const { status: wsStatus } = useWebSocket()
   const alive = status?.system?.directorAlive ?? false
-  const contextPercent = status?.context?.percent ?? 0
 
   return (
     <header className="flex h-[34px] shrink-0 items-center gap-4 border-b border-[#313244] bg-[#181825] px-3 text-xs text-[#7f849c]">
@@ -88,20 +103,17 @@ function Header({
       <div>Workspace <strong className="font-mono text-[#bac2de]">{activeWorkspace?.name ?? 'workspace'}</strong></div>
       <div>Session <strong className="font-mono text-[#bac2de]">{activeSession?.label ?? 'session'}</strong></div>
       <div>Browse <strong className="font-mono text-[#bac2de]">{mode === 'projects' ? 'Projects' : 'Workspaces'}</strong></div>
-      <div className="flex items-center gap-1.5">
+      <div className="ml-auto flex items-center gap-1.5">
         <Bot className="size-3 text-[#7f849c]" />
         Director <strong className="font-mono text-[#bac2de]">{alive ? 'Alive +3' : 'Waiting'}</strong>
       </div>
-      <div className="ml-auto flex items-center gap-2">
-        <span>Context</span>
-        <span className="h-1.5 w-14 overflow-hidden rounded bg-[#45475a]">
-          <span
-            className={cn('block h-full rounded', contextPercent > 80 ? 'bg-[#f38ba8]' : contextPercent > 50 ? 'bg-[#f9e2af]' : 'bg-[#a6e3a1]')}
-            style={{ width: `${Math.min(contextPercent || 17, 100)}%` }}
-          />
-        </span>
-        <strong className="font-mono text-[#bac2de]">{contextPercent || 17}%</strong>
-      </div>
+      <button
+        onClick={onSwitchClick}
+        className="rounded px-2 py-0.5 text-xs text-[#89b4fa] hover:bg-[#313244]"
+        title="切换 Agent / Persona (Mod+K)"
+      >
+        Switch…
+      </button>
     </header>
   )
 }
@@ -156,9 +168,15 @@ function Sidebar({
   activeProject,
   activeWorkspace,
   setActiveWorkspace,
+  sessions,
+  activeSession,
+  setActiveSession,
   onCreateWorkspace,
   onConfigureWorkspace,
-  onRestart,
+  onCreateSession,
+  onArchiveSession,
+  onBindProject,
+  onToggleHidden,
 }: {
   mode: BrowseMode
   setMode: (mode: BrowseMode) => void
@@ -167,21 +185,23 @@ function Sidebar({
   activeProject?: ProjectInfo
   activeWorkspace?: WorkspaceInfo
   setActiveWorkspace: (id: string) => void
+  sessions: Session[]
+  activeSession?: string
+  setActiveSession: (id: string | undefined) => void
   onCreateWorkspace: () => void
   onConfigureWorkspace: (workspace: WorkspaceInfo) => void
-  onRestart: () => void
+  onCreateSession: (workspace: WorkspaceInfo) => void
+  onArchiveSession: (session: Session) => void
+  onBindProject: (project: ProjectInfo) => void
+  onToggleHidden: (workspace: WorkspaceInfo) => void
 }) {
   const title = mode === 'projects' ? 'Projects' : 'Workspaces'
-  const [emptyWorkspacesOpen, setEmptyWorkspacesOpen] = useState(false)
+  const [hiddenWorkspacesOpen, setHiddenWorkspacesOpen] = useState(false)
   const visibleWorkspaces = workspaces.filter(workspace =>
-    workspace.source === 'main' ||
-    (workspace.localMessageCount ?? 0) > 0 ||
-    workspace.id === activeWorkspace?.id
+    workspace.source === 'main' || !workspace.hidden
   )
-  const emptyWorkspaces = workspaces.filter(workspace =>
-    workspace.source !== 'main' &&
-    (workspace.localMessageCount ?? 0) === 0 &&
-    workspace.id !== activeWorkspace?.id
+  const hiddenWorkspaces = workspaces.filter(workspace =>
+    workspace.source !== 'main' && workspace.hidden
   )
 
   return (
@@ -219,54 +239,133 @@ function Sidebar({
                 status={index === 0 ? 'live' : 'off'}
                 badges={[project.source]}
                 active={project.id === activeProject?.id}
+                onClick={project.source !== 'persona' ? () => onBindProject(project) : undefined}
               />
             ))
             : (
               <>
-                {visibleWorkspaces.map(workspace => (
-                  <SidebarItem
-                    key={workspace.id}
-                    name={workspace.name}
-                    path={workspace.cwd || workspace.path}
-                    meta={workspace.source === 'main' ? 'root' : String(workspace.localMessageCount ?? 0)}
-                    status={workspace.id === activeWorkspace?.id ? 'live' : 'off'}
-                    badges={[
-                      workspace.source,
-                      ...((workspace.localMessageCount ?? 0) > 0 ? [`${workspace.localMessageCount} msg`] : []),
-                    ]}
-                    active={workspace.id === activeWorkspace?.id}
-                    onClick={() => setActiveWorkspace(workspace.id)}
-                  />
-                ))}
-                {emptyWorkspaces.length > 0 && (
+                {visibleWorkspaces.map(workspace => {
+                  const isActive = workspace.id === activeWorkspace?.id
+                  return (
+                    <Fragment key={workspace.id}>
+                      <div className="flex items-center gap-1">
+                        <SidebarItem
+                          name={workspace.name}
+                          path={workspace.cwd || workspace.path}
+                          meta={workspace.source === 'main' ? 'root' : (workspace.localSessionCount ?? 0) > 0 ? String(workspace.localMessageCount ?? 0) : undefined}
+                          status={isActive ? 'live' : 'off'}
+                          badges={[
+                            workspace.source,
+                            ...((workspace.localMessageCount ?? 0) > 0 ? [`${workspace.localMessageCount} msg`] : []),
+                          ]}
+                          active={isActive}
+                          onClick={() => setActiveWorkspace(workspace.id)}
+                        />
+                        {workspace.source !== 'main' && (
+                          <>
+                            <button
+                              onClick={() => onConfigureWorkspace(workspace)}
+                              className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]"
+                              title="配置 workspace"
+                              aria-label="Configure workspace"
+                            >
+                              <Settings2 className="size-3" />
+                            </button>
+                            <button
+                              onClick={() => onCreateSession(workspace)}
+                              className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]"
+                              title={`在 ${workspace.name} 下新建 session`}
+                              aria-label="New session"
+                            >
+                              <Plus className="size-3" />
+                            </button>
+                            <button
+                              onClick={() => onToggleHidden(workspace)}
+                              className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#f38ba8]"
+                              title="隐藏"
+                              aria-label="Hide workspace"
+                            >
+                              <EyeOff className="size-3" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                      {/* sessions 嵌在它所属的 workspace 下方,以左侧 border 表达从属关系 */}
+                      {isActive && sessions.length > 0 && (
+                        <div className="mb-1 ml-3 space-y-0.5 border-l border-[#45475a] pl-2 pt-0.5">
+                          {sessions.map(session => {
+                            // RootLayout 用 activeSessionInfo = sessions.find(s.id === activeSession)
+                            // 必须传 id 而不是 label,否则 find 匹配失败 fallback 到 sessions[0],
+                            // UI 卡在旧 session,直到下一次 loadSessions polling 校正(~1-5s)
+                            const selected = activeSession === session.id
+                            return (
+                              <div
+                                key={session.id}
+                                className={cn(
+                                  'flex w-full items-center gap-1.5 rounded font-mono text-[11px] transition-colors',
+                                  selected
+                                    ? 'bg-[#45475a] text-[#cdd6f4]'
+                                    : 'text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]'
+                                )}
+                                title={session.label || session.name || session.id}
+                              >
+                                <button
+                                  onClick={() => setActiveSession(session.id)}
+                                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left"
+                                >
+                                  <span className={cn('size-[6px] shrink-0 rounded-full', session.alive ? 'bg-[#a6e3a1]' : 'bg-[#6c7086]')} />
+                                  <span className="min-w-0 flex-1 truncate">{session.label || session.name || session.id}</span>
+                                  {(session.messageCount ?? 0) > 0 && (
+                                    <span className="shrink-0 text-[10px] text-[#6c7086]">{session.messageCount}</span>
+                                  )}
+                                </button>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onArchiveSession(session) }}
+                                  className="shrink-0 rounded p-1 text-[#6c7086] hover:bg-[#313244] hover:text-[#f38ba8]"
+                                  title="归档 session"
+                                  aria-label="Archive session"
+                                >
+                                  <Archive className="size-3" />
+                                </button>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </Fragment>
+                  )
+                })}
+                {hiddenWorkspaces.length > 0 && (
                   <div className="pt-1">
                     <button
-                      onClick={() => setEmptyWorkspacesOpen(open => !open)}
+                      onClick={() => setHiddenWorkspacesOpen(open => !open)}
                       className="flex h-7 w-full items-center gap-1.5 rounded px-1.5 font-mono text-[10px] font-bold uppercase tracking-[.06em] text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]"
                     >
-                      <ChevronRight className={cn('size-3 transition-transform', emptyWorkspacesOpen && 'rotate-90')} />
-                      <span className="min-w-0 flex-1 truncate text-left">No Local History</span>
-                      <span className="rounded bg-[#313244] px-1.5 py-0.5 text-[9px] text-[#bac2de]">{emptyWorkspaces.length}</span>
+                      <ChevronRight className={cn('size-3 transition-transform', hiddenWorkspacesOpen && 'rotate-90')} />
+                      <span className="min-w-0 flex-1 truncate text-left">Hidden</span>
+                      <span className="rounded bg-[#313244] px-1.5 py-0.5 text-[9px] text-[#bac2de]">{hiddenWorkspaces.length}</span>
                     </button>
-                    {emptyWorkspacesOpen && (
+                    {hiddenWorkspacesOpen && (
                       <div className="mt-1 space-y-1">
-                        {emptyWorkspaces.map(workspace => (
-                          <SidebarItem
-                            key={workspace.id}
-                            name={workspace.name}
-                            path={workspace.cwd || workspace.path}
-                            meta="0"
-                            status="off"
-                            badges={[workspace.source]}
-                            active={workspace.id === activeWorkspace?.id}
-                            onClick={() => {
-                              if (!workspace.cwd) {
-                                onConfigureWorkspace(workspace)
-                              } else {
-                                setActiveWorkspace(workspace.id)
-                              }
-                            }}
-                          />
+                        {hiddenWorkspaces.map(workspace => (
+                          <div key={workspace.id} className="flex items-center gap-1">
+                            <SidebarItem
+                              name={workspace.name}
+                              path={workspace.cwd || workspace.path}
+                              status="off"
+                              badges={[workspace.source]}
+                              active={workspace.id === activeWorkspace?.id}
+                              onClick={() => setActiveWorkspace(workspace.id)}
+                            />
+                            <button
+                              onClick={() => onToggleHidden(workspace)}
+                              className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#a6e3a1]"
+                              title="显示"
+                              aria-label="Show workspace"
+                            >
+                              <Eye className="size-3" />
+                            </button>
+                          </div>
                         ))}
                       </div>
                     )}
@@ -275,10 +374,9 @@ function Sidebar({
               </>
             )}
           <button
-            onClick={mode === 'workspaces' ? onCreateWorkspace : undefined}
+            onClick={mode === 'workspaces' ? onCreateWorkspace : () => onBindProject(activeProject ?? projects[0])}
             className="grid w-full grid-cols-[14px_1fr] items-start gap-2 rounded-md px-2 py-2 text-left text-xs text-[#7f849c] hover:bg-[#313244]"
-          >
-            <Plus className="mt-0.5 size-3.5 text-[#cba6f7]" />
+          >            <Plus className="mt-0.5 size-3.5 text-[#cba6f7]" />
             <span>
               <span className="block font-semibold text-[#bac2de]">{mode === 'projects' ? 'Bind project' : 'Create workspace'}</span>
               <span className="mt-0.5 block truncate font-mono text-[10px] text-[#7f849c]">
@@ -290,13 +388,8 @@ function Sidebar({
       </div>
 
       <section className="border-t border-[#313244] p-2">
-        <button
-          onClick={onRestart}
-          className="flex h-8 w-full items-center gap-2 rounded px-2 text-xs text-[#a6adc8] hover:bg-[#313244]"
-        >
-          <RefreshCw className="size-3.5" />
-          Restart Shell
-        </button>
+        <RestartShellButton />
+        <DirectorPanel directorLabel="main" />
       </section>
     </aside>
   )
@@ -316,12 +409,12 @@ export function RootLayout() {
     else localStorage.removeItem(WS_STORAGE_KEY)
     setActiveWorkspaceIdState(id)
   }, [])
-  const { context, createWorkspace, updateWorkspaceConfig, loadContext } = useWorkContext()
+  const { context, createWorkspace, updateWorkspaceConfig, setWorkspaceVisibility, loadContext } = useWorkContext()
   const isSubPage = location.pathname !== '/' && location.pathname !== ''
   const activeProject = context.projects[0]
   const activeWorkspaceInfo = context.workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? context.workspaces[0]
   const activeWorkspaceName = activeWorkspaceInfo?.source === 'memory' ? activeWorkspaceInfo.name : (activeWorkspaceInfo?.name === 'Main director' ? 'main' : activeWorkspaceInfo?.name)
-  const { sessions, activeSession, setActiveSession } = useSessions(activeWorkspaceName)
+  const { sessions, activeSession, setActiveSession, loadSessions } = useSessions(activeWorkspaceName)
   const activeSessionInfo = sessions.find(session => session.id === activeSession) ?? sessions[0]
   const { on } = useWebSocket()
 
@@ -335,7 +428,7 @@ export function RootLayout() {
     return on('task_callback', (data) => {
       const text = (data.text as string) || '后台任务完成'
       if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-        new Notification('Persona Shell', { body: text, icon: '/v2/favicon.ico' })
+        new Notification('Persona Shell', { body: text, icon: '/favicon.ico' })
       }
     })
   }, [on])
@@ -352,14 +445,28 @@ export function RootLayout() {
 
   const [createSheetOpen, setCreateSheetOpen] = useState(false)
   const [configWorkspace, setConfigWorkspace] = useState<WorkspaceInfo | undefined>()
+  // WP5: 新建 session / 归档 session / 绑定 project 的弹窗状态
+  const [newSessionTarget, setNewSessionTarget] = useState<WorkspaceInfo | null>(null)
+  const [archiveTarget, setArchiveTarget] = useState<Session | null>(null)
+  const [bindProjectTarget, setBindProjectTarget] = useState<ProjectInfo | null>(null)
+  const sessionsMut = useSessionsMut()
 
   const handleCreateWorkspace = () => {
     setConfigWorkspace(undefined)
+    setBindProjectTarget(null)
     setCreateSheetOpen(true)
   }
 
   const handleConfigureWorkspace = (workspace: WorkspaceInfo) => {
     setConfigWorkspace(workspace)
+    setBindProjectTarget(null)
+    setCreateSheetOpen(true)
+  }
+
+  // Bind project 接线:打开 sheet 时把 project 设为"将作为 cwd 预选"
+  const handleBindProject = (project: ProjectInfo) => {
+    setConfigWorkspace(undefined)
+    setBindProjectTarget(project)
     setCreateSheetOpen(true)
   }
 
@@ -369,28 +476,22 @@ export function RootLayout() {
     setCreateSheetOpen(false)
   }
 
-  const { post } = useApi()
-  const handleRestart = useCallback(async () => {
-    if (!window.confirm('确定要重启 Shell 吗？')) return
-    try {
-      const res = await post<{ ok: boolean; message?: string }>('/api/send', { text: '/shell-restart' })
-      if (!res.ok && res.message) {
-        if (window.confirm(`${res.message}\n\n是否强制重启？`)) {
-          await post('/api/send', { text: '/shell-restart --force' })
-        }
-      }
-    } catch {
-      window.alert('重启请求失败')
-    }
-  }, [post])
-
   const isTasksPage = location.pathname === '/tasks'
+  const isMobile = useIsMobile()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [switchSheetOpen, setSwitchSheetOpen] = useState(false)
 
   return (
     <div className="flex h-screen flex-col bg-[#1e1e2e] text-[#cdd6f4]">
-      <Header activeProject={activeProject} activeWorkspace={activeWorkspaceInfo} activeSession={activeSessionInfo} mode={mode} />
-      <div className={cn('min-h-0 flex-1', isTasksPage ? 'flex' : 'grid grid-cols-[292px_minmax(520px,1fr)]')}>
-        {!isTasksPage && (
+      <Header
+        activeProject={activeProject}
+        activeWorkspace={activeWorkspaceInfo}
+        activeSession={activeSessionInfo}
+        mode={mode}
+        onSwitchClick={() => setSwitchSheetOpen(true)}
+      />
+      <div className={cn('min-h-0 flex-1', isTasksPage ? 'flex' : isMobile ? 'flex flex-col' : 'grid grid-cols-[292px_minmax(520px,1fr)]')}>
+        {!isTasksPage && !isMobile && (
           <Sidebar
             mode={mode}
             setMode={setMode}
@@ -399,12 +500,52 @@ export function RootLayout() {
             activeProject={activeProject}
             activeWorkspace={activeWorkspaceInfo}
             setActiveWorkspace={setActiveWorkspaceId}
+            sessions={sessions}
+            activeSession={activeSessionInfo?.id}
+            setActiveSession={setActiveSession}
             onCreateWorkspace={handleCreateWorkspace}
             onConfigureWorkspace={handleConfigureWorkspace}
-            onRestart={handleRestart}
+            onCreateSession={(ws) => setNewSessionTarget(ws)}
+            onArchiveSession={(s) => setArchiveTarget(s)}
+            onBindProject={handleBindProject}
+            onToggleHidden={(ws) => setWorkspaceVisibility(ws.name, !ws.hidden)}
           />
         )}
+        {!isTasksPage && isMobile && (
+          <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+            <SheetTrigger asChild>
+              <button
+                className="flex h-9 shrink-0 items-center gap-1.5 border-b border-[#45475a] bg-[#313244] px-3 text-xs text-[#bac2de] hover:bg-[#45475a]"
+                aria-label="Open sidebar"
+              >
+                <Menu className="size-3.5" />
+                Menu
+              </button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-[292px] max-w-[80vw] p-0">
+              <Sidebar
+                mode={mode}
+                setMode={setMode}
+                projects={context.projects}
+                workspaces={context.workspaces}
+                activeProject={activeProject}
+                activeWorkspace={activeWorkspaceInfo}
+                setActiveWorkspace={setActiveWorkspaceId}
+                sessions={sessions}
+                activeSession={activeSessionInfo?.id}
+                setActiveSession={(id) => { setActiveSession(id); setSidebarOpen(false) }}
+                onCreateWorkspace={handleCreateWorkspace}
+                onConfigureWorkspace={handleConfigureWorkspace}
+                onCreateSession={(ws) => { setNewSessionTarget(ws); setSidebarOpen(false) }}
+                onArchiveSession={(s) => { setArchiveTarget(s); setSidebarOpen(false) }}
+                onBindProject={handleBindProject}
+                onToggleHidden={(ws) => setWorkspaceVisibility(ws.name, !ws.hidden)}
+              />
+            </SheetContent>
+          </Sheet>
+        )}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
+          <StatusBar />
           <div className="flex min-h-[42px] shrink-0 items-center gap-2 border-b border-[#45475a] bg-[#313244] px-4">
             {isSubPage ? (
               <button
@@ -461,6 +602,50 @@ export function RootLayout() {
         createWorkspace={createWorkspace}
         existingWorkspace={configWorkspace}
         updateWorkspaceConfig={updateWorkspaceConfig}
+        initialCwd={bindProjectTarget?.path}
+      />
+      <ShortcutRoot />
+      <CommandPalette />
+      <SwitchSheet open={switchSheetOpen} onOpenChange={setSwitchSheetOpen} directorLabel="main" />
+      <NewSessionDialog
+        open={newSessionTarget !== null}
+        onOpenChange={(open) => { if (!open) setNewSessionTarget(null) }}
+        workspace={newSessionTarget?.name ?? ''}
+        defaultAgent={newSessionTarget?.agent}
+        onCreate={async ({ agent, sessionName }) => {
+          if (!newSessionTarget) return
+          const result = await sessionsMut.create(
+            { workspace: newSessionTarget.name, agent },
+            { onSuccess: () => { void loadSessions() } }
+          )
+          if (result?.sessionId) {
+            if (sessionName) {
+              await sessionsMut.rename(result.sessionId, sessionName)
+            }
+            setActiveSession(result.sessionId)
+            void loadSessions()
+          }
+          setNewSessionTarget(null)
+        }}
+      />
+      <ConfirmDialog
+        open={archiveTarget !== null}
+        onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}
+        title="归档 Session"
+        description={archiveTarget ? `确定要归档 "${archiveTarget.label || archiveTarget.id}" 吗?` : ''}
+        confirmLabel="归档"
+        destructive
+        extraCheckboxes={[
+          { id: 'killDirector', label: '同时关闭 Director 进程(默认仅标记归档,Director 继续运行)' },
+        ]}
+        onConfirm={async (extra) => {
+          if (!archiveTarget) return
+          await sessionsMut.archive(archiveTarget.id, {
+            killDirector: !!extra.killDirector,
+            onSuccess: () => { void loadSessions() },
+          })
+          setArchiveTarget(null)
+        }}
       />
     </div>
   )

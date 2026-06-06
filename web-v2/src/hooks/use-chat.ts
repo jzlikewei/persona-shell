@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { startTransition, useState, useCallback, useEffect, useRef } from 'react'
 import { useApi } from './use-api'
 import { useWebSocket } from './use-websocket'
 import { mergeChatToolCall, type ChatToolCall } from './chat-tools'
@@ -77,7 +77,12 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const [turnPhase, setTurnPhase] = useState<TurnPhase>(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
-  const { get, post } = useApi()
+  // WP6: limit 状态(默认 100;loadMore 调成 500)。后端 /api/messages 不支持 offset/cursor,
+  // 所以"Load earlier"只能"调大 limit 重拉最后 N 条",不是真分页。
+  const [limit, setLimit] = useState(100)
+  // WP6: hideMessage 客户端过滤,Set 装被隐藏消息 id
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set())
+  const { get, post, request } = useApi()
   const { on, status } = useWebSocket()
   const sessionIdRef = useRef(sessionId)
   const liveSessionRef = useRef(liveSession)
@@ -127,21 +132,71 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   }, [])
 
   const loadMessages = useCallback(async () => {
+    if (!sessionId) {
+      setMessages([])
+      setLoading(false)
+      return
+    }
     const seq = requestSeq.current + 1
     requestSeq.current = seq
     setLoading(true)
     try {
-      const params: Record<string, string> = { limit: '100' }
+      const params: Record<string, string> = { limit: String(limit), sessionId }
       if (workspace) params.workspace = workspace
-      if (sessionId) params.sessionId = sessionId
       const data = await get<ApiConversationMessage[]>('/api/messages', params)
-      if (seq === requestSeq.current) setMessages(data.map(mapMessage).reverse())
+      if (seq === requestSeq.current) {
+        // 大列表 + 同步 markdown 渲染会堵主线程,startTransition 让它走低优先级,
+        // 不阻塞 loading spinner 绘制和后续用户输入(比如再点别的 session)
+        startTransition(() => setMessages(data.map(mapMessage).reverse()))
+      }
     } catch (e) {
       console.error('Failed to load messages:', e)
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [get, sessionId, workspace])
+  }, [get, sessionId, workspace, limit])
+
+  // WP6: "Load earlier" —— 调大 limit 重新拉窗口
+  const loadMore = useCallback(() => {
+    setLimit(500)
+  }, [])
+
+  // WP6: hideMessage / showMessage / showAllHidden —— 客户端过滤,可逆
+  const hideMessage = useCallback((id: string) => {
+    setHiddenIds(prev => {
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
+  }, [])
+  const showMessage = useCallback((id: string) => {
+    setHiddenIds(prev => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+  const showAllHidden = useCallback(() => {
+    setHiddenIds(new Set())
+  }, [])
+
+  // WP7: regenerate —— 调后端 /api/messages/regenerate,后端会从 input log 找最后一条 user 消息重发。
+  // 不动本地 messages;新回复会通过现有 turn_event WS 流程自然 append。
+  // assistantMessageId 暂不传(后端按 sessionId 找最后一条 user 消息;前端用 messageId 仅作 UI 跟踪)。
+  const regenerate = useCallback(async (_assistantMessageId?: string) => {
+    if (!sessionIdRef.current) return
+    try {
+      const res = await request<{ ok: boolean; error?: string }>('/api/messages/regenerate', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: sessionIdRef.current }),
+      })
+      if (!res.ok) {
+        console.error('regenerate failed:', res.error)
+      }
+    } catch (e) {
+      console.error('regenerate error:', e instanceof Error ? e.message : String(e))
+    }
+  }, [request])
 
   const flushStreaming = useCallback(() => {
     const text = streamingRef.current
@@ -372,5 +427,5 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     if (status === 'connected') loadMessages()
   }, [sessionId, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
 
-  return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages }
+  return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden, regenerate }
 }

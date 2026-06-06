@@ -11,7 +11,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, listSessionsFromDb, setSessionNameInDb } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
@@ -49,11 +49,13 @@ interface ConsoleWorkspace {
   localSessionCount?: number;
   localMessageCount?: number;
   lastMessageAt?: string;
+  hidden?: boolean;
 }
 
 interface WorkspaceConfig {
   cwd?: string;
   agent?: string;
+  hidden?: boolean;
 }
 
 function getWorkspaceConfig(name: string): WorkspaceConfig | null {
@@ -157,6 +159,54 @@ export interface MetricsCollector {
 }
 
 /**
+ * WP7 helper:从 input log 文件数组(按 mtime/日期降序)里找最后一条 user 消息文本。
+ * 不解析 log parser 的完整结构,直接 JSON.parse 每一行找 {direction:'in', text:string}。
+ * 返回 null 表示没找到(可能 session 还是空的,或日志格式不匹配)。
+ * WP7:export 给单测用。
+ */
+export function readLastUserMessageText(inputLogPaths: string[]): string | null {
+  // 按文件名升序遍历(最旧的先,最新的后 push),然后从 lines 末尾往前找第一条 direction=in。
+  // 关键:把"最新"的内容放在 lines 末尾,这样从后往前找时会先撞到最新的。
+  // (文件命名是 input-YYYYMMDD.log,升序=日期升序)
+  const sortedPaths = [...inputLogPaths]
+    .filter(p => {
+      try { return statSync(p).isFile() } catch { return false }
+    })
+    .sort()  // 升序:最旧的在前
+  if (sortedPaths.length === 0) return null
+  // 简单 tail:读每个文件最后 ~16KB,合并后从后往前找第一条 direction=in 的 JSON 行
+  const TAIL_BYTES = 16 * 1024
+  const lines: string[] = []
+  for (const file of sortedPaths) {
+    try {
+      const stat = statSync(file)
+      const start = Math.max(0, stat.size - TAIL_BYTES)
+      const fd = openSync(file, 'r')
+      const buf = Buffer.alloc(stat.size - start)
+      readSync(fd, buf, 0, buf.length, start)
+      closeSync(fd)
+      const chunk = buf.toString('utf-8')
+      for (const line of chunk.split('\n')) {
+        if (line.trim()) lines.push(line)
+      }
+    } catch {
+      // 文件读不到,跳过
+    }
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(lines[i])
+      if (obj && obj.direction === 'in' && typeof obj.text === 'string' && obj.text.length > 0) {
+        return obj.text
+      }
+    } catch {
+      // 单行解析失败,跳过
+    }
+  }
+  return null
+}
+
+/**
  * 启动 Web 管理控制台（HTTP + WebSocket）
  * 用 Bun.serve() 提供单页 TUI 前端 + 实时状态推送 + 命令接收
  */
@@ -172,10 +222,12 @@ export function startConsole(
 ): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
-  const publicDir = join(import.meta.dir, 'public');
-  const htmlPath = join(publicDir, 'index.html');
+  // V2 (React/Vite) is the default frontend, served at /
+  // V1 (legacy static) is kept at /v1 as a fallback
   const v2Dir = resolve(import.meta.dir, '..', 'web-v2', 'dist');
   const v2HtmlPath = join(v2Dir, 'index.html');
+  const v1Dir = join(import.meta.dir, 'public');
+  const v1HtmlPath = join(v1Dir, 'index.html');
 
   // Web chat 消息处理
   const chatHandlers: Array<(msg: IncomingMessage) => Promise<void> | void> = [];
@@ -342,6 +394,7 @@ export function startConsole(
           };
           const wsConfig = getWorkspaceConfig(name);
           const wsName = routing.groupName ?? name;
+          const hidden = wsConfig?.hidden ?? (hasAnySessionHistory(wsName) ? false : true);
           workspaces.push({
             id: `memory-${name}`,
             name,
@@ -349,6 +402,7 @@ export function startConsole(
             source: 'memory',
             cwd: wsConfig?.cwd,
             agent: wsConfig?.agent,
+            hidden,
             ...routing,
             ...localHistoryForWorkspace(wsName),
           });
@@ -508,6 +562,11 @@ export function startConsole(
           directorPid: ds.pid,
           sessionId: ds.sessionId,
           sessionName: ds.sessionName,
+          // WP5: 把"当前 live session 是否已 archived"暴露给前端。
+          // 前端 useSessions 在 unshift 自己的 live 合并时,需要这个标志决定是否跳过
+          // —— 否则归档"当前活跃 session"后,DB SQL 过滤+后端 live 合并都跳过了,
+          // 但前端 hook 又 unshift 回来,UI 永远看不到归档生效。
+          liveSessionArchived: ds.sessionId ? getSessionRecord(ds.sessionId)?.archived === 1 : false,
           directorAgentName: ds.agentName,
           directorAgentType: ds.agentType,
           personaRole: ds.personaRole,
@@ -562,6 +621,12 @@ export function startConsole(
           } : null,
           pid: entry.directorStatus?.pid ?? null,
           sessionId: entry.directorStatus?.sessionId ?? null,
+          // WP5: 把 pool entry 对应 session 的 archived 状态透出,前端 useSessions
+          // 在 unshift 自己的 live 合并时,需要这个标志决定是否跳过(已归档 session
+          // 不应再回列表)。如果 entry 没有 sessionId(冷启动前),archived 为 false。
+          liveSessionArchived: entry.directorStatus?.sessionId
+            ? getSessionRecord(entry.directorStatus.sessionId)?.archived === 1
+            : false,
           directorAgentName: entry.directorAgentName ?? entry.directorStatus?.agentName ?? null,
           directorAgentType: entry.directorStatus?.agentType ?? null,
           personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
@@ -2251,11 +2316,13 @@ export function startConsole(
       const url = new URL(req.url);
 
       // Skip auth for static assets and HTML pages
+      // V2 (default at /): /, /assets/*, /favicon.svg
+      // V1 (kept at /v1): /v1, /v1/css/*, /v1/js/*
       const isStaticAsset = url.pathname === '/' ||
-        url.pathname.startsWith('/css/') ||
-        url.pathname.startsWith('/js/') ||
-        url.pathname === '/v2' ||
-        url.pathname.startsWith('/v2/');
+        url.pathname.startsWith('/assets/') ||
+        url.pathname === '/favicon.svg' ||
+        url.pathname === '/v1' ||
+        url.pathname.startsWith('/v1/');
       if (!isStaticAsset) {
         // Token 认证检查
         const authErr = checkAuth(req);
@@ -2270,34 +2337,65 @@ export function startConsole(
       // HTTP 路由
       switch (url.pathname) {
         case '/': {
+          // V2 SPA root
           try {
-            const html = readFileSync(htmlPath, 'utf-8');
+            const html = readFileSync(v2HtmlPath, 'utf-8');
             return new Response(html, {
               headers: { 'Content-Type': 'text/html; charset=utf-8' },
             });
           } catch (err) {
-            return new Response('index.html not found', { status: 500 });
+            return new Response(
+              'web-v2 dist 不存在，请先构建：cd web-v2 && bun run build\n' +
+              '（启动时通常会自动构建；若反复失败可先用 /v1 访问旧前端）',
+              { status: 500 },
+            );
           }
         }
         default: {
-          // Serve web-v2 SPA under /v2
-          if (url.pathname === '/v2' || url.pathname.startsWith('/v2/')) {
-            const subPath = url.pathname === '/v2' ? '' : url.pathname.slice(3);
-            if (subPath === '' || subPath === '/') {
-              try {
-                const html = readFileSync(v2HtmlPath, 'utf-8');
-                return new Response(html, {
-                  headers: { 'Content-Type': 'text/html; charset=utf-8' },
-                });
-              } catch {
-                return new Response('web-v2 not built. Run: cd web-v2 && bun run build', { status: 404 });
-              }
+          // V1 legacy frontend — kept at /v1 as fallback
+          if (url.pathname === '/v1') {
+            // 重定向带上尾斜杠 — V1 HTML 用相对路径 href="css/style.css",
+            // 不带尾斜杠时浏览器会解析成 /css/style.css(404)。
+            return Response.redirect(`${url.origin}/v1/${url.search}`, 308);
+          }
+          if (url.pathname === '/v1/') {
+            try {
+              const html = readFileSync(v1HtmlPath, 'utf-8');
+              return new Response(html, {
+                headers: { 'Content-Type': 'text/html; charset=utf-8' },
+              });
+            } catch {
+              return new Response('v1 index.html not found', { status: 500 });
             }
-            const filePath = resolve(v2Dir, subPath.slice(1));
-            if (!filePath.startsWith(v2Dir + '/')) {
+          }
+          if (url.pathname.startsWith('/v1/css/') || url.pathname.startsWith('/v1/js/')) {
+            // strip the '/v1' prefix, then resolve under publicDir
+            const filePath = resolve(v1Dir, url.pathname.slice(4));
+            if (!filePath.startsWith(v1Dir + '/')) {
               return new Response('Forbidden', { status: 403 });
             }
             if (existsSync(filePath) && statSync(filePath).isFile()) {
+              const ext = extname(filePath).toLowerCase();
+              const mimeTypes: Record<string, string> = {
+                '.css': 'text/css; charset=utf-8',
+                '.js': 'application/javascript; charset=utf-8',
+              };
+              const content = readFileSync(filePath, 'utf-8');
+              return new Response(content, {
+                headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
+              });
+            }
+            return new Response('Not found', { status: 404 });
+          }
+
+          // V2 static assets (/assets/* and root-level files like favicon.svg)
+          // SPA fallback: every non-/api, non-/ws path under root returns index.html
+          // so the React Router (client-side) can handle it after hydration.
+          if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/ws')) {
+            const filePath = resolve(v2Dir, url.pathname.slice(1));
+            // Prevent path traversal — resolved path must stay inside v2Dir
+            if (filePath.startsWith(v2Dir + '/') &&
+                existsSync(filePath) && statSync(filePath).isFile()) {
               const ext = extname(filePath).toLowerCase();
               const mimeTypes: Record<string, string> = {
                 '.css': 'text/css; charset=utf-8',
@@ -2315,34 +2413,19 @@ export function startConsole(
                 headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
               });
             }
-            // SPA fallback: unknown paths serve index.html for client-side routing
-            try {
-              const html = readFileSync(v2HtmlPath, 'utf-8');
-              return new Response(html, {
-                headers: { 'Content-Type': 'text/html; charset=utf-8' },
-              });
-            } catch {
-              return new Response('Not found', { status: 404 });
-            }
-          }
-
-          // Serve static files from /css/ and /js/ subdirectories
-          if (url.pathname.startsWith('/css/') || url.pathname.startsWith('/js/')) {
-            const filePath = resolve(publicDir, url.pathname.slice(1));
-            // Prevent path traversal — resolved path must stay inside publicDir
-            if (!filePath.startsWith(publicDir + '/')) {
-              return new Response('Forbidden', { status: 403 });
-            }
-            if (existsSync(filePath) && statSync(filePath).isFile()) {
-              const ext = extname(filePath).toLowerCase();
-              const mimeTypes: Record<string, string> = {
-                '.css': 'text/css; charset=utf-8',
-                '.js': 'application/javascript; charset=utf-8',
-              };
-              const content = readFileSync(filePath, 'utf-8');
-              return new Response(content, {
-                headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
-              });
+            // SPA fallback for client-side routes (e.g. /tasks, /files)
+            // Only fallback for GET requests without a file extension — bare HTML page requests.
+            // Requests with extensions (.js, .css, .svg, .map …) that miss should 404 cleanly,
+            // otherwise debugging "why is my asset 404" looks like "asset loaded but is HTML".
+            if (req.method === 'GET' && !extname(url.pathname)) {
+              try {
+                const html = readFileSync(v2HtmlPath, 'utf-8');
+                return new Response(html, {
+                  headers: { 'Content-Type': 'text/html; charset=utf-8' },
+                });
+              } catch {
+                return new Response('Not found', { status: 404 });
+              }
             }
           }
 
@@ -3029,6 +3112,17 @@ export function startConsole(
             setWorkspaceConfig(wsName, wsConfig);
             return Response.json({ ok: true, name: wsName, config: wsConfig });
           }
+          if (url.pathname === '/api/workspaces/visibility' && req.method === 'PUT') {
+            const body = await req.json().catch(() => ({})) as { name?: string; hidden?: boolean };
+            const wsName = sanitizeWorkspaceName(body.name);
+            if (!wsName) {
+              return Response.json({ error: 'Workspace name is required' }, { status: 400 });
+            }
+            const existing = getWorkspaceConfig(wsName);
+            const wsConfig: WorkspaceConfig = { ...existing, hidden: !!body.hidden };
+            setWorkspaceConfig(wsName, wsConfig);
+            return Response.json({ ok: true, name: wsName, hidden: wsConfig.hidden });
+          }
           if (url.pathname === '/api/browse' && req.method === 'GET') {
             const rawPath = url.searchParams.get('path') || '~';
             const resolved = resolve(expandConsolePath(rawPath));
@@ -3100,8 +3194,14 @@ export function startConsole(
               lastMessageAt: r.last_message_at ?? undefined,
             }));
 
-            // Fallback: if DB is empty, parse logs (for pre-migration data)
-            if (sessions.length === 0) {
+            // Fallback: 仅当 DB 完全没有该 workspace 任何记录(包含 archived)时,才回退到 log 文件解析
+            // (pre-migration 环境兼容)。一旦 DB 已有数据,sessions 数组就是真相,
+            // 走 log fallback 会把已 archived 的 session 重新 unshift 回来(因为 parseSessionsFiles
+            // 只看 log 文件,不知道 archived 状态),破坏 WP5 归档语义。
+            // 边界:workspace 全部 session 都已 archived 时,SQL 过滤后 sessions=0 但 dbRows.length=0,
+            // 此时也不能走 fallback —— fallback 用的是"DB 完全没有这个 workspace 的认知"。
+            const totalDbRows = listSessionsFromDb(wsName, { includeArchived: true });
+            if (totalDbRows.length === 0) {
               const target = resolveDirectorLogTarget(directorLabel, director, sessionManager);
               const parsed = parseSessionsFiles(target.outputLogs);
               const nameMap = getState<Record<string, string>>('session:names') ?? {};
@@ -3121,19 +3221,28 @@ export function startConsole(
             const activePoolEntry = poolEntry ? sessionManager?.get(poolEntry.routingKey) : undefined;
             const ds = resolvedLabel === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
             if (ds?.sessionId) {
-              const live = sessions.find(s => s.sessionId === ds.sessionId);
-              if (live) {
-                if (ds.sessionName) live.sessionName = ds.sessionName;
-                live.alive = true;
-              } else {
-                sessions.unshift({
-                  sessionId: ds.sessionId,
-                  sessionName: ds.sessionName ?? undefined,
-                  alive: true,
-                  messageCount: 0,
-                  firstMessageAt: undefined,
-                  lastMessageAt: new Date().toISOString(),
-                });
+              // WP5 修复:live session 合并时,跳过 DB 里已 archived 的 session。
+              // 否则归档"当前活跃 session"后,虽然 DB SQL 已经过滤了 archived=0,
+              // 这段 live 合并逻辑又把它 unshift 回列表,UI 永远看不到归档生效。
+              // 边界:in-memory session 还没注册到 DB(Director 重启后新 spawn),从 getSessionRecord
+              // 拿到 null,这时按"未归档"处理(原始行为)以避免新建 session 被错误隐藏。
+              const archivedRecord = getSessionRecord(ds.sessionId);
+              const isArchivedInDb = archivedRecord?.archived === 1;
+              if (!isArchivedInDb) {
+                const live = sessions.find(s => s.sessionId === ds.sessionId);
+                if (live) {
+                  if (ds.sessionName) live.sessionName = ds.sessionName;
+                  live.alive = true;
+                } else {
+                  sessions.unshift({
+                    sessionId: ds.sessionId,
+                    sessionName: ds.sessionName ?? undefined,
+                    alive: true,
+                    messageCount: 0,
+                    firstMessageAt: undefined,
+                    lastMessageAt: new Date().toISOString(),
+                  });
+                }
               }
             }
             return Response.json(sessions);
@@ -3165,6 +3274,46 @@ export function startConsole(
             return Response.json({ ok: true, sessionId, sessionName: rawName || null, liveUpdated });
           }
           // Persona orchestration APIs for Codex app / MCP clients
+          // WP7: POST /api/messages/regenerate —— 重新生成最后一条 assistant 回复
+          // 找到 entry.bridge 对应的 logDir,扫所有 input-*.log 找最后一条 user 消息,
+          // 重新发一次。不修改日志;只是触发一次新的 turn。
+          if (url.pathname === '/api/messages/regenerate' && req.method === 'POST') {
+            if (!sessionManager) return Response.json({ ok: false, error: 'Session manager not available' }, { status: 503 });
+            const body = (await req.json().catch(() => ({}))) as { sessionId?: string };
+            const sessionId = body.sessionId?.trim();
+            if (!sessionId) return Response.json({ ok: false, error: 'sessionId is required' }, { status: 400 });
+            const entry = sessionManager.getSession(sessionId);
+            if (!entry) {
+              writeAuditEntry('message.regenerate', false, { target: sessionId, error: 'session not found' });
+              return Response.json({ ok: false, error: 'session not found' }, { status: 404 });
+            }
+            // 扫 logDir 里所有 input-*.log,按文件名(日期)倒序,合并 tail
+            const logDir = entry.bridge.getInputLogDir();
+            let inputLogs: string[] = [];
+            try {
+              inputLogs = readdirSync(logDir)
+                .filter(f => f.startsWith('input-') && f.endsWith('.log'))
+                .sort()
+                .reverse() // 最新的在前
+                .map(f => join(logDir, f));
+            } catch {
+              // logDir 不存在 = 还没有任何消息
+            }
+            const text = readLastUserMessageText(inputLogs);
+            if (!text) {
+              writeAuditEntry('message.regenerate', false, { target: sessionId, error: 'no user message to regenerate' });
+              return Response.json({ ok: false, error: 'no user message to regenerate' }, { status: 404 });
+            }
+            try {
+              await entry.bridge.send(text);
+              writeAuditEntry('message.regenerate', true, { target: sessionId, length: text.length });
+              return Response.json({ ok: true, sessionId, text });
+            } catch (err) {
+              writeAuditEntry('message.regenerate', false, { target: sessionId, error: String(err) });
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+
           if (url.pathname === '/api/persona/roles' && req.method === 'GET') {
             return Response.json({ roles: listPersonaRoles(config.director.persona_dir) });
           }
@@ -3596,7 +3745,7 @@ export function startConsole(
           if (url.pathname === '/api/sessions' && req.method === 'POST') {
             if (!sessionManager || !sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
             try {
-              const body = await req.json() as { workspace: string; agent?: string; cwd?: string };
+              const body = await req.json() as { workspace: string; agent?: string };
               if (!body.workspace) {
                 return Response.json({ ok: false, error: 'workspace is required' }, { status: 400 });
               }
@@ -3604,7 +3753,7 @@ export function startConsole(
               if (!wsName) {
                 return Response.json({ ok: false, error: 'invalid workspace name' }, { status: 400 });
               }
-              const entry = await sessionManager.getOrCreateForWorkspace(wsName, {
+              const entry = await sessionManager.createNewSession(wsName, {
                 feishuChatId: 'web-console',
                 directorAgentName: body.agent,
               });
@@ -3652,6 +3801,28 @@ export function startConsole(
               return Response.json({ ok: true });
             } catch (err) {
               writeAuditEntry('web_session.close', false, { target: routingKey, routingKey, error: String(err) });
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+          // WP5: POST /api/sessions/{id}/archive — 软/硬两种归档模式
+          // body: { killDirector?: boolean };默认 false = 软归档(仅翻 DB 标志)
+          if (url.pathname.startsWith('/api/sessions/') && url.pathname.endsWith('/archive') && req.method === 'POST') {
+            if (!sessionManager) return Response.json({ ok: false, error: 'Session manager not available' }, { status: 503 });
+            const sessionId = decodeURIComponent(url.pathname.slice('/api/sessions/'.length, -'/archive'.length));
+            if (!sessionId) return Response.json({ ok: false, error: 'session_id is required' }, { status: 400 });
+            let body: { killDirector?: boolean } = {};
+            try { body = (await req.json()) as { killDirector?: boolean } } catch { /* 默认软归档 */ }
+            try {
+              if (body.killDirector) {
+                const ok = await sessionManager.archiveSession(sessionId);
+                writeAuditEntry('session.archive.kill', ok, { target: sessionId });
+                return Response.json({ ok, sessionId, mode: 'archived-and-shutdown' });
+              }
+              const ok = await sessionManager.markArchived(sessionId);
+              writeAuditEntry('session.archive.soft', ok, { target: sessionId });
+              return Response.json({ ok, sessionId, mode: 'archived' });
+            } catch (err) {
+              writeAuditEntry('session.archive', false, { target: sessionId, error: String(err) });
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
           }

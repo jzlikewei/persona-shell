@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { randomUUID } from 'crypto';
 import type { DirectorPool, PoolEntry } from './director-pool.js';
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue, QueueItem } from './queue.js';
@@ -78,6 +79,25 @@ export class SessionManager extends EventEmitter {
     return this.toSessionEntry(entry);
   }
 
+  /** Create a brand-new session for a workspace (always spawns a new Agent) */
+  async createNewSession(workspaceName: string, opts: {
+    feishuChatId: string;
+    directorAgentName?: string;
+  }): Promise<SessionEntry> {
+    this.workspaceRegistry.getOrCreate(workspaceName);
+    const sessionKey = `web-session:${randomUUID().slice(0, 12)}`;
+    const entry = await this.pool.getOrCreate(sessionKey, {
+      groupName: workspaceName,
+      feishuChatId: opts.feishuChatId,
+      directorAgentName: opts.directorAgentName,
+    });
+    const sessionId = entry.bridge.getStatus().sessionId;
+    if (sessionId) {
+      this.registerSession(sessionId, sessionKey, workspaceName, entry);
+    }
+    return this.toSessionEntry(entry);
+  }
+
   /** Register a session mapping (sessionId → routingKey) */
   registerSession(sessionId: string, routingKey: string, workspace: string, entry: PoolEntry): void {
     this.sessionToRoutingKey.set(sessionId, routingKey);
@@ -120,6 +140,30 @@ export class SessionManager extends EventEmitter {
     return archived;
   }
 
+  /**
+   * Mark a session as archived in the DB WITHOUT shutting down the Director process.
+   * Used by the "soft archive" path (UI default) so live sessions keep running.
+   *
+   * MUST replicate the default_session_id cleanup from archiveSession (L113-118)
+   * to avoid regressing B2 — otherwise the next getOrCreateForWorkspace would
+   * resurrect the archived session as default.
+   */
+  async markArchived(sessionId: string): Promise<boolean> {
+    const archived = archiveSessionInDb(sessionId);
+    if (archived) {
+      const record = getSessionRecord(sessionId);
+      if (record) {
+        const ws = this.workspaceRegistry.get(record.workspace);
+        if (ws && ws.default_session_id === sessionId) {
+          // 跟 archiveSession 一致:默认 filter archived=0(只选非归档的做新 default)
+          const remaining = listSessionRecords(record.workspace).filter(s => s.session_id !== sessionId);
+          this.workspaceRegistry.setDefaultSession(record.workspace, remaining[0]?.session_id ?? null);
+        }
+      }
+    }
+    return archived;
+  }
+
   /** List sessions for a workspace */
   listSessions(workspace: string, opts?: { includeArchived?: boolean }): SessionRow[] {
     return listSessionRecords(workspace, opts);
@@ -134,6 +178,21 @@ export class SessionManager extends EventEmitter {
 
   async restoreEntries(): Promise<void> {
     await this.pool.restoreEntries();
+    // Backfill the sessionId→routingKey map for every restored entry.
+    // The pool's restoreEntries() reconnects orphan Director processes and assigns
+    // bridge.sessionId from persisted state, but it doesn't (and shouldn't) know about
+    // SessionManager's routing index. Without this, /api/send by sessionId 404s for
+    // every workspace session restored from a previous Shell run.
+    let registered = 0;
+    for (const entry of this.pool.listActiveEntries()) {
+      const sessionId = entry.bridge.getStatus().sessionId;
+      if (!sessionId) continue;
+      this.registerSession(sessionId, entry.routingKey, entry.groupName, entry);
+      registered++;
+    }
+    if (registered > 0) {
+      console.log(`[session-manager] Registered ${registered} restored session(s) in routing map`);
+    }
   }
 
   async killUnknownOrphans(): Promise<void> {

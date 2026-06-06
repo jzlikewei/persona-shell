@@ -23,6 +23,7 @@ export interface WorkspaceInfo {
   localSessionCount?: number
   localMessageCount?: number
   lastMessageAt?: string
+  hidden?: boolean
 }
 
 export interface WorkContext {
@@ -62,9 +63,17 @@ export function useWorkContext() {
     await loadContext()
   }, [request, loadContext])
 
+  const setWorkspaceVisibility = useCallback(async (name: string, hidden: boolean) => {
+    await request('/api/workspaces/visibility', {
+      method: 'PUT',
+      body: JSON.stringify({ name, hidden }),
+    })
+    await loadContext()
+  }, [request, loadContext])
+
   useEffect(() => {
     loadContext()
   }, [loadContext])
 
-  return { context, loading, loadContext, createWorkspace, updateWorkspaceConfig }
+  return { context, loading, loadContext, createWorkspace, updateWorkspaceConfig, setWorkspaceVisibility }
 }
