@@ -1,0 +1,17 @@
+#!/bin/sh
+# persona-shell pre-commit hook
+# 跑 knip 报告 web-v2 的孤儿文件/未用 export(warn 不阻断)。
+# 想跳过:git commit --no-verify
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# knip 装在 web-v2 下,需要从那里调用
+if command -v bun >/dev/null 2>&1 && [ -d web-v2/node_modules/knip ]; then
+  echo "→ pre-commit: knip 扫 web-v2 孤儿文件..."
+  # --include files 只报孤儿文件,不报 unused exports / deps(避免输出过长)
+  # || true 让 knip 的 exit=1 不阻断 commit
+  (cd web-v2 && bunx knip --include files --no-progress) || true
+fi
+
+exit 0
