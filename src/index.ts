@@ -5,9 +5,10 @@ import { SessionManager } from './session-manager.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
 import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
-import type { IncomingMessage, StreamingReplyHandle, CardAction } from './messaging/messaging.js';
+import type { IncomingMessage, StreamingReplyHandle, CardAction, MessagingClient } from './messaging/messaging.js';
 import { MessageQueue } from './queue.js';
 import { startConsole, type MetricsCollector } from './console.js';
+import { ensureWebV2Dist } from './ensure-web-v2-dist.js';
 import { TaskRunner, type TaskResult } from './task/task-runner.js';
 import { spawnPersona } from './persona-process.js';
 import { createInterface } from 'readline';
@@ -42,12 +43,32 @@ async function main() {
 
   const queue = new MessageQueue(join(getLogDir(), 'queue.log'), undefined, { restorable: false });
   const director = new SessionBridge({ agents: config.agents, config: config.director, label: 'main', isMain: true });
-  const feishu = createFeishuClient(config.feishu, {
-    skipMentionChatIds: config.pool.parallel_chat_ids,
-    mentionOnlyChatIds: config.pool.mention_only_chat_ids,
-    attachmentDir: join(config.director.persona_dir, 'attachments'),
-  });
-  const messaging = new MessagingRouter(feishu);
+  const isTestMode = process.env.PERSONA_TEST === '1';
+  let messaging: MessagingRouter;
+  if (isTestMode) {
+    console.warn('[shell] PERSONA_TEST=1: starting in test mode, feishu disabled');
+    const stubClient: MessagingClient = {
+      start() {},
+      onMessage() {},
+      async reply() {},
+      async sendMessage() { return null; },
+      async addReaction() {},
+      async uploadAndReplyImage() {},
+      async uploadAndReplyFile() {},
+      async uploadAndSendImage() { return null; },
+      async uploadAndSendFile() { return null; },
+      getLastChatId() { return null; },
+      getConnectionStatus() { return 'disconnected' as const; },
+    };
+    messaging = new MessagingRouter(stubClient);
+  } else {
+    const feishu = createFeishuClient(config.feishu, {
+      skipMentionChatIds: config.pool.parallel_chat_ids,
+      mentionOnlyChatIds: config.pool.mention_only_chat_ids,
+      attachmentDir: join(config.director.persona_dir, 'attachments'),
+    });
+    messaging = new MessagingRouter(feishu);
+  }
   const startTime = Date.now();
   const streamingReplies = new Map<string, StreamingReplyHandle>();
   const systemStreamingReplies = new Map<string, StreamingReplyHandle>();
@@ -571,6 +592,8 @@ async function main() {
 
 
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
+  // 启动前确保 V2 前端 dist 存在且不过时(缺则自动 vite build)
+  await ensureWebV2Dist();
   const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, sessionManager, workspaceRegistry);
   messaging.addClient(webClient);
 
@@ -1240,6 +1263,7 @@ async function main() {
       // 私聊 → 主 Director
       if (director.getStatus().pendingCount > 0) {
         try {
+          director.promoteActiveTurnToUser();
           await director.send(directorText, { expectResponse: false });
           queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));
           console.log(`[shell] Inserted message into active turn: ${messageId}`);

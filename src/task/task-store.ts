@@ -332,7 +332,7 @@ export function getTaskTimeouts(ids: string[]): Map<string, number | null> {
   return result;
 }
 
-export function listTasks(filter?: { status?: string; role?: string; sourceDirector?: string; limit?: number }): Task[] {
+export function listTasks(filter?: { status?: string; role?: string; sourceDirector?: string; groupName?: string; limit?: number }): Task[] {
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
 
@@ -347,6 +347,10 @@ export function listTasks(filter?: { status?: string; role?: string; sourceDirec
   if (filter?.sourceDirector) {
     conditions.push('source_director = ?');
     params.push(filter.sourceDirector);
+  }
+  if (filter?.groupName) {
+    conditions.push(`(source_director = ? OR json_extract(extra, '$.parent_group_name') = ?)`);
+    params.push(filter.groupName, filter.groupName);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

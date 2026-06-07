@@ -275,6 +275,7 @@ export class DirectorPool extends EventEmitter {
 
     entry.lastActiveAt = Date.now();
     if (entry.bridge.getStatus().pendingCount > 0) {
+      entry.bridge.promoteActiveTurnToUser();
       await entry.bridge.send(text, { expectResponse: false });
       entry.queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));
       console.log(`[pool:${entry.groupName}] Inserted message into active turn: ${messageId}`);

@@ -1,14 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useOutletContext } from 'react-router'
 import {
-  Activity,
-  AlertTriangle,
-  ArrowLeft,
   ChevronRight,
   Copy,
   Download,
   Loader2,
-  RefreshCw,
   RotateCcw,
   Search,
   Terminal,
@@ -17,61 +12,14 @@ import {
 } from 'lucide-react'
 import { MarkdownRenderer } from '@/components/markdown-renderer'
 import { useApi } from '@/hooks/use-api'
-import { useWebSocket } from '@/hooks/use-websocket'
-import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
+import type { Task, TaskOutput } from './index'
+import type { TaskLogEntry } from '@/hooks/use-task-logs'
+import { formatDuration, formatTime, StatusBadge } from './task-list'
 
-/* ── types ────────────────────────────────────── */
+/* ── types & constants ────────────────────────── */
 
-interface Task {
-  id: string
-  type?: string
-  role: string
-  agent?: string | null
-  description: string
-  prompt: string
-  status: 'dispatched' | 'running' | 'completed' | 'failed'
-  created_at: string
-  started_at?: string | null
-  completed_at?: string | null
-  duration_ms?: number | null
-  cost_usd?: number | null
-  result_file?: string | null
-  error?: string | null
-  source_director?: string | null
-  extra?: Record<string, unknown> | null
-}
-
-interface TaskOutput {
-  content?: string
-  path?: string
-  error?: string
-}
-
-interface TaskLogEntry {
-  line: number
-  type: 'system' | 'text' | 'tool_use' | 'tool_result' | 'result' | 'thinking'
-  content: string
-  meta?: Record<string, unknown>
-}
-
-interface TaskLogs {
-  entries: TaskLogEntry[]
-  totalLines: number
-}
-
-type StatusFilter = 'all' | 'dispatched' | 'running' | 'completed' | 'failed'
-type SourceScope = 'workspace' | 'all'
-type LogTypeFilter = 'all' | 'thinking' | 'tools' | 'results' | 'errors' | 'text' | 'system'
-
-/* ── constants ────────────────────────────────── */
-
-const statusConfig: Record<Task['status'], { label: string; badge: string; dot: string }> = {
-  dispatched: { label: 'Dispatched', badge: 'bg-[#f9e2af]/15 text-[#f9e2af]', dot: 'bg-[#f9e2af]' },
-  running:    { label: 'Running',    badge: 'bg-[#a6e3a1]/15 text-[#a6e3a1]', dot: 'bg-[#a6e3a1]' },
-  completed:  { label: 'Completed',  badge: 'bg-[#89b4fa]/15 text-[#89b4fa]', dot: 'bg-[#89b4fa]' },
-  failed:     { label: 'Failed',     badge: 'bg-[#f38ba8]/15 text-[#f38ba8]', dot: 'bg-[#f38ba8]' },
-}
+export type LogTypeFilter = 'all' | 'thinking' | 'tools' | 'results' | 'errors' | 'text' | 'system'
 
 const logTypeFilters: { key: LogTypeFilter; label: string }[] = [
   { key: 'all',      label: 'All' },
@@ -84,30 +32,6 @@ const logTypeFilters: { key: LogTypeFilter; label: string }[] = [
 ]
 
 /* ── utils ────────────────────────────────────── */
-
-function formatDuration(ms?: number | null) {
-  if (ms == null) return '--'
-  if (ms < 1000) return `${ms}ms`
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  const m = Math.floor(s / 60)
-  const rs = s % 60
-  return rs > 0 ? `${m}m ${rs}s` : `${m}m`
-}
-
-function formatTime(ts?: string | null) {
-  if (!ts) return '--'
-  try {
-    return new Date(ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-  } catch {
-    return ts
-  }
-}
-
-function shortText(text: string, max = 80) {
-  const compact = text.replace(/\s+/g, ' ').trim()
-  return compact.length > max ? `${compact.slice(0, max)}...` : compact
-}
 
 function extraValue(task: Task, key: string) {
   const value = task.extra?.[key]
@@ -130,225 +54,7 @@ function matchesSearch(entry: TaskLogEntry, query: string): boolean {
   return false
 }
 
-/* ── small components ─────────────────────────── */
-
-function StatusBadge({ status }: { status: Task['status'] }) {
-  const cfg = statusConfig[status] ?? statusConfig.dispatched
-  return (
-    <span className={cn('inline-flex h-5 items-center gap-1.5 rounded px-2 font-mono text-[10px] font-bold uppercase tracking-[.04em]', cfg.badge)}>
-      <span className={cn('size-1.5 rounded-full', cfg.dot, status === 'running' && 'animate-pulse')} />
-      {cfg.label}
-    </span>
-  )
-}
-
-/* ── useTaskLogs hook ─────────────────────────── */
-
-function useTaskLogs(taskId: string | null, taskStatus: Task['status'] | undefined) {
-  const { get } = useApi()
-  const [logs, setLogs] = useState<TaskLogEntry[]>([])
-  const [totalLines, setTotalLines] = useState(0)
-  const [loading, setLoading] = useState(false)
-  const totalRef = useRef(0)
-
-  useEffect(() => {
-    setLogs([])
-    setTotalLines(0)
-    totalRef.current = 0
-    if (!taskId) return
-    setLoading(true)
-  }, [taskId])
-
-  const fetchLogs = useCallback(async (id: string, after: number) => {
-    try {
-      const data = await get<TaskLogs>(`/api/tasks/${id}/logs`, { after: String(after) })
-      if (data.entries.length > 0) {
-        setLogs(prev => [...prev, ...data.entries])
-      }
-      setTotalLines(data.totalLines)
-      totalRef.current = data.totalLines
-      setLoading(false)
-    } catch {
-      setLoading(false)
-    }
-  }, [get])
-
-  useEffect(() => {
-    if (!taskId) return
-    fetchLogs(taskId, 0)
-  }, [taskId, fetchLogs])
-
-  useEffect(() => {
-    if (!taskId) return
-    const isActive = taskStatus === 'running' || taskStatus === 'dispatched'
-    if (!isActive) return
-
-    const interval = setInterval(() => {
-      fetchLogs(taskId, totalRef.current)
-    }, 2000)
-
-    return () => clearInterval(interval)
-  }, [taskId, taskStatus, fetchLogs])
-
-  return { logs, totalLines, loading }
-}
-
-/* ── Left Panel: Task List ────────────────────── */
-
-function TaskListPanel({
-  tasks,
-  loading,
-  error,
-  filter,
-  setFilter,
-  scope,
-  setScope,
-  selectedId,
-  setSelectedId,
-  onRefresh,
-  onBack,
-  workspaceName,
-}: {
-  tasks: Task[]
-  loading: boolean
-  error: string | null
-  filter: StatusFilter
-  setFilter: (f: StatusFilter) => void
-  scope: SourceScope
-  setScope: (s: SourceScope) => void
-  selectedId: string | null
-  setSelectedId: (id: string) => void
-  onRefresh: () => void
-  onBack: () => void
-  workspaceName?: string
-}) {
-  const counts = useMemo(() => ({
-    all: tasks.length,
-    dispatched: tasks.filter(t => t.status === 'dispatched').length,
-    running: tasks.filter(t => t.status === 'running').length,
-    completed: tasks.filter(t => t.status === 'completed').length,
-    failed: tasks.filter(t => t.status === 'failed').length,
-  }), [tasks])
-
-  const visible = useMemo(() =>
-    tasks.filter(t => filter === 'all' || t.status === filter),
-  [filter, tasks])
-
-  useEffect(() => {
-    setSelectedId(visible[0]?.id ?? '')
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter])
-
-  return (
-    <aside className="flex h-full min-w-0 flex-col overflow-hidden border-r border-[#313244] bg-[#181825]">
-      {/* header */}
-      <div className="shrink-0 border-b border-[#313244] px-3 py-2">
-        <div className="mb-1 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={onBack}
-              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#89b4fa] hover:bg-[#313244] transition-colors"
-            >
-              <ArrowLeft className="size-3" />
-              Chat
-            </button>
-            <span className="text-[#45475a]">|</span>
-            <Activity className="size-3.5 text-[#a6e3a1]" />
-            <span className="text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Tasks</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="flex rounded bg-[#313244] p-0.5">
-              {(['workspace', 'all'] as SourceScope[]).map(v => (
-                <button
-                  key={v}
-                  onClick={() => setScope(v)}
-                  className={cn(
-                    'h-5 rounded px-1.5 font-mono text-[9px] font-bold uppercase transition-colors',
-                    scope === v ? 'bg-[#45475a] text-[#cdd6f4]' : 'text-[#7f849c] hover:text-[#cdd6f4]'
-                  )}
-                >
-                  {v === 'workspace' ? 'WS' : 'All'}
-                </button>
-              ))}
-            </div>
-            <button onClick={onRefresh} className="rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]">
-              <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
-            </button>
-          </div>
-        </div>
-        <div className="truncate font-mono text-[10px] text-[#6c7086]">
-          {scope === 'workspace' ? workspaceName || 'main' : 'all workspaces'}
-        </div>
-      </div>
-
-      {/* filter chips */}
-      <div className="flex shrink-0 flex-wrap gap-1 border-b border-[#313244] px-3 py-2">
-        {(['all', 'running', 'completed', 'failed'] as StatusFilter[]).map(v => (
-          <button
-            key={v}
-            onClick={() => setFilter(v)}
-            className={cn(
-              'h-6 rounded px-2 font-mono text-[10px] font-bold uppercase transition-colors',
-              filter === v ? 'bg-[#45475a] text-[#cdd6f4]' : 'bg-[#313244]/60 text-[#7f849c] hover:text-[#cdd6f4]'
-            )}
-          >
-            {v === 'all' ? 'All' : statusConfig[v].label}
-            <span className="ml-1 text-[#6c7086]">{counts[v]}</span>
-          </button>
-        ))}
-      </div>
-
-      {/* task list */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading && tasks.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 py-12 text-xs text-[#7f849c]">
-            <Loader2 className="size-3.5 animate-spin" /> Loading...
-          </div>
-        ) : error ? (
-          <div className="mx-2 mt-2 flex items-center gap-2 rounded bg-[#f38ba8]/10 px-2 py-1.5 text-xs text-[#f38ba8]">
-            <AlertTriangle className="size-3.5" /> {error}
-          </div>
-        ) : visible.length === 0 ? (
-          <div className="py-12 text-center text-xs text-[#7f849c]">No tasks</div>
-        ) : (
-          <div className="space-y-0.5 p-1.5">
-            {visible.map(task => (
-              <button
-                key={task.id}
-                onClick={() => setSelectedId(task.id)}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-[#313244]',
-                  task.id === selectedId && 'bg-[#45475a]'
-                )}
-              >
-                <StatusBadge status={task.status} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] font-medium text-[#cdd6f4]">
-                    {task.description || shortText(task.prompt)}
-                  </span>
-                </span>
-                <span className="shrink-0 font-mono text-[10px] text-[#6c7086]">
-                  {task.duration_ms != null ? formatDuration(task.duration_ms) : ''}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* summary footer */}
-      <div className="shrink-0 border-t border-[#313244] px-3 py-2">
-        <div className="flex items-center gap-3 font-mono text-[10px] text-[#6c7086]">
-          <span>{counts.completed} done</span>
-          <span>{counts.failed} fail</span>
-          <span>{counts.running + counts.dispatched} active</span>
-        </div>
-      </div>
-    </aside>
-  )
-}
-
-/* ── Center Panel: Live Logs ──────────────────── */
+/* ── LogEntry ─────────────────────────────────── */
 
 function LogEntry({ entry }: { entry: TaskLogEntry }) {
   const [expanded, setExpanded] = useState(false)
@@ -468,7 +174,9 @@ function LogEntry({ entry }: { entry: TaskLogEntry }) {
   )
 }
 
-function LogsPanel({
+/* ── LogsPanel ────────────────────────────────── */
+
+export function LogsPanel({
   task,
   logs,
   totalLines,
@@ -623,9 +331,9 @@ function LogsPanel({
   )
 }
 
-/* ── Right Panel: Result + Prompt (floating overlay) ── */
+/* ── ResultPanel ──────────────────────────────── */
 
-function ResultPanel({ task, onClose }: { task: Task | null; onClose: () => void }) {
+export function ResultPanel({ task, onClose }: { task: Task | null; onClose: () => void }) {
   const { get, post } = useApi()
   const [output, setOutput] = useState<TaskOutput | null>(null)
   const [loadingOutput, setLoadingOutput] = useState(false)
@@ -758,7 +466,7 @@ function ResultPanel({ task, onClose }: { task: Task | null; onClose: () => void
 
         {/* scrollable content */}
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {/* prompt / input params — shown first */}
+          {/* prompt / input params */}
           <div className="border-b border-[#313244] px-3 py-2">
             <div className="mb-2 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Input / Prompt</div>
             <pre className="whitespace-pre-wrap break-words rounded bg-[#1e1e2e] p-2 font-mono text-[11px] leading-relaxed text-[#bac2de]">
@@ -844,153 +552,6 @@ function ResultPanel({ task, onClose }: { task: Task | null; onClose: () => void
           </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-/* ── Drag Handle ──────────────────────────────── */
-
-function DragHandle({
-  onDrag,
-}: {
-  onDrag: (delta: number) => void
-}) {
-  const dragging = useRef(false)
-  const lastX = useRef(0)
-
-  const onMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    dragging.current = true
-    lastX.current = e.clientX
-    const onMove = (ev: MouseEvent) => {
-      if (!dragging.current) return
-      const delta = ev.clientX - lastX.current
-      lastX.current = ev.clientX
-      onDrag(delta)
-    }
-    const onUp = () => {
-      dragging.current = false
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('mouseup', onUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('mouseup', onUp)
-  }, [onDrag])
-
-  return (
-    <div
-      onMouseDown={onMouseDown}
-      className="flex w-1 shrink-0 cursor-col-resize items-center justify-center hover:bg-[#89b4fa]/20 active:bg-[#89b4fa]/30 transition-colors"
-    />
-  )
-}
-
-/* ── Page root ────────────────────────────────── */
-
-export function TasksPage() {
-  const { activeWorkspace, workspaceName } = useOutletContext<ShellOutletContext>()
-  const navigate = useNavigate()
-  const { get } = useApi()
-  const [tasks, setTasks] = useState<Task[]>([])
-  const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState<StatusFilter>('all')
-  const [scope, setScope] = useState<SourceScope>('workspace')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [leftWidth, setLeftWidth] = useState(() => {
-    const saved = localStorage.getItem('persona-shell:v2:tasks-left-width')
-    return saved ? Number(saved) : 340
-  })
-  const [showResult, setShowResult] = useState(true)
-
-  const handleLeftDrag = useCallback((delta: number) => {
-    setLeftWidth(prev => {
-      const next = Math.max(220, Math.min(600, prev + delta))
-      localStorage.setItem('persona-shell:v2:tasks-left-width', String(next))
-      return next
-    })
-  }, [])
-
-  useEffect(() => {
-    setSelectedId(null)
-    setScope('workspace')
-  }, [workspaceName])
-
-  const fetchTasks = useCallback((silent = false) => {
-    const params: Record<string, string> = { limit: '200' }
-    if (scope === 'workspace') params.source_director = workspaceName || 'main'
-    if (!silent) { setLoading(true); setError(null) }
-    get<Task[]>('/api/tasks', params)
-      .then(list => {
-        setTasks(Array.isArray(list) ? list : [])
-      })
-      .catch(err => { if (!silent) setError(err instanceof Error ? err.message : String(err)) })
-      .finally(() => { if (!silent) setLoading(false) })
-  }, [workspaceName, get, scope])
-
-  useEffect(() => { fetchTasks() }, [fetchTasks])
-
-  // auto-refresh when active tasks exist
-  useEffect(() => {
-    const hasActive = tasks.some(t => t.status === 'running' || t.status === 'dispatched')
-    if (!hasActive) return
-    const interval = setInterval(() => fetchTasks(true), 5000)
-    return () => clearInterval(interval)
-  }, [fetchTasks, tasks])
-
-  // instant refresh on task_callback WebSocket event
-  const { on } = useWebSocket()
-  useEffect(() => {
-    return on('task_callback', () => fetchTasks(true))
-  }, [on, fetchTasks])
-
-  // auto-select first task
-  const visibleTasks = useMemo(() =>
-    tasks.filter(t => filter === 'all' || t.status === filter),
-  [filter, tasks])
-
-  useEffect(() => {
-    setSelectedId(prev => {
-      if (prev && visibleTasks.some(t => t.id === prev)) return prev
-      return visibleTasks[0]?.id ?? null
-    })
-  }, [visibleTasks])
-
-  const selected = tasks.find(t => t.id === selectedId) ?? null
-  const { logs, totalLines, loading: logsLoading } = useTaskLogs(selectedId, selected?.status)
-
-  return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div style={{ width: leftWidth }} className="shrink-0">
-        <TaskListPanel
-          tasks={tasks}
-          loading={loading}
-          error={error}
-          filter={filter}
-          setFilter={setFilter}
-          scope={scope}
-          setScope={s => { setScope(s); setSelectedId(null) }}
-          selectedId={selectedId}
-          setSelectedId={id => { setSelectedId(id); setShowResult(true) }}
-          onRefresh={fetchTasks}
-          onBack={() => navigate('/')}
-          workspaceName={workspaceName ?? activeWorkspace?.name}
-        />
-      </div>
-      <DragHandle onDrag={handleLeftDrag} />
-      <LogsPanel
-        task={selected}
-        logs={logs}
-        totalLines={totalLines}
-        loading={logsLoading}
-      />
-      {showResult && (
-        <ResultPanel task={selected} onClose={() => setShowResult(false)} />
-      )}
     </div>
   )
 }

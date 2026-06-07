@@ -3573,8 +3573,9 @@ export function startConsole(
             const status = url.searchParams.get('status') ?? undefined;
             const role = url.searchParams.get('role') ?? undefined;
             const sourceDirector = url.searchParams.get('source_director') ?? undefined;
+            const groupName = url.searchParams.get('group_name') ?? undefined;
             const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-            return Response.json(listTasks({ status, role, sourceDirector, limit }));
+            return Response.json(listTasks({ status, role, sourceDirector, groupName, limit }));
           }
           if (url.pathname === '/api/tasks/cleanup' && req.method === 'GET') {
             const olderThanDays = Number(url.searchParams.get('older_than_days') ?? 30);

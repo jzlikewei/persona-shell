@@ -196,12 +196,24 @@ export class SessionBridge extends EventEmitter {
     return join(getLogDir(), this.workspaceName);
   }
 
+  /** 公开:供 console.ts 扫描多天 input-*.log 时定位目录 */
+  getInputLogDir(): string {
+    return this.logDir;
+  }
+
   private get logDate(): string {
     return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }).replace(/-/g, '');
   }
 
   private get pendingCount(): number {
     return this.pendingTurns.length;
+  }
+
+  promoteActiveTurnToUser(): void {
+    const active = this.pendingTurns[0];
+    if (active && active.type !== 'user') {
+      (active as any).type = 'user';
+    }
   }
 
   private get flushContextLimit(): number {
@@ -971,7 +983,10 @@ export class SessionBridge extends EventEmitter {
       pendingTurn = this.enqueuePendingTurn({ type: 'system-reply', replyToMessageId });
       this.systemReplyQueue.push(replyToMessageId);
     } else {
-      pendingTurn = this.enqueuePendingTurn({ type: 'system-absorbed' });
+      // Use 'user' type so the Director's response is visible via turn_event on web sessions.
+      // 'system-absorbed' would suppress all turn events (isVisibleTurn filters it out),
+      // causing the reply to be invisible until page refresh.
+      pendingTurn = this.enqueuePendingTurn({ type: 'user' });
     }
 
     const tag = success ? 'TASK_DONE' : 'TASK_FAILED';
@@ -1212,6 +1227,7 @@ export class SessionBridge extends EventEmitter {
       });
       markSessionAlive(sessionId, true);
     } catch { /* best-effort */ }
+    this.emit('session-id-ready', sessionId);
   }
 
   private readPersistedDirectorAgentName(): string | undefined {

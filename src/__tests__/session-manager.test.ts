@@ -220,4 +220,77 @@ describe('SessionManager', () => {
     registry.getOrCreate('ws1');
     expect(manager.resolveDefaultSession('ws1')).toBeNull();
   });
+
+  // --- WP5: markArchived (软归档) 测试 ---
+
+  test('markArchived flips DB flag without throwing when no live session entry', async () => {
+    const pool = createTestPool();
+    const registry = new WorkspaceRegistry();
+    const manager = new SessionManager(pool, registry);
+
+    createSessionRecord({ sessionId: 'soft-1', workspace: 'soft-ws' });
+    const result = await manager.markArchived('soft-1');
+    expect(result).toBe(true);
+    expect(getSessionRecord('soft-1')!.archived).toBe(1);
+  });
+
+  test('markArchived does NOT overwrite default when archived session is not the default', async () => {
+    const pool = createTestPool();
+    const registry = new WorkspaceRegistry();
+    const manager = new SessionManager(pool, registry);
+
+    registry.getOrCreate('b2-ws');
+    setDefaultSession('b2-ws', 'keep-this-default');
+    createSessionRecord({ sessionId: 'not-default', workspace: 'b2-ws' });
+    createSessionRecord({ sessionId: 'keep-this-default', workspace: 'b2-ws' });
+
+    await manager.markArchived('not-default');
+
+    // 归档的是 non-default session,default 应保持不变(B2 复现 = 这种情况)
+    expect(getWorkspace('b2-ws')!.default_session_id).toBe('keep-this-default');
+    expect(getSessionRecord('not-default')!.archived).toBe(1);
+    expect(getSessionRecord('keep-this-default')!.archived).toBe(0);
+  });
+
+  test('markArchived (default session) reassigns default to next non-archived session (B2 fix)', async () => {
+    const pool = createTestPool();
+    const registry = new WorkspaceRegistry();
+    const manager = new SessionManager(pool, registry);
+
+    registry.getOrCreate('b2-ws');
+    // 准备 3 条 session,最早一条是 default
+    createSessionRecord({ sessionId: 'old-default', workspace: 'b2-ws' });
+    createSessionRecord({ sessionId: 'middle', workspace: 'b2-ws' });
+    createSessionRecord({ sessionId: 'newest', workspace: 'b2-ws' });
+    setDefaultSession('b2-ws', 'old-default');
+
+    // 把 newest 先归档掉(模拟:中间还有别的人归档过 newest)
+    archiveSessionInDb('newest');
+
+    // 现在归档 default
+    const result = await manager.markArchived('old-default');
+    expect(result).toBe(true);
+    expect(getSessionRecord('old-default')!.archived).toBe(1);
+
+    // B2 fix:应该选下一条 non-archived session 做 default
+    // listSessionRecords 默认 filter archived=0,所以 middle 是唯一剩下的
+    const newDefault = getWorkspace('b2-ws')!.default_session_id;
+    expect(newDefault).toBe('middle');
+    expect(newDefault).not.toBe('old-default');
+  });
+
+  test('markArchived (default session, no remaining) sets default to null', async () => {
+    const pool = createTestPool();
+    const registry = new WorkspaceRegistry();
+    const manager = new SessionManager(pool, registry);
+
+    registry.getOrCreate('solo-ws');
+    createSessionRecord({ sessionId: 'only-session', workspace: 'solo-ws' });
+    setDefaultSession('solo-ws', 'only-session');
+
+    await manager.markArchived('only-session');
+
+    // 没有其他 session 可选,default 应该是 null
+    expect(getWorkspace('solo-ws')!.default_session_id).toBeNull();
+  });
 });

@@ -152,8 +152,15 @@ export function loadConfig(path?: string): Config {
     ...(secretYaml.feishu ?? {}),
   };
 
+  const isTestMode = process.env.PERSONA_TEST === '1';
   if (!feishu.app_id || !feishu.app_secret) {
-    throw new Error('feishu.app_id is required in config.yaml, feishu.app_secret is required in im_secret.yaml (or config.yaml for compatibility)');
+    if (isTestMode) {
+      console.warn('[config] PERSONA_TEST=1: feishu credentials missing, feishu features will be disabled');
+      feishu.app_id = feishu.app_id || '';
+      feishu.app_secret = feishu.app_secret || '';
+    } else {
+      throw new Error('feishu.app_id is required in config.yaml, feishu.app_secret is required in im_secret.yaml (or config.yaml for compatibility)');
+    }
   }
 
   feishu.streaming_reply_enabled = feishu.streaming_reply_enabled === true;
@@ -324,7 +331,7 @@ export function loadConfig(path?: string): Config {
     },
     console: {
       enabled: con.enabled !== false,
-      port: Number(con.port ?? 3000),
+      port: Number(process.env.PERSONA_CONSOLE_PORT ?? con.port ?? 3000),
       token: con.token ?? undefined,
     },
     task: {

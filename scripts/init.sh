@@ -13,6 +13,12 @@ if [ ! -d "$PROJECT_DIR/node_modules" ]; then
   cd "$PROJECT_DIR" && bun install
 fi
 
+# 1b. 装本仓库 git hooks(pre-push 自动跑 web-v2 build 验证)
+if [ -d "$PROJECT_DIR/.git" ]; then
+  echo "🪝 配置仓库级 git hooks..."
+  sh "$PROJECT_DIR/scripts/install-hooks.sh"
+fi
+
 # 2. 初始化身份仓库
 if [ -d "$PERSONA_DIR" ]; then
   echo "⚠️  $PERSONA_DIR 已存在，跳过模板复制"

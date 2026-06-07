@@ -128,7 +128,7 @@ const MarkdownContent = memo(function MarkdownContent({ content, onFileClick }: 
 const ToolDetail = memo(function ToolDetail({ tool, index }: { tool: ChatToolCall; index: number }) {
   const [opened, setOpened] = useState(false)
   const isError = !!tool.isError
-  const isRunning = tool.status === 'running' || (!tool.result && !isError)
+  const isRunning = tool.status === 'running'
   return (
     <details
       key={tool.id ?? `${tool.name}-${index}`}
@@ -167,7 +167,7 @@ const ToolCalls = memo(function ToolCalls({ tools }: { tools?: ChatToolCall[] })
   // 外层 Tools 折叠组也 lazy,默认收起时不 mount 任何 ToolDetail
   const [opened, setOpened] = useState(false)
   if (!tools?.length) return null
-  const hasRunning = tools.some(tool => tool.status === 'running' || (!tool.result && !tool.isError))
+  const hasRunning = tools.some(tool => tool.status === 'running')
   const hasError = tools.some(tool => tool.isError || tool.status === 'failed')
 
   return (
@@ -206,7 +206,6 @@ const MessageBlock = memo(function MessageBlock({
   onCopy,
   onHide,
   onShow,
-  onRegenerate,
 }: {
   message: ChatMessage
   onFileClick: (path: string) => void
@@ -214,7 +213,6 @@ const MessageBlock = memo(function MessageBlock({
   onCopy?: () => void
   onHide?: () => void
   onShow?: () => void
-  onRegenerate?: () => void
 }) {
   const isUser = message.role === 'user'
   const filePaths = extractFilePaths(message.content)
@@ -266,7 +264,6 @@ const MessageBlock = memo(function MessageBlock({
           onCopy={onCopy ?? (() => navigator.clipboard.writeText(message.content))}
           onHide={onHide}
           onShow={onShow}
-          onRegenerate={onRegenerate}
         />
       </div>
     </article>
@@ -361,7 +358,7 @@ export function ChatPage() {
     activeSession,
     activeSessionInfo,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden, regenerate } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
   // Stop 按钮:仅主 director 调 /api/esc;pool director 的 stop 在 DirectorPanel 里
   const { interrupt } = useDirectorActions({ directorLabel: 'main' })
@@ -532,10 +529,9 @@ export function ChatPage() {
         hidden={hiddenIds.has(item.id)}
         onHide={() => hideMessage(item.id)}
         onShow={() => showMessage(item.id)}
-        onRegenerate={() => regenerate(item.id)}
       />
     )
-  }, [streaming, streamingTools, hiddenIds, hideMessage, showMessage, regenerate])
+  }, [streaming, streamingTools, hiddenIds, hideMessage, showMessage])
 
   const renderHeader = useCallback(() => (
     <WorkspaceSummary

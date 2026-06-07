@@ -35,9 +35,11 @@ interface WorkspaceCreateSheetProps {
   /** When set, the sheet is in "configure existing workspace" mode */
   existingWorkspace?: WorkspaceInfo
   updateWorkspaceConfig?: (name: string, opts: { cwd?: string; agent?: string }) => Promise<void>
+  /** WP5: 打开时预选 cwd(用于 "Bind project" 模式) */
+  initialCwd?: string
 }
 
-export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, createWorkspace, existingWorkspace, updateWorkspaceConfig }: WorkspaceCreateSheetProps) {
+export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, createWorkspace, existingWorkspace, updateWorkspaceConfig, initialCwd }: WorkspaceCreateSheetProps) {
   const isConfigMode = !!existingWorkspace
   const { get } = useApi()
   const [name, setName] = useState('')
@@ -46,6 +48,8 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
   const [browsePath, setBrowsePath] = useState('~')
   const [browseResult, setBrowseResult] = useState<BrowseResult | null>(null)
   const [browseLoading, setBrowseLoading] = useState(false)
+  const [pastePath, setPastePath] = useState('')
+  const [pasteValidating, setPasteValidating] = useState(false)
   const [agents, setAgents] = useState<Record<string, AgentProvider>>({})
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -57,6 +61,11 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
       setSelectedCwd(existingWorkspace.cwd)
       setSelectedAgent(existingWorkspace.agent)
       setBrowsePath(existingWorkspace.cwd || '~')
+    } else if (initialCwd) {
+      setName('')
+      setSelectedCwd(initialCwd)
+      setSelectedAgent(undefined)
+      setBrowsePath(initialCwd)
     } else {
       setName('')
       setSelectedCwd(undefined)
@@ -68,7 +77,7 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
     get<{ agents?: { providers?: Record<string, AgentProvider> } }>('/api/config-summary')
       .then(data => { if (data.agents?.providers) setAgents(data.agents.providers) })
       .catch(() => {})
-  }, [open, existingWorkspace, get])
+  }, [open, existingWorkspace, get, initialCwd])
 
   useEffect(() => {
     if (!open) return
@@ -93,6 +102,25 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
       setSelectedCwd(browseResult.current)
     }
   }, [browseResult])
+
+  // Paste path:Enter 后用 /api/browse 校验;成功就应用;失败在 error 区显示
+  const handleApplyPastePath = useCallback(async () => {
+    const p = pastePath.trim()
+    if (!p) return
+    setPasteValidating(true)
+    try {
+      const res = await get<BrowseResult>('/api/browse', { path: p })
+      // 后端会把 `current` 返回为规范化后的绝对路径
+      setSelectedCwd(res.current)
+      setBrowsePath(res.current)
+      setPastePath('')
+      setError(null)
+    } catch (e) {
+      setError(`无法访问路径: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setPasteValidating(false)
+    }
+  }, [pastePath, get])
 
   const handleCreate = useCallback(async () => {
     if (!name.trim()) return
@@ -170,6 +198,19 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
               </button>
             </div>
           )}
+
+          {/* Paste path 输入(WP5) */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">粘贴路径</label>
+            <Input
+              placeholder="/path/to/project 或 ~"
+              value={pastePath}
+              onChange={e => setPastePath(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleApplyPastePath() }}
+              disabled={pasteValidating}
+            />
+            <p className="text-[10px] text-muted-foreground">按 Enter 校验并应用</p>
+          </div>
 
           {/* Quick pick from projects */}
           <div className="space-y-1.5">

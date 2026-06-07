@@ -82,7 +82,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const [limit, setLimit] = useState(100)
   // WP6: hideMessage 客户端过滤,Set 装被隐藏消息 id
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set())
-  const { get, post, request } = useApi()
+  const { get, post } = useApi()
   const { on, status } = useWebSocket()
   const sessionIdRef = useRef(sessionId)
   const liveSessionRef = useRef(liveSession)
@@ -180,24 +180,6 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     setHiddenIds(new Set())
   }, [])
 
-  // WP7: regenerate —— 调后端 /api/messages/regenerate,后端会从 input log 找最后一条 user 消息重发。
-  // 不动本地 messages;新回复会通过现有 turn_event WS 流程自然 append。
-  // assistantMessageId 暂不传(后端按 sessionId 找最后一条 user 消息;前端用 messageId 仅作 UI 跟踪)。
-  const regenerate = useCallback(async (_assistantMessageId?: string) => {
-    if (!sessionIdRef.current) return
-    try {
-      const res = await request<{ ok: boolean; error?: string }>('/api/messages/regenerate', {
-        method: 'POST',
-        body: JSON.stringify({ sessionId: sessionIdRef.current }),
-      })
-      if (!res.ok) {
-        console.error('regenerate failed:', res.error)
-      }
-    } catch (e) {
-      console.error('regenerate error:', e instanceof Error ? e.message : String(e))
-    }
-  }, [request])
-
   const flushStreaming = useCallback(() => {
     const text = streamingRef.current
     if (!text) return
@@ -254,6 +236,14 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       })
     } catch (e) {
       console.error('Failed to send message:', e)
+      const errMsg: ChatMessage = {
+        id: uuid(),
+        role: 'assistant',
+        content: `[系统] 消息发送失败: ${e instanceof Error ? e.message : String(e)}`,
+        timestamp: new Date().toISOString(),
+        sessionId,
+      }
+      setMessages(prev => [...prev, errMsg])
     } finally {
       setSending(false)
     }
@@ -292,16 +282,24 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
           return
         }
 
-        if (event.type === 'tool_started' || event.type === 'tool_completed') {
+        if (event.type === 'tool_started') {
           if (event.tool) upsertLiveTool(event.tool)
           setTurnPhase('tool_running')
           clearTurnPhaseTimeout()
           return
         }
 
+        if (event.type === 'tool_completed') {
+          if (event.tool) upsertLiveTool(event.tool)
+          armTurnPhaseTimeout()
+          return
+        }
+
         if (event.type === 'turn_completed') {
           const text = event.content ?? streamingRef.current
-          const tools = liveToolsRef.current
+          const tools = liveToolsRef.current.map(t =>
+            t.status === 'running' ? { ...t, status: 'completed' as const } : t
+          )
           if (text || tools.length) {
             const msg: ChatMessage = {
               id: event.messageId || event.turnId,
@@ -364,7 +362,9 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
         if (!liveEventMatches(data)) return
         const replySessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : sessionIdRef.current
         const text = data.text as string || ''
-        const liveTools = liveToolsRef.current
+        const liveTools = liveToolsRef.current.map(t =>
+          t.status === 'running' ? { ...t, status: 'completed' as const } : t
+        )
         const msg: ChatMessage = {
           id: data.messageId as string || uuid(),
           role: 'assistant',
@@ -427,5 +427,5 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     if (status === 'connected') loadMessages()
   }, [sessionId, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
 
-  return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden, regenerate }
+  return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden }
 }

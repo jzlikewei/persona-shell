@@ -74,6 +74,10 @@ export class SessionManager extends EventEmitter {
     const sessionId = entry.bridge.getStatus().sessionId;
     if (sessionId) {
       this.registerSession(sessionId, routingKey, workspaceName, entry);
+    } else {
+      entry.bridge.once('session-id-ready', (sid: string) => {
+        this.registerSession(sid, routingKey, workspaceName, entry);
+      });
     }
 
     return this.toSessionEntry(entry);
@@ -94,6 +98,12 @@ export class SessionManager extends EventEmitter {
     const sessionId = entry.bridge.getStatus().sessionId;
     if (sessionId) {
       this.registerSession(sessionId, sessionKey, workspaceName, entry);
+    } else {
+      // sessionId not yet available (Claude process still initializing).
+      // Listen for the init event and register then.
+      entry.bridge.once('session-id-ready', (sid: string) => {
+        this.registerSession(sid, sessionKey, workspaceName, entry);
+      });
     }
     return this.toSessionEntry(entry);
   }
