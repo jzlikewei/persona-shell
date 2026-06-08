@@ -4,7 +4,7 @@ import { DirectorPool } from './director-pool.js';
 import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
 import type { IncomingMessage, StreamingReplyHandle, CardAction } from './messaging/messaging.js';
-import { MessageQueue } from './queue.js';
+import { MessageQueue, type QueueItem } from './queue.js';
 import { startConsole, type MetricsCollector } from './console.js';
 import { TaskRunner, type TaskResult } from './task/task-runner.js';
 import { spawnPersona } from './persona-process.js';
@@ -551,6 +551,35 @@ async function main() {
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
   const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, pool);
   messaging.addClient(webClient);
+
+  async function sendQueuedAttachments(item: QueueItem): Promise<void> {
+    const attachments = item.pendingAttachments ?? [];
+    if (attachments.length === 0) return;
+
+    const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+    for (const attachment of attachments) {
+      try {
+        const isImage = imageExts.has(extname(attachment.path).toLowerCase());
+        if (item.chatId === 'web-console' || attachment.targetChannel === 'web') {
+          if (isImage) await webClient.uploadAndReplyImage(item.messageId, attachment.path);
+          else await webClient.uploadAndReplyFile(item.messageId, attachment.path);
+        } else {
+          try {
+            if (isImage) await messaging.uploadAndReplyImage(item.messageId, attachment.path);
+            else await messaging.uploadAndReplyFile(item.messageId, attachment.path);
+          } catch (err) {
+            console.warn(`[shell] queued attachment reply failed, sending as new message instead: ${String(err)}`);
+            if (isImage) await messaging.uploadAndSendImage(item.chatId, attachment.path);
+            else await messaging.uploadAndSendFile(item.chatId, attachment.path);
+          }
+        }
+        queue.logAction('ATTACHMENT_SENT', item.messageId, `cid=${item.correlationId} path=${attachment.path}`);
+      } catch (err) {
+        queue.logAction('ATTACHMENT_ERROR', item.messageId, `cid=${item.correlationId} path=${attachment.path} ${String(err)}`);
+        console.error('[shell] queued attachment send failed:', err);
+      }
+    }
+  }
 
   // 7.4: Scheduler — interval-driven cron job automation
   const scheduler = new Scheduler(
@@ -1299,6 +1328,7 @@ async function main() {
         console.error(`[shell] sendMessage fallback also failed:`, e);
       });
     }
+    await sendQueuedAttachments(item);
     await startStreamingReplyForHead();
   });
 

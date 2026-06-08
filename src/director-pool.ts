@@ -2,9 +2,9 @@ import { createHash } from 'crypto';
 import { EventEmitter } from 'events';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { existsSync, readdirSync } from 'fs';
-import { join } from 'path';
+import { extname, join } from 'path';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
-import { MessageQueue, type QueueItem } from './queue.js';
+import { MessageQueue, type PendingAttachment, type QueueItem } from './queue.js';
 import { ClaudeProcess } from './claude-process.js';
 import { loadConfig, type Config, isCodexFamily } from './config.js';
 import type { CardAction, MessagingClient, StreamingReplyHandle } from './messaging/messaging.js';
@@ -474,6 +474,11 @@ export class DirectorPool extends EventEmitter {
     const entry = this.findByLabel(label);
     const item = entry?.queue.peek();
     return item?.messageId ?? null;
+  }
+
+  enqueueAttachmentForHeadByLabel(label: string, attachment: PendingAttachment): QueueItem | null {
+    const entry = this.findByLabel(label);
+    return entry?.queue.addPendingAttachmentToOldest(attachment) ?? null;
   }
 
   /** Cancel a queued or currently-processing message for a Director by label. */
@@ -954,6 +959,7 @@ export class DirectorPool extends EventEmitter {
         });
         this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
       }
+      await this.sendQueuedAttachments(item, queue, feishuChatId, webOnly, groupName);
       await this.startStreamingReplyForHead(queue, routingKey);
     });
 
@@ -1083,6 +1089,34 @@ export class DirectorPool extends EventEmitter {
       if (item) void this.abortStreamingReply(item.correlationId, 'Director 流式输出已中断');
       this.emit('stream-abort', bridge.label);
     });
+  }
+
+  private async sendQueuedAttachments(item: QueueItem, queue: MessageQueue, chatId: string, webOnly: boolean, groupName: string): Promise<void> {
+    const attachments = item.pendingAttachments ?? [];
+    if (attachments.length === 0) return;
+    if (webOnly) {
+      console.warn(`[pool:${groupName}] Skipping ${attachments.length} queued attachment(s) for web-only chat`);
+      return;
+    }
+
+    const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+    for (const attachment of attachments) {
+      const isImage = imageExts.has(extname(attachment.path).toLowerCase());
+      try {
+        try {
+          if (isImage) await this.messaging.uploadAndReplyImage(item.messageId, attachment.path);
+          else await this.messaging.uploadAndReplyFile(item.messageId, attachment.path);
+        } catch (err) {
+          console.warn(`[pool:${groupName}] queued attachment reply failed, sending as new message instead: ${String(err)}`);
+          if (isImage) await this.messaging.uploadAndSendImage(chatId, attachment.path);
+          else await this.messaging.uploadAndSendFile(chatId, attachment.path);
+        }
+        queue.logAction('ATTACHMENT_SENT', item.messageId, `cid=${item.correlationId} path=${attachment.path}`);
+      } catch (err) {
+        queue.logAction('ATTACHMENT_ERROR', item.messageId, `cid=${item.correlationId} path=${attachment.path} ${String(err)}`);
+        console.error(`[pool:${groupName}] queued attachment send failed:`, err);
+      }
+    }
   }
 
   /** Evict the least recently used group Director (skip Directors with pending messages) */

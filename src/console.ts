@@ -2812,6 +2812,34 @@ export function startConsole(
               return Response.json({ ok: false, error: 'File is empty' }, { status: 400 });
             }
 
+            // MCP send_attachment calls do not pass target_channel. Queue them on the
+            // active turn so attachments are sent after the text reply completes.
+            if (!body.target_channel) {
+              const attachment = { path: resolved, sourceDirector };
+              const item = sourceDirector !== 'main' && pool
+                ? pool.enqueueAttachmentForHeadByLabel(sourceDirector, attachment)
+                : queue.addPendingAttachmentToOldest(attachment);
+              if (item) {
+                writeAuditEntry('attachment.queue', true, {
+                  target: sourceDirector,
+                  path: resolved,
+                  messageId: item.messageId,
+                  correlationId: item.correlationId,
+                  queuedAttachments: item.pendingAttachments?.length ?? 1,
+                });
+                return Response.json({
+                  success: true,
+                  queued: true,
+                  delivery: {
+                    path: resolved,
+                    source_director: sourceDirector,
+                    message_id: item.messageId,
+                    correlation_id: item.correlationId,
+                  },
+                });
+              }
+            }
+
             if (!messaging && body.target_channel !== 'web') {
               writeAuditEntry('attachment.send', false, { target: sourceDirector, path: resolved, size: stat.size, targetChannel: body.target_channel ?? null, error: 'Messaging client not available' });
               return Response.json({ ok: false, error: 'Messaging client not available' }, { status: 503 });
@@ -2849,30 +2877,43 @@ export function startConsole(
                 replyMessageId = peeked?.messageId ?? null;
               }
 
+              const sendAsNewMessage = async (): Promise<string | null> => {
+                if (targetChatId === 'web-console') {
+                  if (!webClientRef) throw new Error('Web messaging client not available');
+                  if (isImage) return await webClientRef.uploadAndSendImage(targetChatId, resolved);
+                  return await webClientRef.uploadAndSendFile(targetChatId, resolved);
+                }
+                if (isImage) {
+                  if (!messaging) throw new Error('Messaging client not available');
+                  return await messaging.uploadAndSendImage(targetChatId!, resolved);
+                }
+                if (!messaging) throw new Error('Messaging client not available');
+                return await messaging.uploadAndSendFile(targetChatId!, resolved);
+              };
+
+              let replyFallback = false;
               if (replyMessageId) {
                 if (targetChatId === 'web-console') {
                   if (!webClientRef) throw new Error('Web messaging client not available');
                   if (isImage) await webClientRef.uploadAndReplyImage(replyMessageId, resolved);
                   else await webClientRef.uploadAndReplyFile(replyMessageId, resolved);
-                } else if (isImage) {
-                  if (!messaging) throw new Error('Messaging client not available');
-                  await messaging.uploadAndReplyImage(replyMessageId, resolved);
                 } else {
-                  if (!messaging) throw new Error('Messaging client not available');
-                  await messaging.uploadAndReplyFile(replyMessageId, resolved);
+                  try {
+                    if (isImage) {
+                      if (!messaging) throw new Error('Messaging client not available');
+                      await messaging.uploadAndReplyImage(replyMessageId, resolved);
+                    } else {
+                      if (!messaging) throw new Error('Messaging client not available');
+                      await messaging.uploadAndReplyFile(replyMessageId, resolved);
+                    }
+                  } catch (err) {
+                    replyFallback = true;
+                    console.warn(`[console] attachment reply failed, sending as new message instead: ${String(err)}`);
+                    await sendAsNewMessage();
+                  }
                 }
               } else {
-                if (targetChatId === 'web-console') {
-                  if (!webClientRef) throw new Error('Web messaging client not available');
-                  if (isImage) await webClientRef.uploadAndSendImage(targetChatId, resolved);
-                  else await webClientRef.uploadAndSendFile(targetChatId, resolved);
-                } else if (isImage) {
-                  if (!messaging) throw new Error('Messaging client not available');
-                  await messaging.uploadAndSendImage(targetChatId, resolved);
-                } else {
-                  if (!messaging) throw new Error('Messaging client not available');
-                  await messaging.uploadAndSendFile(targetChatId, resolved);
-                }
+                await sendAsNewMessage();
               }
               const targetChannel = targetChatId === 'web-console' ? 'web' : 'messaging';
               const delivery = {
@@ -2882,10 +2923,11 @@ export function startConsole(
                 target_chat_id: targetChatId,
                 size: stat.size,
                 image: isImage,
-                reply: !!replyMessageId,
+                reply: !!replyMessageId && !replyFallback,
+                reply_fallback: replyFallback,
                 target_chat_available: !!targetChatId,
               };
-              writeAuditEntry('attachment.send', true, { target: sourceDirector, path: resolved, size: stat.size, image: isImage, reply: !!replyMessageId, targetChannel, targetChatId });
+              writeAuditEntry('attachment.send', true, { target: sourceDirector, path: resolved, size: stat.size, image: isImage, reply: !!replyMessageId && !replyFallback, replyFallback, targetChannel, targetChatId });
               return Response.json({ success: true, delivery });
             } catch (err) {
               console.error('[console] send-attachment failed:', err);

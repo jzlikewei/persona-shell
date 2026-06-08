@@ -11,6 +11,13 @@ export interface QueueItem {
   timestamp: number;
   correlationId: string;
   cancelled?: boolean;
+  pendingAttachments?: PendingAttachment[];
+}
+
+export interface PendingAttachment {
+  path: string;
+  sourceDirector?: string;
+  targetChannel?: 'web' | 'messaging';
 }
 
 export function generateCorrelationId(): string {
@@ -203,6 +210,15 @@ export class MessageQueue {
       }
     }
     return oldest;
+  }
+
+  addPendingAttachmentToOldest(attachment: PendingAttachment): QueueItem | undefined {
+    const item = this.peek();
+    if (!item || item.cancelled) return undefined;
+    item.pendingAttachments = [...(item.pendingAttachments ?? []), attachment];
+    this.persist();
+    this.log('ATTACHMENT_QUEUED', item.messageId, `cid=${item.correlationId} path=${attachment.path}`);
+    return item;
   }
 
   /** Clear all items from the queue (e.g., after flush when orphaned items can never be resolved).
