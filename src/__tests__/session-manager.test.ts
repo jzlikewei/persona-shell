@@ -221,7 +221,7 @@ describe('SessionManager', () => {
     expect(manager.resolveDefaultSession('ws1')).toBeNull();
   });
 
-  // --- WP5: markArchived (软归档) 测试 ---
+  // --- markArchived (软归档) 测试 ---
 
   test('markArchived flips DB flag without throwing when no live session entry', async () => {
     const pool = createTestPool();

@@ -1,73 +1,89 @@
-# React + TypeScript + Vite
+# persona-shell web-v2
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+web-v2 是 persona-shell 的 React 工作台。它聚焦三件事:
 
-Currently, two official plugins are available:
+- Chat:按 workspace/session 查看和发送消息,展示 streaming、tool events、Markdown 和附件。
+- Tasks:查看后台任务、日志、结果和 Cron 摘要。
+- Files:浏览 outbox、attachments、task results 等安全产物。
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+legacy Web Console 仍保留在 `/v1`。它覆盖 Runtime、Automations、Persona、Logs、Settings 等更完整的管理面。web-v2 当前不是 legacy UI 的全量替代品。
 
-## React Compiler
+## 启动方式
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+从仓库根目录启动 shell:
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+bun run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+shell 会在需要时构建或托管 web-v2。开发 web-v2 时可单独启动 Vite:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd web-v2
+bun install
+bun run dev
 ```
+
+常用验证:
+
+```bash
+cd web-v2
+bun run build
+```
+
+仓库根目录的项目级检查:
+
+```bash
+bun run check
+bun test
+bun run smoke:web
+```
+
+## 运行配置
+
+web-v2 通过 HTTP API 和 WebSocket 连接 persona-shell,不直接访问 SQLite 或日志文件。
+
+- `VITE_API_BASE`:可选。默认使用当前 origin。
+- `auth_token`:浏览器 localStorage 中保存的访问 token,由登录弹窗写入。
+
+## 页面
+
+| 路径 | 页面 | 说明 |
+|------|------|------|
+| `/` | Chat | workspace/session 消息、输入框、附件、tool 可视化 |
+| `/tasks` | Tasks | 任务列表、筛选、日志、结果、Cron 摘要 |
+| `/files` | Files | 安全文件树、文本/Markdown/图片预览 |
+| `*` | NotFound | catch-all 页面 |
+
+## 目录结构
+
+```text
+web-v2/
+├── src/
+│   ├── App.tsx
+│   ├── layouts/root-layout.tsx
+│   ├── pages/
+│   │   ├── chat.tsx
+│   │   ├── files.tsx
+│   │   └── tasks/
+│   ├── components/
+│   ├── hooks/
+│   └── lib/
+├── __tests__/
+├── BLUEPRINT.md
+└── ARCHITECTURE.md
+```
+
+## 当前边界
+
+web-v2 的原则是只保留真实接线的功能。没有稳定后端支撑、没有近期使用场景或只是占位的能力,不应该进入 v2。
+
+当前暂不覆盖:
+
+- Runtime 全量管理面
+- Automations 全量创建/编辑/审计视图
+- Persona memory/state/TODO 全量编辑器
+- Logs / Observability / Settings 全量页面
+- 真正的消息 cursor/offset 分页
+
+这些能力要么保留在 `/v1`,要么等使用场景明确后再迁移。

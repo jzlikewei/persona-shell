@@ -8,6 +8,7 @@ import { resolveAgentProvider, isCodexFamily, loadConfig, type Config } from '..
 import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
 import { localNow, getTaskTimeouts } from './task-store.js';
+import { CodexAppServerRuntime, type CodexAppServerRuntimeHooks } from '../director-runtime/codex-app-server.js';
 
 export interface TaskRunnerConfig {
   configPath?: string;
@@ -42,6 +43,7 @@ interface RunningTask {
   pid: number;
   timer: NodeJS.Timeout;
   child?: ChildProcess;
+  runtime?: CodexAppServerRuntime;
   rl?: ReturnType<typeof import('readline').createInterface>;
   startedAt: number;
   timedOut: boolean;
@@ -130,6 +132,20 @@ export class TaskRunner extends EventEmitter {
       desc_header: descHeader,
     }) ?? hardcodedInstruction;
     const fullPrompt = `${input.prompt}\n\n${outputInstruction}`;
+
+    if (agent.type === 'codex-app-server') {
+      void this.runCodexAppServerTask({
+        input,
+        agent,
+        personaDir,
+        timeoutMs,
+        startedAt,
+        outputPath,
+        resultFile,
+        fullPrompt,
+      });
+      return;
+    }
 
     const { child, args } = spawnPersona({
       role: input.role,
@@ -262,10 +278,14 @@ export class TaskRunner extends EventEmitter {
 
     console.log(`[task-runner] Cancelling task ${taskId} (pid=${entry.pid})`);
     entry.rl?.close();
+    if (entry.runtime) {
+      entry.runtime.interrupt();
+      entry.runtime.terminate('SIGTERM');
+    }
     clearTimeout(entry.timer);
     this.running.delete(taskId);
 
-    this.killProcessGroup(entry.pid, 'SIGTERM');
+    if (!entry.runtime) this.killProcessGroup(entry.pid, 'SIGTERM');
 
     const result: TaskResult = {
       taskId,
@@ -281,6 +301,127 @@ export class TaskRunner extends EventEmitter {
     return [...this.running.keys()];
   }
 
+  private async runCodexAppServerTask(args: {
+    input: RunTaskInput;
+    agent: ReturnType<typeof resolveAgentProvider>;
+    personaDir: string;
+    timeoutMs: number;
+    startedAt: number;
+    outputPath: string;
+    resultFile: string;
+    fullPrompt: string;
+  }): Promise<void> {
+    const { input, agent, personaDir, timeoutMs, startedAt, outputPath, resultFile, fullPrompt } = args;
+    const stdoutLogPath = join(getLogDir(), `task-${input.taskId}.stdout.log`);
+    let sessionId: string | null = null;
+    let sessionName: string | null = `${input.taskId} ${input.description ?? input.role}`.trim();
+    let finished = false;
+    let runtime: CodexAppServerRuntime | null = null;
+
+    const finish = async (success: boolean, detail?: { error?: string; durationMs?: number }): Promise<void> => {
+      if (finished) return;
+      finished = true;
+      const entry = this.running.get(input.taskId);
+      if (entry) {
+        clearTimeout(entry.timer);
+        this.running.delete(input.taskId);
+      }
+
+      await runtime?.stop().catch(() => undefined);
+
+      const durationMs = detail?.durationMs ?? Date.now() - startedAt;
+      let finalResultFile: string | undefined;
+      let error = detail?.error;
+      if (success && !error) {
+        const moved = this.materializeResultFile(outputPath, resultFile);
+        if (moved.ok) finalResultFile = resultFile;
+        else error = moved.error;
+      }
+
+      const finalSuccess = success && !error;
+      const result: TaskResult = {
+        taskId: input.taskId,
+        success: finalSuccess,
+        durationMs,
+        spawnArgs: ['app-server', '--listen', 'stdio://'],
+        codexThreadId: sessionId ?? undefined,
+        ...(finalSuccess ? { resultFile: finalResultFile } : { error: error ?? 'codex app-server task failed' }),
+      };
+      console.log(`[task-runner] Task ${input.taskId} ${finalSuccess ? 'completed' : 'failed'} via codex app-server (duration=${durationMs}ms)`);
+      this.emit(finalSuccess ? 'task-completed' : 'task-failed', result);
+    };
+
+    const hooks: CodexAppServerRuntimeHooks = {
+      getSessionId: () => sessionId,
+      getSessionName: () => sessionName,
+      setSessionName: (name) => { sessionName = name; },
+      buildSessionName: () => sessionName ?? `${input.taskId} ${input.role}`,
+      persistSession: (id, name) => {
+        const firstThread = !sessionId;
+        sessionId = id;
+        sessionName = name;
+        if (firstThread) this.emit('task-thread-started', input.taskId, id);
+      },
+      clearSession: () => { sessionId = null; },
+      logOutput: (line) => {
+        try { appendFileSync(stdoutLogPath, line + '\n'); } catch { /* best-effort */ }
+      },
+      onChunk: () => {},
+      onToolCall: () => {},
+      onPartialAgentMessage: () => {},
+      onMetrics: () => {},
+      onTurnComplete: ({ durationMs }) => {
+        void finish(true, { durationMs: durationMs ?? undefined });
+      },
+      onTurnFailure: (message) => {
+        void finish(false, { error: message });
+      },
+      onRuntimeClosed: () => {
+        if (!finished && this.running.has(input.taskId)) {
+          void finish(false, { error: 'codex app-server closed before task completed' });
+        }
+      },
+    };
+
+    runtime = new CodexAppServerRuntime({
+      label: input.taskId,
+      logDir: getLogDir(),
+      config: { persona_dir: personaDir } as Config['director'],
+      agent,
+      personaRole: input.role,
+    }, hooks);
+
+    try {
+      await runtime.start();
+      const pid = runtime.getStatus().pid;
+      if (!pid) throw new Error('failed to spawn codex app-server process');
+
+      const timer = setTimeout(() => {
+        const entry = this.running.get(input.taskId);
+        if (entry) entry.timedOut = true;
+        runtime?.interrupt();
+        void finish(false, { error: 'timeout' });
+      }, timeoutMs);
+
+      this.running.set(input.taskId, {
+        pid,
+        timer,
+        runtime,
+        startedAt,
+        timedOut: false,
+        timeoutMs,
+        outputPath,
+        resultFile,
+      });
+
+      console.log(`[task-runner] Task ${input.taskId} started via codex app-server (role=${input.role}, agent=${agent.name}, pid=${pid}, timeout=${timeoutMs}ms)`);
+      this.emit('task-started', input.taskId, ['app-server', '--listen', 'stdio://'], pid);
+      await runtime.send(fullPrompt);
+    } catch (err) {
+      await finish(false, { error: String(err) });
+    }
+  }
+
   /** Kill with SIGTERM → wait → SIGKILL escalation */
   private killWithEscalation(taskId: string, pid: number): void {
     const entry = this.running.get(taskId);
@@ -288,13 +429,19 @@ export class TaskRunner extends EventEmitter {
 
     entry.timedOut = true;
     console.log(`[task-runner] Task ${taskId} timed out, sending SIGTERM (pid=${pid})`);
-    this.killProcessGroup(pid, 'SIGTERM');
+    if (entry.runtime) {
+      entry.runtime.interrupt();
+      entry.runtime.terminate('SIGTERM');
+    } else {
+      this.killProcessGroup(pid, 'SIGTERM');
+    }
 
     // If still alive after grace period, escalate to SIGKILL
     const killTimer = setTimeout(() => {
       if (this.running.has(taskId)) {
         console.log(`[task-runner] Task ${taskId} still alive after grace period, sending SIGKILL`);
-        this.killProcessGroup(pid, 'SIGKILL');
+        if (entry.runtime) entry.runtime.terminate('SIGKILL');
+        else this.killProcessGroup(pid, 'SIGKILL');
       }
     }, GRACEFUL_KILL_DELAY);
     killTimer.unref();

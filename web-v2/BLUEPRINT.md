@@ -130,18 +130,18 @@ web-v2 是 persona-shell 在浏览器里的工作台。它不是飞书的复刻�
 
 ### Phase 4: 补文档（P1）
 
-- [ ] 4.1 重写 `web-v2/README.md`（替换 Vite 模板默认内容）
+- [x] 4.1 重写 `web-v2/README.md`（替换 Vite 模板默认内容）
   - 项目说明、启动方式、环境变量、目录结构
-- [ ] 4.2 写 `web-v2/ARCHITECTURE.md`（200 行内）
+- [x] 4.2 写 `web-v2/ARCHITECTURE.md`（200 行内）
   - 模块边界图、数据流（REST / WS）、组件树
-- [ ] 4.3 清理 WP 注释
+- [x] 4.3 清理 WP 注释
   - 扫描所有 WP1-WP7 注释，已落地的删除注释，仅保留"设计决策"型注释
 
 ### Phase 5: 验证（P0，与每个 Phase 并行）
 
 - [ ] 5.1 Phase 1 完成后：全流程冒烟测试（见下方测试方案）
 - [ ] 5.2 Phase 2 完成后：全流程冒烟测试
-- [ ] 5.3 Phase 3 完成后：`bun test` 全部通过
+- [x] 5.3 Phase 3 完成后：`bun test` 全部通过
 - [ ] 5.4 最终验证：build 通过 + 全流程测试 + 无 console.error
 
 ---

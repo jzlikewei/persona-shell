@@ -13,7 +13,7 @@ import { useToast } from '@/components/toast'
  * 退出 Shell 进程(由守护进程重新拉起)。这是**硬重启**——session 状态、内存、
  * 子进程全清,跟 `/api/session-restart`(只重启 session 内部 thread)完全不同。
  *
- * 背景:WP3 把 Director 操作整成 Tabs+Card 面板时,把原版 "Restart Shell"
+ * 背景:Director 操作整合到面板后,原版 "Restart Shell"
  * 误替换成 session-restart,功能差远了。本组件恢复原行为,并加在 Tabs 之上
  * 作为独立可见的入口。
  */

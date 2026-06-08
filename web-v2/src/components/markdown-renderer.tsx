@@ -21,7 +21,7 @@ interface MarkdownRendererProps {
 // detect:false — 无 language-X className 的 inline code 不再自动猜语言(highlight.js 大头)
 const REHYPE_HIGHLIGHT_OPTIONS = { detect: false, ignoreMissing: true } as const
 
-// WP6: 重新启用 —— document-panel / tasks.tsx 仍依赖此组件。
+// document-panel / tasks.tsx 仍依赖此组件。
 // chat.tsx 内联了 MarkdownContent 走 Catppuccin hex 配色 + 文件路径点击,
 // 这里的通用版使用 prose/shadcn 语义色,适合非 chat 场景(tasks 输出、文件预览)。
 export const MarkdownRenderer = memo(function MarkdownRenderer({ content, className }: MarkdownRendererProps) {

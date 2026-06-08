@@ -43,7 +43,7 @@ interface TurnRecord {
   error?: unknown;
 }
 
-interface CodexAppServerRuntimeHooks {
+export interface CodexAppServerRuntimeHooks {
   getSessionId(): string | null;
   getSessionName(): string | null;
   setSessionName(name: string): void;
@@ -60,7 +60,7 @@ interface CodexAppServerRuntimeHooks {
   onRuntimeClosed(): Promise<void> | void;
 }
 
-interface RuntimeToolCall {
+export interface RuntimeToolCall {
   id?: string;
   name: string;
   input?: string;

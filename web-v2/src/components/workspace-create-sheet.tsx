@@ -35,7 +35,7 @@ interface WorkspaceCreateSheetProps {
   /** When set, the sheet is in "configure existing workspace" mode */
   existingWorkspace?: WorkspaceInfo
   updateWorkspaceConfig?: (name: string, opts: { cwd?: string; agent?: string }) => Promise<void>
-  /** WP5: 打开时预选 cwd(用于 "Bind project" 模式) */
+  /** 打开时预选 cwd,用于 "Bind project" 模式 */
   initialCwd?: string
 }
 
@@ -199,7 +199,7 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
             </div>
           )}
 
-          {/* Paste path 输入(WP5) */}
+          {/* Paste path 输入 */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">粘贴路径</label>
             <Input

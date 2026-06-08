@@ -48,7 +48,7 @@ export function useSessions(workspace?: string) {
   const livePoolEntry = wsKey === 'main' ? undefined : status?.pool?.find(entry => entry.groupName === wsKey || entry.label === wsKey)
   const liveSessionId = wsKey === 'main' ? status?.system?.sessionId : livePoolEntry?.sessionId ?? undefined
   const liveSessionName = wsKey === 'main' ? status?.system?.sessionName : livePoolEntry?.sessionName ?? undefined
-  // WP5: pool 路径也要查 archived。后端在 pool entry 上返回 liveSessionArchived,
+  // Pool 路径也要查 archived。后端在 pool entry 上返回 liveSessionArchived,
   // 跟 system 路径对齐。否则归档"当前 pool session"后,前端 unshift 又把它拉回 UI。
   const liveSessionArchived = wsKey === 'main'
     ? status?.system?.liveSessionArchived
@@ -94,7 +94,7 @@ export function useSessions(workspace?: string) {
         }
       })
 
-      // WP5: 跳过 live session merge 当它已被归档。后端 SQL + console.ts live 合并都已过滤,
+      // 跳过 live session merge 当它已被归档。后端 SQL + console.ts live 合并都已过滤,
       // 但前端 hook 还有自己的 unshift —— 不判断 archived 就会把已归档的 live session 拉回 UI。
       // 边界:status 还没到(初次 mount)时 liveSessionArchived 是 undefined,按"未归档"处理(原始行为)。
       if (liveSessionId && !mapped.some(session => session.id === liveSessionId) && !liveSessionArchived) {

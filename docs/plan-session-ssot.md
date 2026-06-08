@@ -206,3 +206,15 @@ bridge 启动时（或 `buildWorkContext()` 发现 sessions 表对某 workspace 
 
 - **中文 workspace name 做路径**：macOS APFS / Linux ext4 原生 UTF-8，无兼容性问题。现有 `safeGroupName` 已处理特殊字符。
 - **Session 概念的必要性**：Session 是 workspace 下的并行对话实例，不是可以消除的实现细节。一个 workspace 可以有多个并行 session（不同 agent 同时工作）。数据模型 `Workspace 1:N Session` 正确。
+
+---
+
+## 当前收尾清单（2026-06-08）
+
+当前代码已经有 sessions/workspaces 表、`WorkspaceRegistry`、`SessionManager`、session 归档和 web-v2 的 session 选择逻辑。剩余问题集中在一致性和兼容层收窄:
+
+- [ ] **回填幂等性复核**:确认 `importSessionsFromLogs()` 对部分失败、重复启动、旧日志新增都能安全 upsert。
+- [ ] **message_count 语义**:文档和 UI 中明确它是派生缓存;若要强一致,增加日志重算入口。
+- [ ] **旧日志路径 sunset**:决定保留双路径读取多久,或在启动时迁移旧 `logs/{label}` 到 `logs/{workspace}`。
+- [ ] **ConsoleWorkspace 字段清理**:把 `directorLabel` / `routingKey` 标为兼容字段,逐步从领域模型和 v2 UI 中移除。
+- [ ] **重启验证**:覆盖 shell 重启、live session 合并、归档 session 不回流、旧日志仍可读。

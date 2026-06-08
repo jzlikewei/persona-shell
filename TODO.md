@@ -1,83 +1,76 @@
 # TODO
 
-## Codex App-Server 适配升级
+> 当前版本:项目级收敛清单。不要把这里当作所有想做功能的堆栈;只记录需要把 persona-shell 带回稳定事实源的事项。
 
-详见 `docs/codex-app-server-upgrade.md`。
+## P0: Workspace / Session 路由收敛
 
-- [ ] **P0 协议修复**：`initialize` 后发送 `initialized` 通知；`thread/start` 从 legacy `sandbox` 切换到 `sandboxPolicy`/`permissions`
-- [ ] **P1 事件增强**：处理 `item/started`、`item/reasoning/summaryTextDelta`（思考过程）、`item/commandExecution/outputDelta`（命令输出流式）、`item/fileChange/patchUpdated`（文件变更流式）
-- [ ] **P1 错误分类**：解析 `codexErrorInfo` 枚举，`ContextWindowExceeded` 自动触发 compact，`UsageLimitExceeded` 通知用户
-- [ ] **P2 线程管理**：`thread/fork`（分支对话）、`thread/archive`（与 DB archiveSession 联动）、`thread/compact/start`（手动压缩）、`thread/rollback`（撤销 N 轮）
-- [ ] **多 thread 共享 app-server 进程**：Codex 官方未支持，等支持后再做（详见"Workspace 路由重构后续"的 2026-06 评估）
+目标:让 `workspace name + sessionId` 成为对外稳定标识,把 `directorLabel` / `routingKey` 降回运行时实现细节。
 
-## Workspace 路由重构后续(2026-06 评估)
+- [ ] 盘点 `directorLabel` / `routingKey` / `source_director` 的剩余调用点,按"兼容 API / 内部实现 / 可删除 legacy"分类。
+- [ ] `/api/send`、`/api/messages`、`/api/sessions` 优先走 `sessionId` / `workspace`,保留 legacy 参数只做兼容入口。
+- [ ] Task 回调从 `source_director` 迁移到 `source_session_id` 或 workspace default session 策略;旧字段保留迁移期兼容。
+- [ ] Cron 调度从 `source_director` 迁移到 workspace default session 策略;旧字段保留迁移期兼容。
+- [ ] 明确 `DirectorPool` 的剩余职责:运行时池和兼容层,不要再作为领域模型事实源。
+- [ ] 补一组端到端验证:Web 创建 workspace/session -> 发消息 -> sessionId 路由;飞书小群 -> workspace default session;归档 session 后 fallback 正确。
 
-- [x] ~~DirectorPool 内部 wireEvents 回复路由迁移到 SessionManager 层~~ — 实际审查后无需迁移:当前架构已经是 **console → SessionManager.forwardPoolEvents → DirectorPool.wireEvents → bridge**,SessionManager 已在转发层中心位置;pool emit 已带 `bridge.label` 作为首参,console.ts 在 sessionManager 层面订阅并 `resolveSessionId(label)`。继续迁移收益微小、改动风险大。`src/session-manager.ts:293-299`。
-- [x] ~~运行时测试:启动 shell,通过 web/feishu 发消息验证路由正确性~~ — runtime test 在无真实 persona 配置 + feishu 凭证的环境下无法执行;逻辑路径通过静态分析已确认(`forwardPoolEvents` re-emit pool events,console.ts listener 接 `label, text` 并 `resolveSessionId`)。生产部署前需补一次冒烟。
-- [x] **多 thread 共享单 app-server 进程评估** — 结论:**不实现**。每个 `SessionBridge` 当前持有一个 Codex `app-server` 子进程(由 `codex-thread-injector.ts` 启动,见 `src/index.ts:439`)。Codex app-server 协议层目前不支持多 thread 共享一个进程(`thread/start` 创建 thread,每个 thread 仍是独立 subprocess 关系),官方也未给出推荐。**建议**:等 Codex 官方支持后再做。期间如果 thread 数膨胀,优化点是减少 LRU eviction 频率(`director-pool.ts:1111` `evictLRU`)。
+参考:
+- `docs/architecture.md`
+- `docs/plan-workspace-routing.md`
+- `src/session-manager.ts`
+- `src/workspace-registry.ts`
 
-## 飞书卡片交互增强
+## P0: Session SSOT / No Local History 收尾
 
-- [ ] 利用飞书消息卡片实现 Session 初始化配置（选择 agent 类型、模型、sandbox 模式等）
-- [ ] 卡片式 workspace/session 路径选择（cwd 配置、workspace 切换）
-- [ ] 探索卡片 action 回调驱动 session 生命周期（创建/归档/切换 session，而非纯命令行 `/flush` `/switch`）
+目标:用 `state.db` 的 sessions/workspaces 作为 session 列表和 workspace 统计的唯一事实源;日志只负责消息正文读取。
 
-## Web UI 问题（web-v2）
+- [ ] 复核 `importSessionsFromLogs()` 回填幂等性:部分回填失败后重启不应永久跳过旧日志。
+- [ ] 明确 `message_count` 是派生缓存;若 UI 依赖强一致,增加重算/校准路径。
+- [ ] 给旧日志路径兼容设置 sunset 策略:启动迁移或 30 天后停止双路径扫描。
+- [ ] 清理 `ConsoleWorkspace` 中仍暴露但不该作为领域事实源的 `directorLabel` / `routingKey` 字段。
+- [ ] 验证重启后 sessions 表、旧日志读取和 live session 合并不漂移。
 
-> 当前 Web-v2 覆盖 Chat / Tasks / Files 三个页面。
-> `docs/web-agent-workbench.md` 规划的 Runtime / Automations / Persona / Observability / Settings 页面均未实现。
+参考:
+- `docs/plan-session-ssot.md`
+- `src/task/task-store.ts`
+- `src/session-bridge.ts`
+- `src/console.ts`
 
-### Chat 页面
+## P1: Web v1 / web-v2 双轨策略
 
-- [ ] 缺少「停止生成 / 中断」按钮（streaming 时无法主动终止）
-- [ ] 缺少消息编辑、删除、重新生成、复制功能
-- [ ] 消息列表无搜索、无分页（硬编码 limit=100）
-- [ ] 缺少消息日期分隔线
-- [ ] 用户消息不渲染 markdown（只有 assistant 消息走 react-markdown）
-- [ ] **已知问题**：streaming 追加消息时无平滑滚动动画。`followOutput` 被改成 `'auto'` 是切 session 不持续滚动的代价；未来要分清"切会话"与"流式追加"两种意图，可考虑： (a) ref 区分两种状态分别设 `'auto'` / `'smooth'`；(b) 关掉 followOutput，改成在 streaming 增量时手动 `scrollBy`
+目标:明确 web-v2 是主界面还是实验界面,避免 legacy Web Console 和 web-v2 的功能口径互相打架。
 
-### Session / Workspace 管理
+- [x] 删除 web-v2 已落地功能的过期 TODO 口径,以 `web-v2/BLUEPRINT.md` 为 v2 收敛事实源。
+- [ ] 明确入口策略:`/` 指向 web-v2,`/v1` 作为 legacy fallback;补到 README / docs。
+- [ ] web-v2 只覆盖 Chat / Tasks / Files,不要声称已覆盖 legacy 的 Runtime / Automations / Persona / Logs / Settings 全量能力。
+- [ ] 决定 legacy 功能迁移方式:按真实使用场景逐项迁移,还是长期保留 `/v1` 管理面。
+- [ ] 补 web-v2 最终冒烟记录:认证、workspace/session、chat、tasks、files、断线重连、无 console.error。
 
-- [ ] Workspace 下缺少「新建 Session」入口（侧边栏只展示已有 sessions，无新建按钮）
-- [ ] Workspace cwd 配置：当前只有文件夹浏览器选择，需要支持直接粘贴路径地址
-- [ ] 缺少 Session 归档操作入口
-- [ ] 侧边栏 "Bind project" 按钮是空操作（未接线）
+参考:
+- `web-v2/BLUEPRINT.md`
+- `web-v2/README.md`
+- `web-v2/ARCHITECTURE.md`
+- `docs/web-agent-workbench.md`
 
-### Director 运行时操作（后端 API 已有，UI 无入口）
+## P1: 项目文档校准
 
-- [ ] Flush（`/api/flush`）— 需要按钮或命令面板入口
-- [ ] Restart（`/api/restart`）— 仅侧边栏底部 "Restart Shell" 会发 `/shell-restart`，无 Director 级别重启
-- [ ] Interrupt（`/api/interrupt`）— streaming 时应显示停止按钮
-- [ ] Switch agent（`/api/switch-agent`）— 运行时切换 Agent 后端（claude/codex/kimi）
-- [ ] Switch persona（`/api/switch-persona`）— 运行时切换人格角色
+目标:让 README、架构文档、计划文档和代码现状一致。
 
-### Tasks 页面
+- [x] 重写 `TODO.md` 为项目级收敛清单。
+- [x] 重写 `web-v2/README.md`,替换 Vite 模板内容。
+- [x] 新增 `web-v2/ARCHITECTURE.md`,记录模块边界和数据流。
+- [x] 更新 `docs/architecture.md`:标注目标模型与当前兼容层的差异。
+- [x] 更新 `docs/plan-workspace-routing.md`:从理想实施计划改成"当前状态 + 剩余迁移点"。
+- [x] 更新 `docs/plan-session-ssot.md`:把审阅结论变成可执行收尾 checklist。
+- [x] 清理已落地的 WP 注释,只保留仍有设计价值的注释。
 
-- [ ] 任务结果面板关闭后无法重新打开（需选另一个 task 才能恢复）
-- [ ] "Sent" 完成度指示器始终显示 "not sent"（未接线）
-- [ ] 无法查看 result_file 内容（只显示路径）
-- [ ] 无法将任务输出发送回 Chat
-- [ ] 无 task 删除/归档功能
+## P2: Codex App Server 最小兼容复核
 
-### Files 页面
+暂缓到单独讨论。这里不做"全量协议升级"。
 
-- [ ] 无文件创建、重命名、删除功能
-- [ ] 无图片预览（仅 chat 的 DocumentPanel 支持图片）
-- [ ] 无语法高亮（纯文本行号表格）
-- [ ] 无文件搜索
+- [x] Codex `codex-app-server` provider 的后台任务改为临时 App Server task runtime;`type: codex` 保留 turn-based `codex exec` 回退。
+- [ ] 复核哪些协议 TODO 已经被当前实现覆盖。
+- [ ] 只保留必要兼容项和直接改善当前体验的事件处理。
+- [ ] 明确不追齐的协议能力,避免把项目范围扩成 app-server 客户端全量实现。
 
-### 缺失页面（docs/web-agent-workbench.md 规划但未实现）
-
-- [ ] Persona 页面 — persona 列表、切换、记忆读写
-- [ ] Automations 页面 — Cron 任务管理（后端 `GET/POST/PUT /api/cron` 已有）
-- [ ] Runtime 页面 — Agent 进程状态详情（pid/alive/restart count/crash reason）
-- [ ] Observability 页面 — Token 用量趋势、context window、cost、日志查看器
-- [ ] Settings 页面 — 主题切换、auth token 管理（当前无 logout 按钮）
-
-### 通用 UI 问题
-
-- [ ] 无 404 / catch-all 路由
-- [ ] 无移动端适配（sidebar 固定 292px，小屏溢出）
-- [ ] 无键盘快捷键
-- [ ] StatusBar 组件已定义但未挂载（header 有内联版本）
-- [ ] `tabs.tsx`、`card.tsx` UI 原语已定义但未使用
+参考:
+- `docs/codex-app-server-upgrade.md`

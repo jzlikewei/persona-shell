@@ -128,7 +128,7 @@
   }
 }
 
-/* Toast 入场动画(WP1)—— 自实现,避免引入 tailwindcss-animate */
+/* Toast 入场动画:自实现,避免引入 tailwindcss-animate */
 @keyframes toast-slide-in {
   from {
     opacity: 0;
@@ -143,4 +143,3 @@
 .toast-enter {
   animation: toast-slide-in 180ms ease-out;
 }
-

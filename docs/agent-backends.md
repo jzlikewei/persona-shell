@@ -11,7 +11,7 @@ Persona Shell 不直接调用 LLM API，而是将 CLI agent 作为子进程运�
 
 ## Claude Code
 
-> 主力后端。长驻 daemon 进程，FIFO 管道双向通信，stream-json 实时流式输出。
+> 支持的长驻 daemon 后端。通过 FIFO 管道双向通信，stream-json 实时流式输出。
 
 ### 身份注入
 
@@ -118,7 +118,7 @@ Shell 与 Claude Code 通过 FIFO 管道交换 JSON 行。
 
 ## Codex
 
-> Director 默认使用 App Server 模式（长驻 JSON-RPC 进程，流式输出）；后台任务仍走 turn-based `codex exec`。
+> 主力后端。Director 默认使用 App Server 模式（长驻 JSON-RPC 进程，流式输出）；`codex-app-server` provider 的后台任务也使用临时 App Server task runtime。
 
 ### 运行模式
 
@@ -127,7 +127,8 @@ Codex 有两种运行模式，Shell 根据场景自动选择：
 | 场景 | 模式 | 说明 |
 |------|------|------|
 | Director（对话） | **App Server**（默认） | 长驻 `codex app-server --listen stdio://` 进程，JSON-RPC 2.0 协议 |
-| 后台任务 | **Turn-based** | 每次 spawn `codex exec`，执行完退出 |
+| 后台任务 | **临时 App Server**（默认 provider） | 每个任务启动一个临时 `codex app-server --listen stdio://`，`turn/completed` 后关闭 |
+| 后台任务 | **Turn-based**（回退） | provider `type: codex` 时每次 spawn `codex exec`，执行完退出 |
 
 默认 provider 配置：
 
@@ -143,14 +144,14 @@ agents:
       transport: stdio
 ```
 
-如需退回 turn-based 模式，将 `type` 改为 `codex` 即可。
+如需退回 turn-based 模式，将 provider `type` 改为 `codex` 即可。
 
 ### 身份注入
 
 Codex 不支持 Claude Code 的 `--plugin-dir` / `--append-system-prompt-file` 参数。身份注入通过以下方式：
 
 - `--cd ~/.persona`：设置工作目录，Codex 会自动读取 CLAUDE.md
-- **Prompt 拼接**（后台任务）：`buildInjectedPrompt()` 将 `soul.md`、`meta.md`、`personas/{role}.md` 的内容拼接到 prompt 前部
+- **Prompt 拼接**（turn-based 后台任务）：`buildInjectedPrompt()` 将 `soul.md`、`meta.md`、`personas/{role}.md` 的内容拼接到 prompt 前部
 - **任务系统**：默认通过 task CLI 用法注入 prompt，避免 Codex 将 MCP tools schema 带进 Responses 请求；需要原生 MCP 时可设 `mcp_mode: mcp`
 
 ### 进程启动
@@ -258,7 +259,7 @@ agents:
 注意事项：
 
 - `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool Director 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{label}-{group}/`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录。
-- 如需退回 turn-based 模式（每消息 spawn），将 provider `type` 改为 `codex`。后台任务始终使用 turn-based `codex exec`，不受此设置影响。
+- 如需退回 turn-based 模式（每消息 spawn），将 provider `type` 改为 `codex`。后台任务同样会随 provider type 回退到 `codex exec`。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
 - 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。

@@ -159,10 +159,10 @@ export interface MetricsCollector {
 }
 
 /**
- * WP7 helper:从 input log 文件数组(按 mtime/日期降序)里找最后一条 user 消息文本。
+ * 从 input log 文件数组(按 mtime/日期降序)里找最后一条 user 消息文本。
  * 不解析 log parser 的完整结构,直接 JSON.parse 每一行找 {direction:'in', text:string}。
  * 返回 null 表示没找到(可能 session 还是空的,或日志格式不匹配)。
- * WP7:export 给单测用。
+ * export 给单测用。
  */
 export function readLastUserMessageText(inputLogPaths: string[]): string | null {
   // 按文件名升序遍历(最旧的先,最新的后 push),然后从 lines 末尾往前找第一条 direction=in。
@@ -562,7 +562,7 @@ export function startConsole(
           directorPid: ds.pid,
           sessionId: ds.sessionId,
           sessionName: ds.sessionName,
-          // WP5: 把"当前 live session 是否已 archived"暴露给前端。
+          // 把"当前 live session 是否已 archived"暴露给前端。
           // 前端 useSessions 在 unshift 自己的 live 合并时,需要这个标志决定是否跳过
           // —— 否则归档"当前活跃 session"后,DB SQL 过滤+后端 live 合并都跳过了,
           // 但前端 hook 又 unshift 回来,UI 永远看不到归档生效。
@@ -621,7 +621,7 @@ export function startConsole(
           } : null,
           pid: entry.directorStatus?.pid ?? null,
           sessionId: entry.directorStatus?.sessionId ?? null,
-          // WP5: 把 pool entry 对应 session 的 archived 状态透出,前端 useSessions
+          // 把 pool entry 对应 session 的 archived 状态透出,前端 useSessions
           // 在 unshift 自己的 live 合并时,需要这个标志决定是否跳过(已归档 session
           // 不应再回列表)。如果 entry 没有 sessionId(冷启动前),archived 为 false。
           liveSessionArchived: entry.directorStatus?.sessionId
@@ -3239,7 +3239,7 @@ export function startConsole(
             // Fallback: 仅当 DB 完全没有该 workspace 任何记录(包含 archived)时,才回退到 log 文件解析
             // (pre-migration 环境兼容)。一旦 DB 已有数据,sessions 数组就是真相,
             // 走 log fallback 会把已 archived 的 session 重新 unshift 回来(因为 parseSessionsFiles
-            // 只看 log 文件,不知道 archived 状态),破坏 WP5 归档语义。
+            // 只看 log 文件,不知道 archived 状态),破坏归档语义。
             // 边界:workspace 全部 session 都已 archived 时,SQL 过滤后 sessions=0 但 dbRows.length=0,
             // 此时也不能走 fallback —— fallback 用的是"DB 完全没有这个 workspace 的认知"。
             const totalDbRows = listSessionsFromDb(wsName, { includeArchived: true });
@@ -3263,7 +3263,7 @@ export function startConsole(
             const activePoolEntry = poolEntry ? sessionManager?.get(poolEntry.routingKey) : undefined;
             const ds = resolvedLabel === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
             if (ds?.sessionId) {
-              // WP5 修复:live session 合并时,跳过 DB 里已 archived 的 session。
+              // live session 合并时,跳过 DB 里已 archived 的 session。
               // 否则归档"当前活跃 session"后,虽然 DB SQL 已经过滤了 archived=0,
               // 这段 live 合并逻辑又把它 unshift 回列表,UI 永远看不到归档生效。
               // 边界:in-memory session 还没注册到 DB(Director 重启后新 spawn),从 getSessionRecord
@@ -3316,7 +3316,7 @@ export function startConsole(
             return Response.json({ ok: true, sessionId, sessionName: rawName || null, liveUpdated });
           }
           // Persona orchestration APIs for Codex app / MCP clients
-          // WP7: POST /api/messages/regenerate —— 重新生成最后一条 assistant 回复
+          // POST /api/messages/regenerate —— 重新生成最后一条 assistant 回复
           // 找到 entry.bridge 对应的 logDir,扫所有 input-*.log 找最后一条 user 消息,
           // 重新发一次。不修改日志;只是触发一次新的 turn。
           if (url.pathname === '/api/messages/regenerate' && req.method === 'POST') {
@@ -3847,7 +3847,7 @@ export function startConsole(
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
           }
-          // WP5: POST /api/sessions/{id}/archive — 软/硬两种归档模式
+          // POST /api/sessions/{id}/archive — 软/硬两种归档模式
           // body: { killDirector?: boolean };默认 false = 软归档(仅翻 DB 标志)
           if (url.pathname.startsWith('/api/sessions/') && url.pathname.endsWith('/archive') && req.method === 'POST') {
             if (!sessionManager) return Response.json({ ok: false, error: 'Session manager not available' }, { status: 503 });

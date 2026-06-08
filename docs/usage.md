@@ -299,7 +299,22 @@ cd ~/.persona && claude /soul-crafting
 
 `http://localhost:3000`，仅监听 localhost。
 
-### 面板功能
+当前有两套 Web 界面:
+
+| 入口 | 定位 |
+|------|------|
+| `/` | web-v2 主入口,聚焦 Chat / Tasks / Files |
+| `/v1` | legacy Web Console fallback,覆盖 Runtime / Automations / Persona / Logs / Settings 等更完整管理面 |
+
+web-v2 不再承诺覆盖 legacy 的所有功能。Runtime、Cron 全量编辑、Persona 文档管理、日志和设置等深水区能力,仍以 `/v1` 为准。
+
+### web-v2 面板功能
+
+- **Chat**：workspace/session 消息、实时流式回复、tool events、Markdown、附件上传和发送
+- **Tasks**：后台任务列表、状态、日志、结果和 Cron 摘要
+- **Files**：outbox、attachments、task results 等安全产物浏览和预览
+
+### legacy `/v1` 面板功能
 
 - **状态面板**：Director PID、token 用量、消息队列长度、运行时间
 - **会话查看**：完整对话历史，支持实时流式显示 Director 的回复

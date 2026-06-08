@@ -27,7 +27,7 @@ export function getRegisteredShortcuts(): ShortcutBinding[] {
   return Array.from(registry.values())
 }
 
-// 全局命令面板:WP3 调色板组件会调 setOpenCommandPaletteHandler 挂上 open 函数;
+// 全局命令面板:调色板组件会调 setOpenCommandPaletteHandler 挂上 open 函数;
 // useShortcut 注册 'mod+k' 时调用 openCommandPalette(),解耦双方。
 let openCommandPaletteHandler: (() => void) | null = null
 

@@ -4,6 +4,22 @@
 
 架构文档（`docs/architecture.md`）已更新领域模型。本文档是从当前代码演进到目标模型的实施计划。
 
+## 当前状态（2026-06-08）
+
+这份文档不再表示"从零开始"的实施计划。当前代码已经完成了核心数据层和中间编排层:
+
+- `src/workspace-registry.ts` 已存在,负责 workspace CRUD、default session 和 legacy KV 迁移。
+- `src/session-manager.ts` 已存在,负责 `sessionId -> routingKey` 映射、创建 session、归档 session、恢复映射和转发 pool events。
+- `src/task/task-store.ts` 已有 `workspaces` / `sessions` 表和相关 CRUD。
+- web-v2 的主要 Chat / Tasks / Files 路径已经优先使用 `workspace` / `sessionId`。
+
+剩余工作不是"替换整套系统",而是把兼容层收窄:
+
+1. `DirectorPool` 仍然承担运行时池职责,短期不删除;它应被视为 SessionManager 的底层实现,不是领域事实源。
+2. `directorLabel` / `routingKey` / `source_director` 仍大量存在,需要分类为兼容 API、内部实现或可删除 legacy。
+3. Task 回调和 Cron 调度仍以 `source_director` 为主,尚未完全迁移到 `source_session_id` 或 workspace default session。
+4. console API 仍保留 `director` / `director_label` 参数,需要明确哪些只做兼容入口。
+
 ## 当前代码 vs 目标模型
 
 | 维度 | 现状 | 目标 |

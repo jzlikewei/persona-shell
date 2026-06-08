@@ -77,10 +77,10 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const [turnPhase, setTurnPhase] = useState<TurnPhase>(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
-  // WP6: limit 状态(默认 100;loadMore 调成 500)。后端 /api/messages 不支持 offset/cursor,
+  // limit 状态(默认 100;loadMore 调成 500)。后端 /api/messages 不支持 offset/cursor,
   // 所以"Load earlier"只能"调大 limit 重拉最后 N 条",不是真分页。
   const [limit, setLimit] = useState(100)
-  // WP6: hideMessage 客户端过滤,Set 装被隐藏消息 id
+  // hideMessage 客户端过滤,Set 装被隐藏消息 id
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set())
   const { get, post } = useApi()
   const { on, status } = useWebSocket()
@@ -156,12 +156,12 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     }
   }, [get, sessionId, workspace, limit])
 
-  // WP6: "Load earlier" —— 调大 limit 重新拉窗口
+  // "Load earlier" 只能调大 limit 重新拉窗口
   const loadMore = useCallback(() => {
     setLimit(500)
   }, [])
 
-  // WP6: hideMessage / showMessage / showAllHidden —— 客户端过滤,可逆
+  // hideMessage / showMessage / showAllHidden 客户端过滤,可逆
   const hideMessage = useCallback((id: string) => {
     setHiddenIds(prev => {
       const next = new Set(prev)

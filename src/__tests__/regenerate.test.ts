@@ -1,5 +1,5 @@
 /**
- * WP7: readLastUserMessageText 单测 —— 端点 POST /api/messages/regenerate 的核心
+ * readLastUserMessageText 单测 —— 端点 POST /api/messages/regenerate 的核心
  * helper。它扫多个 input-YYYY-MM-DD.log 文件,找最后一条 user 消息文本。
  * 不测完整端点(端点依赖 sessionManager + bridge.send,代价大;这里单测
  * 80% 路径——剩下 20% 是 entry.bridge.send 调用,已被既有 e2e 测试覆盖)。

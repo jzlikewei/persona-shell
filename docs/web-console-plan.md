@@ -1,5 +1,10 @@
 # Web 管理控制台 — 设计与状态
 
+> 当前状态说明（2026-06-08）:
+> 这份文档描述的是 legacy Web Console 的设计和历史状态。当前 `http://localhost:3000/` 已由 web-v2 承担主入口,聚焦 Chat / Tasks / Files；legacy 控制台保留在 `/v1`,作为 Runtime / Automations / Persona / Logs / Settings 等深度管理能力的 fallback。
+>
+> web-v2 的当前事实源见 `web-v2/README.md`、`web-v2/ARCHITECTURE.md` 和 `web-v2/BLUEPRINT.md`。
+
 ## 目标
 
 给 persona-shell 加一个 Web 管理控制台，能**完整管理**这个应用：看状态、看操作、看当前和历史会话、管理后台任务。

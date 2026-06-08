@@ -64,7 +64,17 @@ launchctl stop  com.persona.shell                                # 停止
 
 ## Web 控制台
 
-`http://localhost:3000` — 状态面板 / 会话查看 / 流式响应 / 任务管理
+`http://localhost:3000`
+
+| 入口 | 用途 |
+|------|------|
+| `/` | web-v2 主界面:Chat / Tasks / Files |
+| `/v1` | legacy 管理面:Runtime / Automations / Persona / Logs / Settings / 深度诊断 |
+
+排障优先级:
+
+1. 日常会话、任务结果、文件产物:先看 `/`。
+2. 运行时状态、队列、Cron、日志、配置、安全审批:看 `/v1`。
 
 ## 生命周期操作对比
 

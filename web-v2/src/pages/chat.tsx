@@ -216,7 +216,7 @@ const MessageBlock = memo(function MessageBlock({
 }) {
   const isUser = message.role === 'user'
   const filePaths = extractFilePaths(message.content)
-  // WP6: user 消息也走 MarkdownContent,但无 markdown 提示时回退到 pre-wrap,
+  // user 消息也走 MarkdownContent,但无 markdown 提示时回退到 pre-wrap,
   // 避免无意义 reparse。
   const hasMarkdown = /[*_`#\[\]]/.test(message.content)
 
@@ -363,7 +363,7 @@ export function ChatPage() {
   // Stop 按钮:仅主 director 调 /api/esc;pool director 的 stop 在 DirectorPanel 里
   const { interrupt } = useDirectorActions({ directorLabel: 'main' })
   const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0
-  // WP6: 搜索 + 隐藏状态在 ChatPage 内管(不污染 use-chat 抽象)
+  // 搜索 + 隐藏状态在 ChatPage 内管,不污染 use-chat 抽象
   const [searchQuery, setSearchQuery] = useState('')
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
@@ -477,7 +477,7 @@ export function ChatPage() {
   type VirtuosoItem = ChatMessage | StreamingTail | LoadingTail | EmptyTail | DateSeparatorTail
 
   const virtuosoItems = useMemo<VirtuosoItem[]>(() => {
-    // WP6: 在相邻消息日期变化处插入 DateSeparator;搜索过滤时不插入(以免污染过滤视图)
+    // 在相邻消息日期变化处插入 DateSeparator;搜索过滤时不插入,以免污染过滤视图
     const items: VirtuosoItem[] = []
     if (searchQuery) {
       // 搜索模式:直接铺平,不插日期分隔

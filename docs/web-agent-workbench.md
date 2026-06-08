@@ -1,5 +1,10 @@
 # Persona Web Console — 本地操作台升级蓝图
 
+> 当前状态说明（2026-06-08）:
+> 这份文档是 Workbench/legacy Web Console 的产品蓝图,记录的是完整本地操作台方向。当前主入口 web-v2 只承诺 Chat / Tasks / Files,并不等同于这里规划的 Runtime / Automations / Persona / Observability / Settings 全量工作台。
+>
+> 因此,本文适合作为能力迁移候选池和 legacy `/v1` 能力说明;web-v2 当前边界以 `web-v2/README.md`、`web-v2/ARCHITECTURE.md`、`web-v2/BLUEPRINT.md` 为准。
+
 ## 定位
 
 Persona Web Console 是 persona-shell 的本地 Web 操作界面。它不是新的 agent，不是 agent 平台，也不是通用工作流搭建器；它只负责把 persona-shell 已有的会话、任务、Cron、persona 文件、产物和日志做成一个日常可用的本地操作台。

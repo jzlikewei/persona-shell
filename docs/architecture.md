@@ -143,6 +143,22 @@ Cron job 使用所属 workspace 的 default session 执行。
 | workspace name | Workspace | 唯一 key，对外 |
 | sessionId | Session | 消息路由标识，对外 |
 
+### 当前兼容层
+
+上述模型是目标领域模型。当前代码已经引入 `WorkspaceRegistry` 和 `SessionManager`,但仍保留 `DirectorPool` 作为运行时池和 legacy 路由兼容层。
+
+需要区分三类标识:
+
+| 标识符 | 当前用途 | 收敛方向 |
+|--------|----------|----------|
+| workspace name | 对外 workspace key | 保留 |
+| sessionId | 对外 session 路由 key | 保留并优先使用 |
+| routingKey | DirectorPool 内部 key,可能来自 chatId / web id | 降为内部实现细节 |
+| directorLabel | 旧 UI / API / 日志兼容字段 | 逐步移出领域模型 |
+| source_director | Task/Cron 旧回调路由字段 | 迁移到 source session 或 workspace default session |
+
+因此,看到 `directorLabel` / `routingKey` 不代表目标模型变化,只说明当前仍处于兼容迁移期。
+
 ## 系统概览
 
 Persona Shell 是一个 TypeScript (Bun) 进程，负责：
@@ -499,7 +515,14 @@ Shell 重启：
 
 ## Web Console
 
-`localhost:3000`，通过 WebSocket 推送两类数据：
+`localhost:3000` 嵌入 shell 进程运行。当前有两套入口:
+
+| 入口 | 定位 |
+|------|------|
+| `/` | web-v2 主界面,聚焦 Chat / Tasks / Files |
+| `/v1` | legacy 管理面 fallback,覆盖 Runtime / Automations / Persona / Logs / Settings 等深度能力 |
+
+Web 前端通过 WebSocket 推送两类数据：
 
 **状态快照（每秒）**：系统状态 + 各 session 状态
 
