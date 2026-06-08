@@ -1,16 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import {
-  Brush,
-  Eraser,
   FileCode2,
   ListTodo,
   MessageSquare,
-  RotateCcw,
   Search,
-  Square,
 } from 'lucide-react'
-import { useDirectorActions } from '@/hooks/use-director-actions'
 import { setOpenCommandPaletteHandler } from '@/lib/shortcut-registry'
 import { useToast } from '@/components/toast'
 import { cn } from '@/lib/utils'
@@ -31,14 +26,9 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null)
   const navigate = useNavigate()
   const { toast } = useToast()
-  const { flush, restart, interrupt, clear } = useDirectorActions()
 
   const actions = useMemo<PaletteAction[]>(
     () => [
-      { id: 'flush', label: 'Flush Director', hint: '刷新上下文', icon: Brush, keywords: ['flush', 'clear-context', '刷新', '上下文'], run: () => flush() },
-      { id: 'restart', label: 'Restart Director', hint: '重启 Director 进程', icon: RotateCcw, keywords: ['restart', '重启'], run: () => restart() },
-      { id: 'interrupt', label: 'Interrupt', hint: '中断当前 turn', icon: Square, keywords: ['interrupt', 'stop', 'cancel', '中断', '停止'], run: () => interrupt() },
-      { id: 'clear', label: 'Clear context', hint: '清空上下文', icon: Eraser, keywords: ['clear', 'context', '清空'], run: () => clear() },
       { id: 'focus-chat', label: 'Go to Chat', icon: MessageSquare, keywords: ['chat', '聊天', '主页'], run: () => navigate('/') },
       { id: 'focus-tasks', label: 'Go to Tasks', icon: ListTodo, keywords: ['tasks', '任务'], run: () => navigate('/tasks') },
       { id: 'focus-files', label: 'Go to Files', icon: FileCode2, keywords: ['files', '文件'], run: () => navigate('/files') },
@@ -50,7 +40,7 @@ export function CommandPalette() {
         run: () => toast({ title: '快捷键', description: 'Mod+K 调出命令面板', tone: 'info' }),
       },
     ],
-    [flush, restart, interrupt, clear, navigate, toast]
+    [navigate, toast]
   )
 
   const filtered = useMemo(() => {

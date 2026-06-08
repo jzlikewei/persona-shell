@@ -1784,7 +1784,7 @@ export function startConsole(
       parent_persona_role: ds.personaRole,
       parent_pid: ds.pid,
     };
-    if (ds.agentType === 'codex' || ds.agentType === 'codex-app-server') {
+    if (ds.agentType === 'codex-app-server') {
       meta.parent_codex_thread_id = ds.sessionId;
     }
     if (poolEntry) {

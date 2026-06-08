@@ -2,18 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 
-// Access private/module-level functions via import trick:
-// buildCodexMcpOverrideArgs, shellQuote, tomlString, tomlInlineTable
-// are module-private — we test them indirectly through spawnPersona's args output,
-// or extract them for direct testing.
-
-// Strategy: since these are non-exported, we re-implement minimal extraction
-// and test through spawnPersona's generated args.
-// For buildCodexMcpOverrideArgs specifically, we also create a standalone test
-// by extracting the logic into a test-accessible wrapper.
-
-// Direct import for testing the function behavior through spawn args
-import { spawnPersona } from '../persona-process.js';
+import { buildCodexMcpOverrideArgs, spawnPersona } from '../persona-process.js';
 import { initLogDir } from '../logger.js';
 
 const TEST_DIR = '/tmp/persona-process-test';
@@ -31,8 +20,8 @@ describe('persona-process', () => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  describe('buildCodexMcpOverrideArgs (via spawnPersona)', () => {
-    test('generates -c args from .mcp.json for codex agents', () => {
+  describe('buildCodexMcpOverrideArgs', () => {
+    test('generates -c args from .mcp.json for Codex App Server MCP overrides', () => {
       const mcpConfig = {
         mcpServers: {
           'persona-tasks': {
@@ -44,16 +33,7 @@ describe('persona-process', () => {
       };
       writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
 
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(MCP_CONFIG_PATH);
 
       // Should contain -c flags for MCP server config
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
@@ -63,34 +43,6 @@ describe('persona-process', () => {
       expect(cFlags.some((f) => f.includes('"bun"'))).toBe(true);
       expect(cFlags.some((f) => f.includes('"run"'))).toBe(true);
       expect(cFlags.some((f) => f.includes('SHELL_PORT'))).toBe(true);
-    });
-
-    test('skips MCP -c args for codex cli mode', () => {
-      const mcpConfig = {
-        mcpServers: {
-          'persona-tasks': {
-            command: 'bun',
-            args: ['run', 'src/task-mcp-server.ts'],
-            env: { SHELL_PORT: '3000' },
-          },
-        },
-      };
-      writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
-
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'cli' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).not.toContain('-c');
-      expect(args[args.length - 1]).toContain('Codex task system access');
-      expect(args[args.length - 1]).toContain('task-mcp-server.ts');
     });
 
     test('merges DIRECTOR_LABEL into Codex MCP server env when provided', () => {
@@ -105,17 +57,7 @@ describe('persona-process', () => {
       };
       writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
 
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        env: { DIRECTOR_LABEL: 'cb1274a8' },
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(MCP_CONFIG_PATH, { DIRECTOR_LABEL: 'cb1274a8' });
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags.some((f) => f.includes('DIRECTOR_LABEL = "cb1274a8"'))).toBe(true);
@@ -133,17 +75,7 @@ describe('persona-process', () => {
       };
       writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
 
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        env: { DIRECTOR_LABEL: 'abc123' },
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(MCP_CONFIG_PATH, { DIRECTOR_LABEL: 'abc123' });
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags.some((f) => f.includes('DIRECTOR_LABEL = "abc123"'))).toBe(true);
@@ -151,16 +83,7 @@ describe('persona-process', () => {
     });
 
     test('skips MCP args when .mcp.json does not exist', () => {
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: join(TEST_DIR, 'nonexistent.json'),
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(join(TEST_DIR, 'nonexistent.json'));
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags.filter((f) => f.includes('mcp_servers.'))).toHaveLength(0);
@@ -175,16 +98,7 @@ describe('persona-process', () => {
       };
       writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
 
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(MCP_CONFIG_PATH);
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       // Should only have entries for "valid", not "broken"
@@ -195,16 +109,7 @@ describe('persona-process', () => {
     test('handles empty mcpServers object', () => {
       writeFileSync(MCP_CONFIG_PATH, JSON.stringify({ mcpServers: {} }));
 
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(MCP_CONFIG_PATH);
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags.filter((f) => f.includes('mcp_servers.'))).toHaveLength(0);
@@ -213,16 +118,7 @@ describe('persona-process', () => {
     test('handles malformed JSON gracefully', () => {
       writeFileSync(MCP_CONFIG_PATH, '{ broken json }}}');
 
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(MCP_CONFIG_PATH);
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags.filter((f) => f.includes('mcp_servers.'))).toHaveLength(0);
@@ -237,69 +133,11 @@ describe('persona-process', () => {
       };
       writeFileSync(MCP_CONFIG_PATH, JSON.stringify(mcpConfig));
 
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', mcp_mode: 'mcp' },
-        mode: 'background',
-        mcpConfigPath: MCP_CONFIG_PATH,
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
+      const args = buildCodexMcpOverrideArgs(MCP_CONFIG_PATH);
 
       const cFlags = args.filter((_, i, arr) => arr[i - 1] === '-c');
       expect(cFlags).toContain('mcp_servers.valid_key.command="node"');
       expect(cFlags.some((f) => f.includes('bad key'))).toBe(false);
-    });
-  });
-
-  describe('codex background mode args', () => {
-    test('includes exec, --json, --skip-git-repo-check for codex background', () => {
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
-        mode: 'background',
-        prompt: 'search something',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).toContain('exec');
-      expect(args).toContain('--json');
-      expect(args).toContain('--skip-git-repo-check');
-    });
-
-    test('includes resume and session id when resuming', () => {
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
-        mode: 'background',
-        resumeSessionId: 'thread-abc-123',
-        prompt: 'continue',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).toContain('resume');
-      expect(args).toContain('thread-abc-123');
-    });
-
-    test('includes --cd for codex agents', () => {
-      const { child, args } = spawnPersona({
-        role: 'director',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
-        mode: 'background',
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).toContain('--cd');
-      expect(args).toContain(TEST_DIR);
     });
   });
 
@@ -324,12 +162,12 @@ describe('persona-process', () => {
   });
 
   describe('foreground mode', () => {
-    test('throws for non-claude agent in foreground mode', () => {
+    test('throws for codex-app-server in foreground mode', () => {
       expect(() => {
         spawnPersona({
           role: 'director',
           personaDir: TEST_DIR,
-          agent: { type: 'codex', command: 'echo', name: 'codex' },
+          agent: { type: 'codex-app-server', command: 'echo', name: 'codex' },
           mode: 'foreground',
           stderrPath: join(TEST_DIR, 'logs', 'test.log'),
         });
@@ -432,48 +270,6 @@ describe('persona-process', () => {
     });
   });
 
-  describe('codex agent config options', () => {
-    test('uses bypass flag for danger-full-access plus never approval', () => {
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', model: 'o3', sandbox: 'danger-full-access', approval: 'never', search: true },
-        mode: 'background',
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).toContain('--model');
-      expect(args).toContain('o3');
-      expect(args).toContain('--dangerously-bypass-approvals-and-sandbox');
-      expect(args).not.toContain('--sandbox');
-      expect(args).not.toContain('--ask-for-approval');
-      expect(args).toContain('--search');
-    });
-
-    test('keeps explicit sandbox and approval flags for other codex modes', () => {
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', model: 'o3', sandbox: 'read-only', approval: 'on-request', search: true },
-        mode: 'background',
-        prompt: 'test',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      expect(args).toContain('--model');
-      expect(args).toContain('o3');
-      expect(args).toContain('--sandbox');
-      expect(args).toContain('read-only');
-      expect(args).toContain('--ask-for-approval');
-      expect(args).toContain('on-request');
-      expect(args).not.toContain('--dangerously-bypass-approvals-and-sandbox');
-      expect(args).toContain('--search');
-    });
-  });
-
   describe('extra env and extra args', () => {
     test('does not throw when extra env is provided', () => {
       const { child } = spawnPersona({
@@ -503,113 +299,6 @@ describe('persona-process', () => {
 
       expect(args).toContain('--custom-flag');
       expect(args).toContain('value');
-    });
-  });
-
-  describe('codex background prompt building (buildInjectedPrompt)', () => {
-    test('codex background args end without prompt section when no prompt given', () => {
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
-        mode: 'background',
-        prompt: '',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      // With empty prompt and no soul/meta/persona files, buildInjectedPrompt returns ''
-      // so args should not contain a trailing prompt string
-      const afterSkipIdx = args.indexOf('--skip-git-repo-check');
-      expect(afterSkipIdx).toBeGreaterThan(-1);
-      // Nothing after --skip-git-repo-check (no prompt appended)
-      expect(args.length).toBe(afterSkipIdx + 1);
-    });
-
-    test('codex background prompt includes soul.md and meta.md content', () => {
-      writeFileSync(join(TEST_DIR, 'soul.md'), 'I am the soul');
-      writeFileSync(join(TEST_DIR, 'meta.md'), 'Meta context here');
-
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
-        mode: 'background',
-        prompt: 'do the thing',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      // The last arg should be the built prompt containing injected sections
-      const builtPrompt = args[args.length - 1];
-      expect(builtPrompt).toContain('I am the soul');
-      expect(builtPrompt).toContain('Meta context here');
-      expect(builtPrompt).toContain('do the thing');
-      expect(builtPrompt).toContain('## Injected soul');
-      expect(builtPrompt).toContain('## Injected meta');
-      expect(builtPrompt).toContain('## Task');
-    });
-
-    test('codex background prompt includes persona role file', () => {
-      writeFileSync(join(TEST_DIR, 'personas', 'explorer.md'), 'Explorer persona instructions');
-
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
-        mode: 'background',
-        prompt: 'search',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      const builtPrompt = args[args.length - 1];
-      expect(builtPrompt).toContain('Explorer persona instructions');
-      expect(builtPrompt).toContain('## Injected persona:explorer');
-    });
-
-    test('codex background prompt includes agent system_prompt_file content', () => {
-      mkdirSync(join(TEST_DIR, 'prompts'), { recursive: true });
-      writeFileSync(join(TEST_DIR, 'prompts', 'codex.md'), 'Codex-specific agent instructions');
-
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex', system_prompt_file: 'prompts/codex.md' },
-        mode: 'background',
-        prompt: 'search',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      const builtPrompt = args[args.length - 1];
-      expect(args).not.toContain('--append-system-prompt-file');
-      expect(builtPrompt).toContain('Codex-specific agent instructions');
-      expect(builtPrompt).toContain('## Injected agent');
-      expect(builtPrompt).toContain('search');
-    });
-
-    test('codex background with resumeSessionId uses raw prompt, not buildInjectedPrompt', () => {
-      writeFileSync(join(TEST_DIR, 'soul.md'), 'soul content');
-
-      const { child, args } = spawnPersona({
-        role: 'explorer',
-        personaDir: TEST_DIR,
-        agent: { type: 'codex', command: 'echo', name: 'codex' },
-        mode: 'background',
-        resumeSessionId: 'thread-resume-456',
-        prompt: 'continue please',
-        stderrPath: join(TEST_DIR, 'logs', 'test.log'),
-      });
-      child.kill();
-
-      // When resuming, prompt is passed as-is without buildInjectedPrompt injection
-      expect(args).toContain('resume');
-      expect(args).toContain('thread-resume-456');
-      const lastArg = args[args.length - 1];
-      expect(lastArg).toBe('continue please');
-      // Should NOT contain injected soul content
-      expect(lastArg).not.toContain('soul content');
     });
   });
 

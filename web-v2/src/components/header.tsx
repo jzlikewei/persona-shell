@@ -33,13 +33,11 @@ export function Header({
   activeWorkspace,
   activeSession,
   mode,
-  onSwitchClick,
 }: {
   activeProject?: ProjectInfo
   activeWorkspace?: WorkspaceInfo
   activeSession?: Session
   mode: BrowseMode
-  onSwitchClick: () => void
 }) {
   const status = useStatus()
   const { status: wsStatus } = useWebSocket()
@@ -60,13 +58,6 @@ export function Header({
         <Bot className="size-3 text-[#7f849c]" />
         Director <strong className="font-mono text-[#bac2de]">{alive ? 'Alive +3' : 'Waiting'}</strong>
       </div>
-      <button
-        onClick={onSwitchClick}
-        className="rounded px-2 py-0.5 text-xs text-[#89b4fa] hover:bg-[#313244]"
-        title="切换 Agent / Persona (Mod+K)"
-      >
-        Switch…
-      </button>
     </header>
   )
 }

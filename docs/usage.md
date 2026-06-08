@@ -11,7 +11,7 @@
 | Web 控制台 | ✅ | — | ✅ | localhost:3000，浏览器直接对话 |
 | **会话管理** | | | | |
 | 流式响应 | ✅ | ✅ | ⚠️ | Claude 实时 chunk 推送；飞书用 interactive 卡片原地更新；Kimi 整段 JSON 行 |
-| 上下文保持 | ✅ daemon | ✅ app-server thread | ✅ daemon | Claude/Kimi 常驻进程；Codex 主线使用 App Server thread，`codex exec` 仅兼容回退 |
+| 上下文保持 | ✅ daemon | ✅ app-server thread | ✅ daemon | Claude/Kimi 常驻进程；Codex 使用 App Server thread |
 | FLUSH（上下文刷新） | ✅ | ✅ | ✅ | checkpoint → kill → bootstrap |
 | /esc（取消请求） | ✅ | ✅ | ✅ | SIGINT 中断当前处理 |
 | **多角色系统** | | | | |
@@ -182,7 +182,7 @@ agents:
 
 | | Claude Code | Codex | Kimi |
 |---|---|---|---|
-| 进程模型 | 常驻 daemon（FIFO pipe） | Director 默认 app-server/live；后台任务默认临时 App Server，`codex exec` 仅兼容回退 | 常驻 daemon（stdin/stdout pipe） |
+| 进程模型 | 常驻 daemon（FIFO pipe） | Director 默认 app-server/live；后台任务默认临时 App Server | 常驻 daemon（stdin/stdout pipe） |
 | 流式响应 | ✅ 实时推送 chunk | ✅ interactive 卡片原地更新 | ⚠️ 整段 JSON 行返回 |
 | 身份注入 | `--append-system-prompt-file` `--plugin-dir` | App Server instructions / Codex 原生 instructions + `.agents/skills` | `--agent-file` `--skills-dir` |
 | 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |

@@ -3,7 +3,7 @@ import { load } from 'js-yaml';
 import { dirname, resolve } from 'path';
 import { homedir } from 'os';
 
-export type AgentProviderType = 'claude' | 'codex' | 'codex-app-server' | 'kimi';
+export type AgentProviderType = 'claude' | 'codex-app-server' | 'kimi';
 export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApproval = 'untrusted' | 'on-request' | 'never';
@@ -11,7 +11,7 @@ export type CodexMcpMode = 'cli' | 'mcp' | 'off';
 export type CodexAppServerTransport = 'stdio';
 
 export function isCodexFamily(type: AgentProviderType): boolean {
-  return type === 'codex' || type === 'codex-app-server';
+  return type === 'codex-app-server';
 }
 
 export interface AgentProviderConfig {
@@ -197,7 +197,7 @@ export function loadConfig(path?: string): Config {
   for (const [name, provider] of providerEntries) {
     const type = provider?.type;
     const command = provider?.command;
-    if ((type === 'claude' || type === 'codex' || type === 'codex-app-server' || type === 'kimi') && typeof command === 'string' && command.trim()) {
+    if ((type === 'claude' || type === 'codex-app-server' || type === 'kimi') && typeof command === 'string' && command.trim()) {
       const providerFlushContextLimit = positiveNumber(provider?.flush_context_limit);
       const providerFlushContextLimits = provider?.flush_context_limits
         && typeof provider.flush_context_limits === 'object'

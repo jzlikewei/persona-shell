@@ -60,7 +60,7 @@ launchctl stop  com.persona.shell                                # 停止
 | Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`；app-server stderr 在 `codex-app-server-stderr.log` |
 | Pool Director（Kimi） | `logs/{label}-kimi-stderr.log`；stdin/stdout pipe，无 FIFO |
 
-当前默认 Codex pool Director 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`；`codex-app-server` provider 的后台任务使用临时 App Server task runtime，`codex exec` 仅作为 provider `type: codex` 的 legacy turn-based 回退。
+当前默认 Codex pool Director 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`；`codex-app-server` provider 的后台任务使用临时 App Server task runtime。legacy turn-based `codex exec` provider 已下线。
 
 ## Web 控制台
 

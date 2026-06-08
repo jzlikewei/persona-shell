@@ -64,7 +64,7 @@ describe('config', () => {
       defaults: { director: 'codex', default: 'claude' },
       providers: {
         claude: { type: 'claude', command: 'claude', bare: true, effort: 'max' },
-        codex: { type: 'codex', command: 'codex', sandbox: 'danger-full-access' },
+        codex: { type: 'codex-app-server', command: 'codex', sandbox: 'danger-full-access' },
       },
     };
 
@@ -77,7 +77,7 @@ describe('config', () => {
     test('uses getDefaultAgentName when agentName is omitted', () => {
       const result = resolveAgentProvider(agents, 'director');
       expect(result.name).toBe('codex');
-      expect(result.type).toBe('codex');
+      expect(result.type).toBe('codex-app-server');
     });
 
     test('throws when provider does not exist', () => {
@@ -319,34 +319,6 @@ describe('config', () => {
         expect(p.dangerously_skip_permissions).toBe(true);
         expect(p.effort).toBe('high');
         expect(p.model).toBe('sonnet');
-      });
-
-      test('parses codex provider with sandbox/approval/search/mcp_mode', () => {
-        writeMinimalConfig({
-          config: [
-            'feishu:',
-            '  app_id: id',
-            'agents:',
-            '  providers:',
-            '    my-codex:',
-            '      type: codex',
-            '      command: /usr/bin/codex',
-            '      sandbox: workspace-write',
-            '      approval: on-request',
-            '      search: true',
-            '      mcp_mode: mcp',
-            '',
-          ].join('\n'),
-          secret: `feishu:\n  app_secret: s\n`,
-        });
-        const cfg = loadConfig(join(TEST_DIR, 'config.yaml'));
-        const p = cfg.agents.providers['my-codex'];
-        expect(p).toBeDefined();
-        expect(p.type).toBe('codex');
-        expect(p.sandbox).toBe('workspace-write');
-        expect(p.approval).toBe('on-request');
-        expect(p.search).toBe(true);
-        expect(p.mcp_mode).toBe('mcp');
       });
 
       test('parses codex app-server provider', () => {

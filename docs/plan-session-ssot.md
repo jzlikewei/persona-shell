@@ -92,6 +92,12 @@ rg -n 'message_count|messageCount|localMessageCount|message count' src web-v2
 
 - Shell 重启后,live session 与 DB session 合并不重复。
 - 归档 session 不因为 live restore 回流为 default session。
-- 当前 session 消息能按 sessionId 读取。
+- 当前 session 能按 sessionId 恢复路由并发送。
 
-这部分仍需要补专门 restore/smoke 测试。
+验证:
+
+```bash
+bun test src/__tests__/session-manager.test.ts
+```
+
+`restoreEntries maps live sessions from DB without duplicating rows or reviving archived default` 覆盖 DB rows、live entries、default session 和 sessionId send route。

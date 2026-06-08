@@ -25,7 +25,7 @@ class FakeAdapter implements DirectorSessionAdapter {
   shouldWaitOnShutdown = false;
   skipInterruptWhileFlushing = false;
   trackRestartBackoff = false;
-  status: DirectorRuntimeStatus = { kind: 'codex-turn-based', alive: true, pid: null };
+  status: DirectorRuntimeStatus = { kind: 'codex-app-server', alive: true, pid: null };
 
   constructor(
     readonly options: DirectorSessionAdapterOptions,
@@ -919,14 +919,14 @@ describe('SessionBridge', () => {
     createBridgeWithOptions({ label: 'my-dir', groupName: 'grp' });
     const adapter = FakeAdapter.instances.at(-1)!;
     const name = adapter.hooks.buildSessionName();
-    expect(name).toMatch(/^codex-director-my-dir-\d{8}T\d{4}-grp$/);
+    expect(name).toMatch(/^codex-app-server-director-my-dir-\d{8}T\d{4}-grp$/);
   });
 
   test('buildSessionName omits groupName when not set', () => {
     createBridgeWithOptions({ label: 'solo', groupName: undefined });
     const adapter = FakeAdapter.instances.at(-1)!;
     const name = adapter.hooks.buildSessionName();
-    expect(name).toMatch(/^codex-director-solo-\d{8}T\d{4}$/);
+    expect(name).toMatch(/^codex-app-server-director-solo-\d{8}T\d{4}$/);
   });
 
   test('non-main codex director uses session workspace cwd', () => {
@@ -1149,8 +1149,8 @@ function createBridge(): SessionBridge {
     agents: {
       defaults: { director: 'fake', default: 'fake' },
       providers: {
-        fake: { type: 'codex', command: 'fake-codex' },
-        'fake-codex': { type: 'codex', command: 'fake-codex' },
+        fake: { type: 'codex-app-server', command: 'fake-codex' },
+        'fake-codex': { type: 'codex-app-server', command: 'fake-codex' },
         'fake-claude': { type: 'claude', command: 'fake-claude' },
       },
     },
@@ -1187,7 +1187,7 @@ function createBridgeWithOptions(overrides: {
 } = {}): SessionBridge {
   const hasGroupName = 'groupName' in overrides;
   const fakeProvider: AgentProviderConfig = {
-    type: 'codex',
+    type: 'codex-app-server',
     command: 'fake-codex',
     ...(overrides.providerModel ? { model: overrides.providerModel } : {}),
     ...(overrides.providerFlushContextLimit ? { flush_context_limit: overrides.providerFlushContextLimit } : {}),
@@ -1200,7 +1200,7 @@ function createBridgeWithOptions(overrides: {
       defaults: { director: overrides.providerName ?? 'fake', default: overrides.providerName ?? 'fake' },
       providers: {
         fake: fakeProvider,
-        'fake-codex': { type: 'codex', command: 'fake-codex' },
+        'fake-codex': { type: 'codex-app-server', command: 'fake-codex' },
         'fake-claude': { type: 'claude', command: 'fake-claude' },
       },
     },

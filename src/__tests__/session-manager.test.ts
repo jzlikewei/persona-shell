@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
+import { EventEmitter } from 'events';
 import { rmSync, mkdirSync } from 'fs';
 import { SessionManager } from '../session-manager.js';
 import { WorkspaceRegistry } from '../workspace-registry.js';
-import { DirectorPool } from '../director-pool.js';
+import { DirectorPool, type PoolEntry } from '../director-pool.js';
 import { SessionBridge } from '../session-bridge.js';
 import { MessageQueue } from '../queue.js';
 import {
@@ -33,7 +34,7 @@ class FakeAdapter implements DirectorSessionAdapter {
   ready = true;
   activeTurn = false;
   sessionId = 'fake-session-001';
-  status: DirectorRuntimeStatus = { kind: 'codex-turn-based', alive: true, pid: null };
+  status: DirectorRuntimeStatus = { kind: 'codex-app-server', alive: true, pid: null };
 
   constructor(
     readonly options: DirectorSessionAdapterOptions,
@@ -72,8 +73,8 @@ function createTestBridge(label: string, groupName: string): SessionBridge {
     agents: {
       defaults: { director: 'fake', default: 'fake' },
       providers: {
-        fake: { type: 'codex', command: 'fake-codex' },
-        'fake-codex': { type: 'codex', command: 'fake-codex' },
+        fake: { type: 'codex-app-server', command: 'fake-codex' },
+        'fake-codex': { type: 'codex-app-server', command: 'fake-codex' },
       },
     },
     config: {
@@ -99,8 +100,8 @@ function createTestPool(): DirectorPool {
     {
       defaults: { director: 'fake', default: 'fake' },
       providers: {
-        fake: { type: 'codex', command: 'fake-codex' },
-        'fake-codex': { type: 'codex', command: 'fake-codex' },
+        fake: { type: 'codex-app-server', command: 'fake-codex' },
+        'fake-codex': { type: 'codex-app-server', command: 'fake-codex' },
       },
     },
     {
@@ -126,6 +127,48 @@ function createTestPool(): DirectorPool {
       getConnectionStatus() { return 'connected' as const; },
     },
   );
+}
+
+function createRestoredEntry(sessionId: string, workspace: string, routingKey: string): PoolEntry {
+  const bridge = {
+    getStatus: () => ({
+      sessionId,
+      sessionName: sessionId,
+      personaRole: 'director',
+    }),
+    getPersonaRole: () => 'director',
+    getWorkspaceCwd: () => TEST_DIR,
+    getDirectorAgentName: () => 'fake-codex',
+    getDirectorAgentType: () => 'codex-app-server',
+    getDirectorAgentModel: () => null,
+  } as unknown as SessionBridge;
+
+  return {
+    bridge,
+    queue: new MessageQueue('/dev/null'),
+    routingKey,
+    feishuChatId: routingKey,
+    groupName: workspace,
+    lastActiveAt: Date.now(),
+    messagesSinceFlush: 0,
+  };
+}
+
+class RestoreOnlyPool extends EventEmitter {
+  readonly sent: Array<{ routingKey: string; text: string; messageId: string }> = [];
+
+  constructor(private readonly restoredEntries: PoolEntry[]) {
+    super();
+  }
+
+  async restoreEntries(): Promise<void> {}
+  listActiveEntries(): PoolEntry[] { return this.restoredEntries; }
+  get(routingKey: string): PoolEntry | undefined {
+    return this.restoredEntries.find((entry) => entry.routingKey === routingKey);
+  }
+  async send(routingKey: string, text: string, messageId: string): Promise<void> {
+    this.sent.push({ routingKey, text, messageId });
+  }
 }
 
 describe('SessionManager', () => {
@@ -292,5 +335,32 @@ describe('SessionManager', () => {
 
     // 没有其他 session 可选,default 应该是 null
     expect(getWorkspace('solo-ws')!.default_session_id).toBeNull();
+  });
+
+  test('restoreEntries maps live sessions from DB without duplicating rows or reviving archived default', async () => {
+    const registry = new WorkspaceRegistry();
+    registry.getOrCreate('restore-ws');
+    createSessionRecord({ sessionId: 'live-restore', workspace: 'restore-ws' });
+    createSessionRecord({ sessionId: 'archived-restore', workspace: 'restore-ws' });
+    archiveSessionInDb('archived-restore');
+    setDefaultSession('restore-ws', null);
+
+    const pool = new RestoreOnlyPool([
+      createRestoredEntry('live-restore', 'restore-ws', 'rk-live'),
+      createRestoredEntry('archived-restore', 'restore-ws', 'rk-archived'),
+    ]) as unknown as DirectorPool;
+    const manager = new SessionManager(pool, registry);
+
+    await manager.restoreEntries();
+
+    expect(listSessionRecords('restore-ws', { includeArchived: true }).map((row) => row.session_id).sort()).toEqual([
+      'archived-restore',
+      'live-restore',
+    ]);
+    expect(getSessionRecord('archived-restore')!.archived).toBe(1);
+    expect(getWorkspace('restore-ws')!.default_session_id).toBe('live-restore');
+    await manager.send('live-restore', 'hello after restore', 'msg-restore');
+    expect(manager.getSession('live-restore')?.sessionId).toBe('live-restore');
+    expect((pool as unknown as RestoreOnlyPool).sent).toEqual([{ routingKey: 'rk-live', text: 'hello after restore', messageId: 'msg-restore' }]);
   });
 });

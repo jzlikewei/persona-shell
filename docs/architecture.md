@@ -245,13 +245,12 @@ SessionBridge (session-bridge.ts)
   │
   └─ DirectorSessionAdapter (director-session-adapter/)
       ├─ claude.ts — stream-json 双向协议
-      ├─ codex.ts — legacy turn-based 协议（兼容回退）
+      ├─ codex-app-server.ts — App Server JSON-RPC 协议
       ├─ kimi.ts — stream-json stdin/stdout 协议
       │
       └─ DirectorRuntime (director-runtime/)
           ├─ claude.ts — daemon 进程（FIFO named pipe，长驻）
           ├─ codex-app-server.ts — App Server JSON-RPC runtime（主线）
-          ├─ codex.ts — legacy turn-based runtime（兼容回退）
           └─ kimi.ts — daemon 进程（stdin/stdout pipe，长驻）
 ```
 
@@ -289,14 +288,14 @@ SessionBridge (session-bridge.ts)
 
 封装协议差异：
 - **Claude**：管理 FIFO 读写句柄，逐行解析 stream-json（init → assistant → result），提取响应文本和 metrics（token 用量、cost）
-- **Codex**：主线使用 App Server JSON-RPC runtime，解析 `agentMessage/delta`、tool items 和 `turn/completed`；`codex exec --resume` 仅保留 legacy turn-based fallback
+- **Codex**：使用 App Server JSON-RPC runtime，解析 `agentMessage/delta`、tool items 和 `turn/completed`
 - **Kimi**：维护 stdin/stdout pipe，逐行解析 print stream-json（assistant → tool → assistant），不含 tool_calls 的 assistant message 触发 turn complete
 
 ### DirectorRuntime
 
 封装进程生命周期：
 - **Claude**：spawn detached daemon、PID 文件追踪、FIFO 创建/清理、SIGINT/SIGTERM
-- **Codex**：Director 持有长驻 `codex app-server --listen stdio://`；后台任务默认临时 App Server runtime，`codex exec` 仅作为 provider `type: codex` 的兼容回退
+- **Codex**：Director 持有长驻 `codex app-server --listen stdio://`；后台任务使用临时 App Server runtime
 - **Kimi**：spawn detached daemon、stdin/stdout pipe、SIGINT/SIGTERM、resume hint 捕获
 
 ### 通信协议
@@ -319,12 +318,6 @@ SessionBridge (session-bridge.ts)
 ```text
 initialize -> thread/start(baseInstructions, developerInstructions, cwd, sandbox)
 turn/start(input) -> item/agentMessage/delta ... -> turn/completed
-```
-
-Legacy turn-based fallback：
-```bash
-codex exec --resume SESSION_ID "用户消息" \
-  --full-auto --sandbox danger-full-access
 ```
 
 **Kimi**（stdin/stdout pipe）：

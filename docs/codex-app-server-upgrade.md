@@ -74,7 +74,7 @@
 | 能力 | 说明 |
 |------|------|
 | 沙箱策略映射 | `read-only` → `readOnly`；`workspace-write` → `workspaceWrite` + `writableRoots`；default → `dangerFullAccess` |
-| Prompt 分层 | `soul.md`+`meta.md` → `baseInstructions`；`personas/{role}.md` + `system_prompt_file` → `developerInstructions`。Codex 原生也支持通过配置读取 `model_instructions_file` / `developer_instructions`；Tenbase 时代的手工拼 prompt 方案已废弃，仅保留 turn-based fallback。 |
+| Prompt 分层 | `soul.md`+`meta.md` → `baseInstructions`；`personas/{role}.md` + `system_prompt_file` → `developerInstructions`。Codex 原生也支持通过配置读取 `model_instructions_file` / `developer_instructions`；Tenbase 时代的手工拼 prompt 方案已下线。 |
 | MCP 注入 | `mcp_mode: mcp` 时通过 `-c` TOML 覆盖参数注入 MCP 服务器 |
 | 进程组管理 | `detached: true` + `process.kill(-pid)` 终止进程组 |
 | 日志 | stderr 重定向到 `codex-app-server-stderr.log`；所有 JSON-RPC 收发通过 `logOutput` 记录 |
@@ -91,8 +91,8 @@
 |----|------|
 | 初始化协议 | `initialize` 后已发送 `initialized` 通知，长驻 runtime 和一次性 thread injector 都覆盖 |
 | sandbox 字段 | `turn/start` 已使用 `sandboxPolicy`；`thread/start`/`thread/resume` 仍保留 `sandbox` shorthand，当前 Codex schema 仍兼容 |
-| Prompt 注入 | 主线使用 `baseInstructions` / `developerInstructions`；Tenbase 手工拼 prompt 方案已废弃，仅保留 `codex exec` fallback |
-| 后台任务 | `codex-app-server` provider 已使用临时 App Server task runtime；`type: codex` 保留 turn-based fallback |
+| Prompt 注入 | 主线使用 `baseInstructions` / `developerInstructions`；Tenbase 手工拼 prompt 方案已下线 |
+| 后台任务 | `codex-app-server` provider 已使用临时 App Server task runtime；legacy turn-based provider 已删除 |
 | MCP 注入 | `mcp_mode: mcp` 时通过 `-c` TOML overrides 注入 `.mcp.json` |
 | 基础事件 | 覆盖 `thread/started`、`turn/started`、`item/agentMessage/delta`、`item/completed`、`turn/completed`、`thread/tokenUsage/updated`、`error` |
 

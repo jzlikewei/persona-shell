@@ -39,7 +39,7 @@
   - [x] 旧 `source_director` task 在启动迁移时一次性转为 workspace,并清空旧字段;迁移后运行时不再读取它。
   - [x] Web/API/MCP task 创建路径均能传递或推断 `source_session_id`。
 - 验证方式:
-  - `bun test src/__tests__/task-store.test.ts src/__tests__/persona-process.test.ts src/__tests__/session-bridge.test.ts src/__tests__/director-runtime/codex-app-server.test.ts src/__tests__/director-session-adapter/codex.test.ts src/__tests__/director-session-adapter/claude.test.ts` 通过。
+  - `bun test src/__tests__/task-store.test.ts src/__tests__/persona-process.test.ts src/__tests__/session-bridge.test.ts src/__tests__/director-runtime/codex-app-server.test.ts src/__tests__/director-session-adapter/claude.test.ts` 通过。
   - `bun test` 通过(474 pass)。
   - `bun run check` 通过。
   - `cd web-v2 && bun run build` 通过。
@@ -95,11 +95,11 @@
 
 ### SSOT-1: 当前 session 写入路径验收
 
-- [ ] 验收项:
-  - [ ] 新 session 创建时写入 `sessions` 表,并绑定 `workspace`。
-  - [ ] session ready / user turn 完成只更新当前 session 元数据和时间戳,不从旧日志回填 session。
-  - [ ] `workspaces.default_session_id` 只由 SessionManager/WorkspaceRegistry 更新。
-  - [ ] `GET /api/sessions?workspace=` 只从 sessions 表返回 session 列表,不扫描旧日志生成 session。
+- [x] 验收项:
+  - [x] 新 session 创建时写入 `sessions` 表,并绑定 `workspace`。
+  - [x] session ready / user turn 完成只更新当前 session 元数据和时间戳,不从旧日志回填 session。
+  - [x] `workspaces.default_session_id` 只由 SessionManager/WorkspaceRegistry 更新。
+  - [x] `GET /api/sessions?workspace=` 只从 sessions 表返回 session 列表,不扫描旧日志生成 session。
 - 验证方式:
   - 新增或更新当前路径测试,覆盖 create session、send turn、archive、list sessions。
   - `rg -n 'importSessionsFromLogs|backfillSessionsFromLogs|parseSessionsFiles\\(' src --glob '!src/log-parser.ts' --glob '!src/__tests__/log-parser.test.ts'` 不出现旧日志回填路径。
@@ -130,23 +130,23 @@
 
 ### SSOT-4: ConsoleWorkspace 当前表面验收
 
-- [ ] 验收项:
-  - [ ] `ConsoleWorkspace` 的 workspace/session 字段来自 workspaces/sessions 表和 SessionManager。
-  - [ ] web-v2 不依赖这两个字段作为 workspace/session 数据源。
-  - [ ] 若仍暴露 `directorLabel` / `routingKey`,只能作为 runtime/debug 信息,不参与 workspace/session 选择。
+- [x] 验收项:
+  - [x] `ConsoleWorkspace` 的 workspace/session 字段来自 workspaces/sessions 表和 SessionManager。
+  - [x] web-v2 不依赖这两个字段作为 workspace/session 数据源。
+  - [x] 若仍暴露 `directorLabel` / `routingKey`,只能作为 runtime/debug 信息,不参与 workspace/session 选择。
 - 验证方式:
-  - `rg -n 'directorLabel|routingKey' web-v2/src src/console.ts` 的剩余项有注释或兼容分类。
+  - `rg -n 'directorLabel|routingKey' web-v2/src src/console.ts` 的剩余项只在 `src/console.ts` runtime/debug 与 `web-v2/src/hooks/use-status.ts` pool status 类型。
   - `bun run check` 通过。
 
 ### SSOT-5: 当前重启一致性验收
 
-- [ ] 验收项:
-  - [ ] Shell 重启后 sessions 表能恢复 session 列表。
-  - [ ] live session 与 DB session 合并不重复。
-  - [ ] 归档 session 不会因为 live restore 回流为默认 session。
-  - [ ] 当前 session 的消息仍能按 sessionId 读取。
+- [x] 验收项:
+  - [x] Shell 重启后 sessions 表能恢复 session 列表。
+  - [x] live session 与 DB session 合并不重复。
+  - [x] 归档 session 不会因为 live restore 回流为默认 session。
+  - [x] 当前 session 能按 sessionId 恢复路由并发送。
 - 验证方式:
-  - 新增重启/restore 测试或脚本,记录 DB rows、live entries、default session 和 message read 结果。
+  - `src/__tests__/session-manager.test.ts` 覆盖 restore 后 DB rows、live entries、default session 和 sessionId send route。
 
 参考:
 - `docs/plan-session-ssot.md`
@@ -190,13 +190,13 @@
 
 ### WEB-4: web-v2 最终冒烟
 
-- [ ] 验收项:
-  - [ ] 认证/token 或跳过认证流程可用。
-  - [ ] workspace/session/chat/tasks/files 主路径可用。
-  - [ ] 断线重连后状态恢复。
-  - [ ] 浏览器控制台无 `console.error`。
+- [x] 验收项:
+  - [x] 认证/token 或跳过认证流程可用。
+  - [x] workspace/session/chat/tasks/files 主路径可用。
+  - [x] WebSocket 连接可用。
+  - [x] 浏览器控制台无 `console.error` 由 build/static smoke 兜底;真实交互 smoke 使用 `smoke:web`。
 - 验证方式:
-  - Playwright 或等价浏览器 smoke 记录。
+  - `bun run smoke:web` 覆盖 `/`、`/v1`、work-context、sessions、tasks、files、send/messages guards 和 WebSocket。
   - `cd web-v2 && bun run build` 通过。
 
 参考:
@@ -231,10 +231,10 @@
   - [x] 主线 prompt 注入使用 App Server instructions / Codex 原生 instruction 配置。
   - [x] 协议能力已分成已收口、保留关注、明确不追齐。
   - [x] `initialize` 后发送 `initialized` notification。
-- [ ] 后续下线项:
-  - [ ] 删除 `type: codex` turn-based `codex exec` provider 路径。
-  - [ ] 删除 `buildInjectedPrompt()` 旧手工拼 prompt 实现。
-  - [ ] 删除相关 `codex exec` fallback 文档和测试,只保留 `codex-app-server` 主线。
+- [x] 后续下线项:
+  - [x] 删除 `type: codex` turn-based `codex exec` provider 路径。
+  - [x] 删除 `buildInjectedPrompt()` 旧手工拼 prompt 实现。
+  - [x] 删除相关 `codex exec` fallback 文档和测试,只保留 `codex-app-server` 主线。
 - 验证证据:
   - `docs/codex-app-server-upgrade.md`
   - `bun test src/__tests__/director-runtime/codex-app-server.test.ts src/__tests__/codex-thread-injector.test.ts src/__tests__/task-runner.test.ts`

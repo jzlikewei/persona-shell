@@ -42,7 +42,7 @@ class FakeAdapter implements DirectorSessionAdapter {
   ready = true;
   activeTurn = false;
   sessionIdValue: string;
-  status: DirectorRuntimeStatus = { kind: 'codex-turn-based', alive: true, pid: null };
+  status: DirectorRuntimeStatus = { kind: 'codex-app-server', alive: true, pid: null };
 
   constructor(
     readonly options: DirectorSessionAdapterOptions,
@@ -117,8 +117,8 @@ const bridgeConfig = {
 const agentsConfig = {
   defaults: { director: 'fake', default: 'fake' },
   providers: {
-    fake: { type: 'codex' as const, command: 'fake-codex' },
-    'fake-codex': { type: 'codex' as const, command: 'fake-codex' },
+    fake: { type: 'codex-app-server' as const, command: 'fake-codex' },
+    'fake-codex': { type: 'codex-app-server' as const, command: 'fake-codex' },
   },
 };
 

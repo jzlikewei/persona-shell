@@ -35,7 +35,7 @@ class SmokeAdapter implements DirectorSessionAdapter {
   ready = true;
   activeTurn = false;
   sessionId = `smoke-session-${SmokeAdapter.nextId++}`;
-  status: DirectorRuntimeStatus = { kind: 'codex-turn-based', alive: true, pid: null };
+  status: DirectorRuntimeStatus = { kind: 'codex-app-server', alive: true, pid: null };
 
   constructor(
     readonly options: DirectorSessionAdapterOptions,
@@ -77,7 +77,7 @@ function createBridge(label: string, groupName: string, isMain = false): Session
     agents: {
       defaults: { director: 'fake', default: 'fake' },
       providers: {
-        fake: { type: 'codex', command: 'fake-codex' },
+        fake: { type: 'codex-app-server', command: 'fake-codex' },
       },
     },
     config: {
@@ -165,7 +165,7 @@ function createManager(): SessionManager {
     {
       defaults: { director: 'fake', default: 'fake' },
       providers: {
-        fake: { type: 'codex', command: 'fake-codex' },
+        fake: { type: 'codex-app-server', command: 'fake-codex' },
       },
     },
     {

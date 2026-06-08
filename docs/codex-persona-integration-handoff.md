@@ -54,7 +54,7 @@ personas/{role}.md                -> developerInstructions
 用户任务                           -> turn/start.input
 ```
 
-注：旧 Tenbase/Codex 方案会在 `codex exec` prompt 前手工拼接 `soul.md`、`meta.md` 和角色文件。该路径已经废弃，仅作为 provider `type: codex` 的 turn-based fallback 兼容，不再维护新能力；主线使用 App Server instructions / Codex 原生 instruction 配置。
+注：旧 Tenbase/Codex 方案会在 `codex exec` prompt 前手工拼接 `soul.md`、`meta.md` 和角色文件。该路径已经下线；主线使用 App Server instructions / Codex 原生 instruction 配置。
 
 ### Pool cwd fallback
 

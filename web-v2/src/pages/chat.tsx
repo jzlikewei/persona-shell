@@ -8,13 +8,11 @@ import { CheckCircle2, Loader2, Paperclip, Terminal, XCircle } from 'lucide-reac
 import { CodeBlock } from '@/components/code-block'
 import { DocumentPanel, extractFilePaths } from '@/components/document-panel'
 import { StopOrSend } from '@/components/stop-button'
-import { MessageActions } from '@/components/message-actions'
 import { MessageSearch } from '@/components/message-search'
 import { MessagePagination } from '@/components/message-pagination'
 import { DateSeparator } from '@/components/date-separator'
 import { useApi } from '@/hooks/use-api'
 import { useChat, type ChatMessage, type ChatToolCall } from '@/hooks/use-chat'
-import { useDirectorActions } from '@/hooks/use-director-actions'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
 
@@ -202,17 +200,9 @@ const ToolCalls = memo(function ToolCalls({ tools }: { tools?: ChatToolCall[] })
 const MessageBlock = memo(function MessageBlock({
   message,
   onFileClick,
-  hidden = false,
-  onCopy,
-  onHide,
-  onShow,
 }: {
   message: ChatMessage
   onFileClick: (path: string) => void
-  hidden?: boolean
-  onCopy?: () => void
-  onHide?: () => void
-  onShow?: () => void
 }) {
   const isUser = message.role === 'user'
   const filePaths = extractFilePaths(message.content)
@@ -222,7 +212,7 @@ const MessageBlock = memo(function MessageBlock({
 
   return (
     <article
-      className={cn('group relative mb-3 flex w-full overflow-hidden px-4', isUser ? 'justify-end' : 'justify-start', hidden && 'opacity-40')}
+      className={cn('group relative mb-3 flex w-full overflow-hidden px-4', isUser ? 'justify-end' : 'justify-start')}
     >
       <div className={cn('flex flex-col overflow-hidden', isUser ? 'max-w-[min(72%,760px)] items-end' : 'max-w-[min(76%,780px)] items-start')}>
         <div className={cn('mb-1 flex items-center gap-2', isUser && 'justify-end')}>
@@ -257,14 +247,6 @@ const MessageBlock = memo(function MessageBlock({
             ))}
           </div>
         )}
-        <MessageActions
-          messageId={message.id}
-          content={message.content}
-          hidden={hidden}
-          onCopy={onCopy ?? (() => navigator.clipboard.writeText(message.content))}
-          onHide={onHide}
-          onShow={onShow}
-        />
       </div>
     </article>
   )
@@ -359,12 +341,10 @@ export function ChatPage() {
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMore } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
-  // Stop 按钮:仅主 director 调 /api/esc;pool director 的 stop 在 DirectorPanel 里
-  const { interrupt } = useDirectorActions({ directorLabel: 'main' })
   const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0
-  // 搜索 + 隐藏状态在 ChatPage 内管,不污染 use-chat 抽象
+  // 搜索状态在 ChatPage 内管,不污染 use-chat 抽象
   const [searchQuery, setSearchQuery] = useState('')
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
@@ -380,17 +360,13 @@ export function ChatPage() {
   const atBottomRef = useRef(true)
   const filteredMessages = useMemo(() => {
     let result = visibleMessages(messages)
-    // 隐藏过滤
-    if (hiddenIds.size > 0) {
-      result = result.filter(m => !hiddenIds.has(m.id))
-    }
     // 搜索过滤:substring 大小写不敏感
     const q = searchQuery.trim().toLowerCase()
     if (q) {
       result = result.filter(m => m.content.toLowerCase().includes(q))
     }
     return result
-  }, [messages, hiddenIds, searchQuery])
+  }, [messages, searchQuery])
 
   const attachmentText = useCallback((files: UploadedAttachment[]) => {
     if (files.length === 0) return ''
@@ -526,13 +502,9 @@ export function ChatPage() {
       <MessageBlock
         message={item}
         onFileClick={setPreviewPath}
-        onCopy={() => undefined /* wired via MessageActions per-instance */}
-        hidden={hiddenIds.has(item.id)}
-        onHide={() => hideMessage(item.id)}
-        onShow={() => showMessage(item.id)}
       />
     )
-  }, [streaming, streamingTools, hiddenIds, hideMessage, showMessage])
+  }, [streaming, streamingTools])
 
   const renderHeader = useCallback(() => (
     <WorkspaceSummary
@@ -551,8 +523,6 @@ export function ChatPage() {
         loading={loading}
         loadedCount={filteredMessages.length}
         onLoadMore={loadMore}
-        hiddenCount={hiddenIds.size}
-        onShowAllHidden={showAllHidden}
       />
       <Virtuoso
         // key 绑定 session:切 session 时强制 remount,避免上一会话的滚动位置和 ResizeObserver
@@ -636,7 +606,7 @@ export function ChatPage() {
             isSending={sending}
             isDisabled={!input.trim() && attachments.length === 0}
             onSend={handleSend}
-            onStop={() => interrupt()}
+            onStop={() => { void request('/api/esc', { method: 'POST' }) }}
           />
         </div>
       </div>

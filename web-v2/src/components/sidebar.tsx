@@ -9,7 +9,6 @@ import {
 } from 'lucide-react'
 import type { ProjectInfo, WorkspaceInfo } from '@/hooks/use-work-context'
 import type { Session } from '@/hooks/use-sessions'
-import { DirectorPanel } from '@/components/director-panel'
 import { RestartShellButton } from '@/components/restart-shell-button'
 import { cn } from '@/lib/utils'
 import { statusColor, Badge } from './header'
@@ -285,7 +284,6 @@ export function Sidebar({
 
       <section className="border-t border-[#313244] p-2">
         <RestartShellButton />
-        <DirectorPanel directorLabel="main" />
       </section>
     </aside>
   )

@@ -9,7 +9,6 @@ import type { DirectorSendResult } from './director-runtime/index.js';
 import { loadPrompt } from './prompt-loader.js';
 import { ClaudeDirectorRuntime } from './director-runtime/claude.js';
 import { KimiDirectorRuntime } from './director-runtime/kimi.js';
-import { CodexSessionAdapter } from './director-session-adapter/codex.js';
 import { CodexAppServerSessionAdapter } from './director-session-adapter/codex-app-server.js';
 import { ClaudeSessionAdapter } from './director-session-adapter/claude.js';
 import { KimiSessionAdapter } from './director-session-adapter/kimi.js';
@@ -160,7 +159,7 @@ export class SessionBridge extends EventEmitter {
       if (directorAgent.type === 'codex-app-server') {
         return new CodexAppServerSessionAdapter(resolvedOptions, hooks);
       }
-      return new CodexSessionAdapter(resolvedOptions, hooks);
+      throw new Error(`Unsupported director agent provider type: ${directorAgent.type}`);
     };
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
@@ -1398,7 +1397,7 @@ export class SessionBridge extends EventEmitter {
 
   private handlePartialAgentMessage(text: string): void {
     if (this.partialSystemReplyText !== null) return;
-    if (this.directorAgent.type !== 'codex' && this.directorAgent.type !== 'codex-app-server') return;
+    if (this.directorAgent.type !== 'codex-app-server') return;
     const head = this.pendingTurns[0];
     if (!head || head.type !== 'system-reply') return;
     this.partialSystemReplyText = text;
@@ -1679,9 +1678,7 @@ export class SessionBridge extends EventEmitter {
       hour: '2-digit',
       minute: '2-digit',
     }).replace(':', '');
-    const prefix = this.directorAgent.type === 'codex'
-      ? 'codex-director'
-      : this.directorAgent.type === 'codex-app-server'
+    const prefix = this.directorAgent.type === 'codex-app-server'
         ? 'codex-app-server-director'
         : this.directorAgent.type === 'kimi'
           ? 'kimi-director'

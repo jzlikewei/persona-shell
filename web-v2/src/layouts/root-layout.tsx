@@ -12,7 +12,6 @@ import { useSessions, type Session } from '@/hooks/use-sessions'
 import { useWorkContext, type ProjectInfo, type WorkspaceInfo } from '@/hooks/use-work-context'
 import { WorkspaceCreateSheet } from '@/components/workspace-create-sheet'
 import { CommandPalette } from '@/components/command-palette'
-import { SwitchSheet } from '@/components/switch-sheet'
 import { NewSessionDialog } from '@/components/new-session-dialog'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useSessionsMut } from '@/hooks/use-sessions-mut'
@@ -128,7 +127,6 @@ export function RootLayout() {
   const isTasksPage = location.pathname === '/tasks'
   const isMobile = useIsMobile()
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [switchSheetOpen, setSwitchSheetOpen] = useState(false)
 
   return (
     <div className="flex h-screen flex-col bg-[#1e1e2e] text-[#cdd6f4]">
@@ -137,7 +135,6 @@ export function RootLayout() {
         activeWorkspace={activeWorkspaceInfo}
         activeSession={activeSessionInfo}
         mode={mode}
-        onSwitchClick={() => setSwitchSheetOpen(true)}
       />
       <div className={cn('min-h-0 flex-1', isTasksPage ? 'flex' : isMobile ? 'flex flex-col' : 'grid grid-cols-[292px_minmax(520px,1fr)]')}>
         {!isTasksPage && !isMobile && (
@@ -260,7 +257,6 @@ export function RootLayout() {
       />
       <ShortcutRoot />
       <CommandPalette />
-      <SwitchSheet open={switchSheetOpen} onOpenChange={setSwitchSheetOpen} directorLabel="main" />
       <NewSessionDialog
         open={newSessionTarget !== null}
         onOpenChange={(open) => { if (!open) setNewSessionTarget(null) }}

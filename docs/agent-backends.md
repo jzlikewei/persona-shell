@@ -122,13 +122,12 @@ Shell 与 Claude Code 通过 FIFO 管道交换 JSON 行。
 
 ### 运行模式
 
-Codex 有两种运行模式，Shell 根据场景自动选择：
+Codex 只保留 App Server 运行模式：
 
 | 场景 | 模式 | 说明 |
 |------|------|------|
 | Director（对话） | **App Server**（默认） | 长驻 `codex app-server --listen stdio://` 进程，JSON-RPC 2.0 协议 |
-| 后台任务 | **临时 App Server**（默认 provider） | 每个任务启动一个临时 `codex app-server --listen stdio://`，`turn/completed` 后关闭 |
-| 后台任务 | **Turn-based**（回退） | provider `type: codex` 时每次 spawn `codex exec`，执行完退出 |
+| 后台任务 | **临时 App Server** | 每个任务启动一个临时 `codex app-server --listen stdio://`，`turn/completed` 后关闭 |
 
 默认 provider 配置：
 
@@ -144,7 +143,7 @@ agents:
       transport: stdio
 ```
 
-如需退回 legacy turn-based 模式，将 provider `type` 改为 `codex` 即可。该路径仅作为兼容回退保留，不再作为新功能维护目标。
+legacy turn-based `codex exec` provider 已下线，配置层不再接受 `type: codex`。
 
 ### 身份注入
 
@@ -152,24 +151,10 @@ Codex 不支持 Claude Code 的 `--plugin-dir` / `--append-system-prompt-file` �
 
 - **App Server instructions**：`thread/start` 注入 `baseInstructions` / `developerInstructions`，其中 `soul.md`、`meta.md`、`personas/{role}.md` 和 provider `system_prompt_file` 在启动线程时进入 Codex instruction 层。
 - **Skills 发现**：当前不通过 `codex app-server` 启动参数显式传 `skills_dir`。Codex App Server 依赖 Codex 原生 skill 发现机制读取当前工作根下的 `.agents/skills`，因此身份仓库必须保持 `~/.persona/.agents/skills -> ~/.persona/skills` 软链接。Workspace Director 若配置了 provider/workspace `cwd`，仍建议保留该软链接作为 Persona skills 的统一入口；变更 skill 后用 flush 开新线程加载最新资产。
-- **Codex 原生配置**：Codex harness 支持通过 `model_instructions_file` / `developer_instructions` 等配置读取 instruction 内容；Persona Shell 的主线不再依赖 Tenbase 时代的手工拼 prompt 方案。
-- **Legacy Prompt 拼接（废弃）**：`buildInjectedPrompt()` 仅用于 provider `type: codex` 的 turn-based `codex exec` 兼容回退，不再扩展新能力。
+- **Codex 原生配置**：Codex harness 支持通过 `model_instructions_file` / `developer_instructions` 等配置读取 instruction 内容；Persona Shell 已下线 Tenbase 时代的手工拼 prompt 方案。
 - **任务系统**：默认通过 task CLI 用法注入 prompt，避免 Codex 将 MCP tools schema 带进 Responses 请求；需要原生 MCP 时可设 `mcp_mode: mcp`
 
-### 进程启动
-
-```bash
-# 新会话
-codex exec --json --skip-git-repo-check --cd ~/.persona "prompt"
-
-# 恢复会话
-codex exec resume {thread_id} --json --skip-git-repo-check --cd ~/.persona "prompt"
-```
-
-- `detached: true`，stdout pipe 读取 JSON 输出
-- 进程结束后释放资源，不占用后台
-
-### CLI 参数
+### MCP 参数
 
 | 参数 | 说明 |
 |------|------|
@@ -262,7 +247,6 @@ agents:
 注意事项：
 
 - `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool Director 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{label}-{group}/`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录。
-- 如需退回 turn-based 模式（每消息 spawn），将 provider `type` 改为 `codex`。后台任务同样会随 provider type 回退到 `codex exec`。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
 - 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。
@@ -410,8 +394,8 @@ Shell 与 Kimi 通过 stdin/stdout 交换 JSON 行。
 
 | 维度 | Claude Code | Codex | Kimi |
 |------|------------|-------|------|
-| 运行模式 | 长驻 daemon | App Server（Director）/ 临时 App Server（任务）/ legacy `codex exec` fallback | 长驻 daemon |
-| 通信方式 | FIFO named pipe | JSON-RPC stdio；legacy fallback 为 stdout pipe | stdin/stdout pipe |
+| 运行模式 | 长驻 daemon | App Server（Director）/ 临时 App Server（任务） | 长驻 daemon |
+| 通信方式 | FIFO named pipe | JSON-RPC stdio | stdin/stdout pipe |
 | 流式输出 | ✅ stream_event | ✅ agentMessage/delta（Director）；任务以 `turn/completed` 收尾 | ⚠️ 整段 JSON 行（非 token 级） |
 | 身份注入 | CLI 参数（plugin-dir 等） | App Server instructions / Codex 原生 instructions | `--agent-file` + `--skills-dir` |
 | MCP 注入 | --mcp-config 文件 | -c TOML 覆盖 | `--mcp-config-file` |
