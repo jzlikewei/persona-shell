@@ -31,13 +31,13 @@ function shortId(id: string) {
   return id.length > 12 ? `${id.slice(0, 8)}...${id.slice(-4)}` : id
 }
 
-export function storageKeyForDirector(director?: string) {
-  return `${ACTIVE_SESSION_KEY}:${director || 'main'}`
+export function storageKeyForWorkspace(workspace?: string) {
+  return `${ACTIVE_SESSION_KEY}:${workspace || 'main'}`
 }
 
-export function useSessions(director?: string) {
-  const directorKey = director || 'main'
-  const storageKey = storageKeyForDirector(directorKey)
+export function useSessions(workspace?: string) {
+  const wsKey = workspace || 'main'
+  const storageKey = storageKeyForWorkspace(wsKey)
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeSession, setActiveSessionState] = useState<string | undefined>(() =>
     localStorage.getItem(storageKey) || undefined
@@ -45,9 +45,14 @@ export function useSessions(director?: string) {
   const [loading, setLoading] = useState(false)
   const { get } = useApi()
   const status = useStatus()
-  const livePoolEntry = directorKey === 'main' ? undefined : status?.pool?.find(entry => entry.label === directorKey)
-  const liveSessionId = directorKey === 'main' ? status?.system?.sessionId : livePoolEntry?.sessionId ?? undefined
-  const liveSessionName = directorKey === 'main' ? status?.system?.sessionName : livePoolEntry?.sessionName ?? undefined
+  const livePoolEntry = wsKey === 'main' ? undefined : status?.pool?.find(entry => entry.groupName === wsKey || entry.label === wsKey)
+  const liveSessionId = wsKey === 'main' ? status?.system?.sessionId : livePoolEntry?.sessionId ?? undefined
+  const liveSessionName = wsKey === 'main' ? status?.system?.sessionName : livePoolEntry?.sessionName ?? undefined
+  // WP5: pool 路径也要查 archived。后端在 pool entry 上返回 liveSessionArchived,
+  // 跟 system 路径对齐。否则归档"当前 pool session"后,前端 unshift 又把它拉回 UI。
+  const liveSessionArchived = wsKey === 'main'
+    ? status?.system?.liveSessionArchived
+    : livePoolEntry?.liveSessionArchived
   const requestSeq = useRef(0)
   const { on } = useWebSocket()
 
@@ -58,8 +63,8 @@ export function useSessions(director?: string) {
       localStorage.removeItem(storageKey)
     }
     setActiveSessionState(id)
-    window.dispatchEvent(new CustomEvent(ACTIVE_SESSION_EVENT, { detail: { director: directorKey, id } }))
-  }, [directorKey, storageKey])
+    window.dispatchEvent(new CustomEvent(ACTIVE_SESSION_EVENT, { detail: { workspace: wsKey, id } }))
+  }, [wsKey, storageKey])
 
   useEffect(() => {
     setSessions([])
@@ -71,7 +76,7 @@ export function useSessions(director?: string) {
     requestSeq.current = seq
     setLoading(true)
     try {
-      const params = directorKey === 'main' ? undefined : { director: directorKey }
+      const params = wsKey === 'main' ? undefined : { workspace: wsKey }
       const data = await get<ApiSession[]>('/api/sessions', params)
       if (seq !== requestSeq.current) return
       const mapped = data.map(session => {
@@ -89,7 +94,10 @@ export function useSessions(director?: string) {
         }
       })
 
-      if (liveSessionId && !mapped.some(session => session.id === liveSessionId)) {
+      // WP5: 跳过 live session merge 当它已被归档。后端 SQL + console.ts live 合并都已过滤,
+      // 但前端 hook 还有自己的 unshift —— 不判断 archived 就会把已归档的 live session 拉回 UI。
+      // 边界:status 还没到(初次 mount)时 liveSessionArchived 是 undefined,按"未归档"处理(原始行为)。
+      if (liveSessionId && !mapped.some(session => session.id === liveSessionId) && !liveSessionArchived) {
         mapped.unshift({
           id: liveSessionId,
           name: liveSessionName || shortId(liveSessionId),
@@ -117,7 +125,7 @@ export function useSessions(director?: string) {
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [directorKey, get, liveSessionId, liveSessionName, storageKey])
+  }, [wsKey, get, liveSessionId, liveSessionName, liveSessionArchived, storageKey])
 
   useEffect(() => {
     loadSessions()
@@ -127,11 +135,14 @@ export function useSessions(director?: string) {
 
   useEffect(() => {
     const handleLiveEvent = (data: Record<string, unknown>) => {
-      const eventDirector = typeof data.director === 'string' && data.director ? data.director : 'main'
       const eventSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : undefined
-      if (eventDirector !== directorKey || !eventSessionId) return
-      localStorage.setItem(storageKey, eventSessionId)
-      setActiveSessionState(eventSessionId)
+      if (!eventSessionId) return
+      setSessions(prev => {
+        if (prev.length > 0 && !prev.some(s => s.id === eventSessionId)) return prev
+        localStorage.setItem(storageKey, eventSessionId)
+        setActiveSessionState(eventSessionId)
+        return prev
+      })
       void loadSessions()
     }
     const unsubs = [
@@ -140,16 +151,16 @@ export function useSessions(director?: string) {
       on('task_callback', handleLiveEvent),
     ]
     return () => unsubs.forEach(fn => fn())
-  }, [directorKey, loadSessions, on, storageKey])
+  }, [wsKey, loadSessions, on, storageKey])
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ director?: string; id?: string }>).detail
-      if (detail?.director === directorKey) setActiveSessionState(detail.id)
+      const detail = (event as CustomEvent<{ workspace?: string; id?: string }>).detail
+      if (detail?.workspace === wsKey) setActiveSessionState(detail.id)
     }
     window.addEventListener(ACTIVE_SESSION_EVENT, handler)
     return () => window.removeEventListener(ACTIVE_SESSION_EVENT, handler)
-  }, [directorKey])
+  }, [wsKey])
 
   return { sessions, activeSession, setActiveSession, loading, loadSessions }
 }

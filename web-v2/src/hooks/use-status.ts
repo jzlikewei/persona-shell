@@ -8,6 +8,15 @@ export interface StatusData {
     directorAlive: boolean
     sessionId?: string
     sessionName?: string
+    // WP5: 后端在 buildSnapshot 里返回 liveSessionArchived,前端 useSessions
+    // 用它判断"live session 是否已被归档" —— 是的话,unshift 逻辑跳过它,
+    // 否则归档后 UI 永远把已归档的 live session 拉回列表。
+    liveSessionArchived?: boolean
+    // 后端 buildSnapshot 已经返回这两个字段,但前端类型没声明。
+    // WP4 Switch sheet 用来判断"当前"agent / persona。扩展为可选以保 BC。
+    directorAgentName?: string
+    directorAgentType?: string
+    personaRole?: string
   }
   context: {
     tokens: number | null
@@ -28,6 +37,10 @@ export interface StatusData {
     activity: string | null
     sessionId?: string | null
     sessionName?: string | null
+    // WP5: 后端 buildSnapshot 在 pool entry 上加的 archived 标志。
+    // useSessions 据此判断 live pool session 是否已被归档,
+    // 避免归档"当前 pool session"后前端 unshift 又把它拉回列表。
+    liveSessionArchived?: boolean
   }>
 }
 

@@ -4,7 +4,6 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, read
 import { join, resolve, extname, relative, dirname, normalize, basename } from 'path';
 import { homedir } from 'os';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
-import type { DirectorPool } from './director-pool.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { parseConversationLog, parseConversationLogFiles, parseSessionsFiles, parseTaskLog } from './log-parser.js';
 
@@ -12,7 +11,9 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord } from './task/task-store.js';
+import type { SessionManager } from './session-manager.js';
+import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
 import { getLogDir } from './logger.js';
 import { resolveCronMessage } from './prompt-loader.js';
@@ -48,11 +49,13 @@ interface ConsoleWorkspace {
   localSessionCount?: number;
   localMessageCount?: number;
   lastMessageAt?: string;
+  hidden?: boolean;
 }
 
 interface WorkspaceConfig {
   cwd?: string;
   agent?: string;
+  hidden?: boolean;
 }
 
 function getWorkspaceConfig(name: string): WorkspaceConfig | null {
@@ -91,7 +94,7 @@ function listDirectorLogs(label: string, kind: 'input' | 'output'): string[] {
   }
 }
 
-function resolveDirectorLogTarget(label: string | null | undefined, director: SessionBridge, pool?: DirectorPool): DirectorLogTarget {
+function resolveDirectorLogTarget(label: string | null | undefined, director: SessionBridge, sessionMgr?: SessionManager): DirectorLogTarget {
   const requested = safeDirectorLabel(label);
   if (requested === 'main') {
     const inputLogs = listDirectorLogs('main', 'input');
@@ -103,11 +106,15 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
     };
   }
 
-  const entry = pool?.getPoolStatus().find((item) => item.label === requested);
-  const active = entry ? pool?.get(entry.routingKey) : undefined;
+  // Try matching as workspace director label
+  const entry = sessionMgr?.getPoolStatus().find((item) => item.label === requested);
+  const active = entry ? sessionMgr?.get(entry.routingKey) : undefined;
+
   if (active) {
-    const inputLogs = listDirectorLogs(active.bridge.label, 'input');
-    const outputLogs = listDirectorLogs(active.bridge.label, 'output');
+    // Use workspace name path (new), plus old label path for compat
+    const wsName = active.bridge.workspaceName;
+    const inputLogs = deduplicateLogs(listDirectorLogs(wsName, 'input'), listDirectorLogs(active.bridge.label, 'input'));
+    const outputLogs = deduplicateLogs(listDirectorLogs(wsName, 'output'), listDirectorLogs(active.bridge.label, 'output'));
     return {
       label: active.bridge.label,
       inputLogs: inputLogs.length ? inputLogs : [active.bridge.inputLogPath],
@@ -115,12 +122,30 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
     };
   }
 
+  // Closed/unknown director: try workspace name path + old label path
   const closedLabel = entry?.label ?? requested;
-  return {
-    label: closedLabel,
-    inputLogs: listDirectorLogs(closedLabel, 'input'),
-    outputLogs: listDirectorLogs(closedLabel, 'output'),
-  };
+  const groupName = entry?.groupName;
+  const inputLogs = groupName
+    ? deduplicateLogs(listDirectorLogs(groupName, 'input'), listDirectorLogs(closedLabel, 'input'))
+    : listDirectorLogs(closedLabel, 'input');
+  const outputLogs = groupName
+    ? deduplicateLogs(listDirectorLogs(groupName, 'output'), listDirectorLogs(closedLabel, 'output'))
+    : listDirectorLogs(closedLabel, 'output');
+  return { label: closedLabel, inputLogs, outputLogs };
+}
+
+/** Merge log file lists from new (workspace name) and old (label) paths, deduplicating by basename. */
+function deduplicateLogs(primary: string[], secondary: string[]): string[] {
+  if (secondary.length === 0) return primary;
+  const seen = new Set(primary.map((p) => basename(p)));
+  const merged = [...primary];
+  for (const s of secondary) {
+    if (!seen.has(basename(s))) {
+      merged.push(s);
+      seen.add(basename(s));
+    }
+  }
+  return merged.sort();
 }
 
 /** Metrics collector interface — implemented in index.ts */
@@ -134,6 +159,54 @@ export interface MetricsCollector {
 }
 
 /**
+ * WP7 helper:从 input log 文件数组(按 mtime/日期降序)里找最后一条 user 消息文本。
+ * 不解析 log parser 的完整结构,直接 JSON.parse 每一行找 {direction:'in', text:string}。
+ * 返回 null 表示没找到(可能 session 还是空的,或日志格式不匹配)。
+ * WP7:export 给单测用。
+ */
+export function readLastUserMessageText(inputLogPaths: string[]): string | null {
+  // 按文件名升序遍历(最旧的先,最新的后 push),然后从 lines 末尾往前找第一条 direction=in。
+  // 关键:把"最新"的内容放在 lines 末尾,这样从后往前找时会先撞到最新的。
+  // (文件命名是 input-YYYYMMDD.log,升序=日期升序)
+  const sortedPaths = [...inputLogPaths]
+    .filter(p => {
+      try { return statSync(p).isFile() } catch { return false }
+    })
+    .sort()  // 升序:最旧的在前
+  if (sortedPaths.length === 0) return null
+  // 简单 tail:读每个文件最后 ~16KB,合并后从后往前找第一条 direction=in 的 JSON 行
+  const TAIL_BYTES = 16 * 1024
+  const lines: string[] = []
+  for (const file of sortedPaths) {
+    try {
+      const stat = statSync(file)
+      const start = Math.max(0, stat.size - TAIL_BYTES)
+      const fd = openSync(file, 'r')
+      const buf = Buffer.alloc(stat.size - start)
+      readSync(fd, buf, 0, buf.length, start)
+      closeSync(fd)
+      const chunk = buf.toString('utf-8')
+      for (const line of chunk.split('\n')) {
+        if (line.trim()) lines.push(line)
+      }
+    } catch {
+      // 文件读不到,跳过
+    }
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const obj = JSON.parse(lines[i])
+      if (obj && obj.direction === 'in' && typeof obj.text === 'string' && obj.text.length > 0) {
+        return obj.text
+      }
+    } catch {
+      // 单行解析失败,跳过
+    }
+  }
+  return null
+}
+
+/**
  * 启动 Web 管理控制台（HTTP + WebSocket）
  * 用 Bun.serve() 提供单页 TUI 前端 + 实时状态推送 + 命令接收
  */
@@ -144,14 +217,17 @@ export function startConsole(
   taskRunner?: TaskRunner,
   messaging?: MessagingClient,
   metrics?: MetricsCollector,
-  pool?: DirectorPool,
+  sessionManager?: SessionManager,
+  workspaceRegistry?: WorkspaceRegistry,
 ): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
-  const publicDir = join(import.meta.dir, 'public');
-  const htmlPath = join(publicDir, 'index.html');
+  // V2 (React/Vite) is the default frontend, served at /
+  // V1 (legacy static) is kept at /v1 as a fallback
   const v2Dir = resolve(import.meta.dir, '..', 'web-v2', 'dist');
   const v2HtmlPath = join(v2Dir, 'index.html');
+  const v1Dir = join(import.meta.dir, 'public');
+  const v1HtmlPath = join(v1Dir, 'index.html');
 
   // Web chat 消息处理
   const chatHandlers: Array<(msg: IncomingMessage) => Promise<void> | void> = [];
@@ -238,7 +314,7 @@ export function startConsole(
     });
 
     const mainStatus = director.getStatus();
-    const poolStatus = pool?.getPoolStatus() ?? [];
+    const poolStatus = sessionManager?.getPoolStatus() ?? [];
     const safeGroupName = (name: string) => name.replace(/[\/\\:*?"<>|]/g, '_');
     const directorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
       const match = poolStatus.find((entry) => {
@@ -278,13 +354,13 @@ export function startConsole(
       sessionName: null,
       alive: false,
     });
-    const localHistoryForWorkspace = (directorLabel?: string): Partial<ConsoleWorkspace> => {
-      if (!directorLabel) return {};
-      const sessions = parseSessionsFiles(listDirectorLogs(directorLabel, 'output'));
+    const localHistoryForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
+      const stats = getWorkspaceSessionStats(workspaceName);
+      if (stats.sessionCount === 0) return {};
       return {
-        localSessionCount: sessions.length,
-        localMessageCount: sessions.reduce((sum, session) => sum + session.messageCount, 0),
-        lastMessageAt: sessions[0]?.lastMessageAt,
+        localSessionCount: stats.sessionCount,
+        localMessageCount: stats.messageCount,
+        lastMessageAt: stats.lastMessageAt ?? undefined,
       };
     };
 
@@ -317,6 +393,8 @@ export function startConsole(
             ...directorForWorkspace(name),
           };
           const wsConfig = getWorkspaceConfig(name);
+          const wsName = routing.groupName ?? name;
+          const hidden = wsConfig?.hidden ?? (hasAnySessionHistory(wsName) ? false : true);
           workspaces.push({
             id: `memory-${name}`,
             name,
@@ -324,8 +402,9 @@ export function startConsole(
             source: 'memory',
             cwd: wsConfig?.cwd,
             agent: wsConfig?.agent,
+            hidden,
             ...routing,
-            ...localHistoryForWorkspace(routing.directorLabel),
+            ...localHistoryForWorkspace(wsName),
           });
         } catch {
           // Best effort for UI context.
@@ -483,6 +562,11 @@ export function startConsole(
           directorPid: ds.pid,
           sessionId: ds.sessionId,
           sessionName: ds.sessionName,
+          // WP5: 把"当前 live session 是否已 archived"暴露给前端。
+          // 前端 useSessions 在 unshift 自己的 live 合并时,需要这个标志决定是否跳过
+          // —— 否则归档"当前活跃 session"后,DB SQL 过滤+后端 live 合并都跳过了,
+          // 但前端 hook 又 unshift 回来,UI 永远看不到归档生效。
+          liveSessionArchived: ds.sessionId ? getSessionRecord(ds.sessionId)?.archived === 1 : false,
           directorAgentName: ds.agentName,
           directorAgentType: ds.agentType,
           personaRole: ds.personaRole,
@@ -521,7 +605,7 @@ export function startConsole(
           summary: taskSummary,
           recent: recentTasks,
         },
-        pool: pool ? pool.getPoolStatus().map((entry) => ({
+        pool: sessionManager ? sessionManager.getPoolStatus().map((entry) => ({
           routingKey: entry.routingKey,
           groupName: entry.groupName,
           label: entry.label,
@@ -537,6 +621,12 @@ export function startConsole(
           } : null,
           pid: entry.directorStatus?.pid ?? null,
           sessionId: entry.directorStatus?.sessionId ?? null,
+          // WP5: 把 pool entry 对应 session 的 archived 状态透出,前端 useSessions
+          // 在 unshift 自己的 live 合并时,需要这个标志决定是否跳过(已归档 session
+          // 不应再回列表)。如果 entry 没有 sessionId(冷启动前),archived 为 false。
+          liveSessionArchived: entry.directorStatus?.sessionId
+            ? getSessionRecord(entry.directorStatus.sessionId)?.archived === 1
+            : false,
           directorAgentName: entry.directorAgentName ?? entry.directorStatus?.agentName ?? null,
           directorAgentType: entry.directorStatus?.agentType ?? null,
           personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
@@ -934,9 +1024,9 @@ export function startConsole(
     if (!q) return { query: q, results, scanned };
 
     const directors: Array<{ label: string; bridge: SessionBridge }> = [{ label: 'main', bridge: director }];
-    if (pool) {
-      for (const entry of pool.getPoolStatus()) {
-        const poolEntry = pool.get(entry.routingKey);
+    if (sessionManager) {
+      for (const entry of sessionManager.getPoolStatus()) {
+        const poolEntry = sessionManager.get(entry.routingKey);
         if (poolEntry) directors.push({ label: entry.label, bridge: poolEntry.bridge });
       }
     }
@@ -1540,75 +1630,72 @@ export function startConsole(
     }
   }
 
-  function sessionIdForDirector(label: string): string | null {
+  function resolveSessionId(label: string): string | null {
     if (label === director.label || label === 'main') return director.getStatus().sessionId;
-    const entry = pool?.getPoolStatus().find((item) => item.label === label);
+    const entry = sessionManager?.getPoolStatus().find((item) => item.label === label);
     if (!entry) return null;
-    return pool?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
+    return sessionManager?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
   }
 
   director.on('chunk', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', sessionId: resolveSessionId(director.label), text }));
   });
   director.on('turn-event', (event: AssistantTurnEvent) => {
     if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'turn_event', event }));
   });
   director.on('tool-call', (toolName?: string, tool?: DirectorToolCall) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: director.label, sessionId: sessionIdForDirector(director.label), toolName, tool }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', sessionId: resolveSessionId(director.label), toolName, tool }));
   });
   director.on('stream-abort', () => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: director.label, sessionId: sessionIdForDirector(director.label) }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', sessionId: resolveSessionId(director.label) }));
   });
   director.on('input-message', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', director: director.label, sessionId: sessionIdForDirector(director.label), text, timestamp: new Date().toISOString() }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', sessionId: resolveSessionId(director.label), text, timestamp: new Date().toISOString() }));
   });
   director.on('system-chunk', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: director.label, sessionId: sessionIdForDirector(director.label), text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', sessionId: resolveSessionId(director.label), text }));
   });
   director.on('system-response', (text: string, messageId: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', director: director.label, sessionId: sessionIdForDirector(director.label), messageId, text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId(director.label), messageId, text }));
   });
   director.on('response', (text: string) => {
-    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', director: director.label, sessionId: sessionIdForDirector(director.label), messageId: null, text }));
+    if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId(director.label), messageId: null, text }));
   });
   director.on('web-alert', (message: string) => {
     if (clients.size === 0) return;
     const taskCallback = message.startsWith('✅ 后台任务') || message.startsWith('❌ 后台任务');
     broadcastWs(JSON.stringify({
       type: taskCallback ? 'task_callback' : 'chat_reply',
-      director: director.label,
-      sessionId: sessionIdForDirector(director.label),
+      sessionId: resolveSessionId(director.label),
       messageId: null,
       text: taskCallback ? message : '⚠️ ' + message,
     }));
   });
 
-  if (pool) {
-    pool.on('chunk', (label: string, text: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', director: label, sessionId: sessionIdForDirector(label), text }));
+  if (sessionManager) {
+    sessionManager.on('chunk', (label: string, text: string) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chunk', sessionId: resolveSessionId(label), text }));
     });
-    pool.on('turn-event', (_label: string, event: AssistantTurnEvent) => {
+    sessionManager.on('turn-event', (_label: string, event: AssistantTurnEvent) => {
       if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'turn_event', event }));
     });
-    pool.on('tool-call', (label: string, toolName?: string, tool?: DirectorToolCall) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', director: label, sessionId: sessionIdForDirector(label), toolName, tool }));
+    sessionManager.on('tool-call', (label: string, toolName?: string, tool?: DirectorToolCall) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'tool-call', sessionId: resolveSessionId(label), toolName, tool }));
     });
-    pool.on('stream-abort', (label: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', director: label, sessionId: sessionIdForDirector(label) }));
+    sessionManager.on('stream-abort', (label: string) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'stream-abort', sessionId: resolveSessionId(label) }));
     });
-    pool.on('input-message', (label: string, text: string) => {
-      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', director: label, sessionId: sessionIdForDirector(label), text, timestamp: new Date().toISOString() }));
+    sessionManager.on('input-message', (label: string, text: string) => {
+      if (clients.size > 0) broadcastWs(JSON.stringify({ type: 'chat_input', sessionId: resolveSessionId(label), text, timestamp: new Date().toISOString() }));
     });
-    // Web session reply/alert routing
-    pool.on('web-reply', (label: string, messageId: string, text: string) => {
-      broadcastWs(JSON.stringify({ type: 'chat_reply', director: label, sessionId: sessionIdForDirector(label), messageId, text }));
+    sessionManager.on('web-reply', (label: string, messageId: string, text: string) => {
+      broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId(label), messageId, text }));
     });
-    pool.on('web-alert', (label: string, message: string) => {
+    sessionManager.on('web-alert', (label: string, message: string) => {
       const taskCallback = message.startsWith('✅ 后台任务') || message.startsWith('❌ 后台任务');
       broadcastWs(JSON.stringify({
         type: taskCallback ? 'task_callback' : 'chat_reply',
-        director: label,
-        sessionId: sessionIdForDirector(label),
+        sessionId: resolveSessionId(label),
         messageId: null,
         text: taskCallback ? message : '⚠️ ' + message,
       }));
@@ -1636,8 +1723,8 @@ export function startConsole(
 
   function taskParentMetadata(sourceDirector: string): Record<string, unknown> {
     const source = sourceDirector || 'main';
-    const ds = source === 'main' || !pool ? director.getStatus() : pool.findByLabel(source)?.bridge.getStatus();
-    const poolEntry = source === 'main' || !pool ? undefined : pool.findByLabel(source);
+    const ds = source === 'main' || !sessionManager ? director.getStatus() : sessionManager.findByLabel(source)?.bridge.getStatus();
+    const poolEntry = source === 'main' || !sessionManager ? undefined : sessionManager.findByLabel(source);
     if (!ds) {
       return {
         parent_director_label: source,
@@ -1703,8 +1790,8 @@ export function startConsole(
       const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
       const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
       const source = job.source_director;
-      if (source && source !== 'main' && pool) {
-        const entry = pool.findByLabel(source);
+      if (source && source !== 'main' && sessionManager) {
+        const entry = sessionManager.findByLabel(source);
         if (entry) {
           await entry.bridge.sendCronMessage(msg);
           updateCronJob(job.id, { last_run_at: localNow() });
@@ -1736,7 +1823,7 @@ export function startConsole(
           updateCronJob(job.id, { last_run_at: localNow() });
           return { ok: true, action_type: actionType, action_name: actionName, message: 'reserved action acknowledged' };
         case 'flush':
-          if (pool) await pool.flushAll();
+          if (sessionManager) await sessionManager.flushAll();
           await director.flush();
           updateCronJob(job.id, { last_run_at: localNow() });
           return { ok: true, action_type: actionType, action_name: actionName };
@@ -1761,12 +1848,12 @@ export function startConsole(
         agent_type: director.getDirectorAgentType(),
       };
     }
-    if (!pool) {
-      const err = new Error('Director pool is not available') as Error & { status?: number };
+    if (!sessionManager) {
+      const err = new Error('Director session manager is not available') as Error & { status?: number };
       err.status = 503;
       throw err;
     }
-    const entry = await pool.switchAgentByLabel(targetLabel, agentName.trim());
+    const entry = await sessionManager.switchAgentByLabel(targetLabel, agentName.trim());
     return {
       ok: true,
       director_label: entry.bridge.label,
@@ -1790,12 +1877,12 @@ export function startConsole(
       if (!ok) throw new Error(`failed to switch main Director persona to ${role}`);
       return { ok: true, director_label: 'main', role: director.getPersonaRole() };
     }
-    if (!pool) {
-      const err = new Error('Director pool is not available') as Error & { status?: number };
+    if (!sessionManager) {
+      const err = new Error('Director session manager is not available') as Error & { status?: number };
       err.status = 503;
       throw err;
     }
-    const entry = await pool.switchPersonaByLabel(targetLabel, role);
+    const entry = await sessionManager.switchPersonaByLabel(targetLabel, role);
     return { ok: true, director_label: entry.bridge.label, role: entry.bridge.getPersonaRole() };
   }
 
@@ -1829,8 +1916,8 @@ export function startConsole(
       const result = await handleCommand(normalized);
       return { ...result, director_label: 'main', command: normalized };
     }
-    if (!pool) {
-      const err = new Error('Director pool is not available') as Error & { status?: number };
+    if (!sessionManager) {
+      const err = new Error('Director session manager is not available') as Error & { status?: number };
       err.status = 503;
       throw err;
     }
@@ -1839,7 +1926,7 @@ export function startConsole(
     try {
       switch (normalized) {
         case 'flush': {
-          const success = await pool.flushByLabel(targetLabel);
+          const success = await sessionManager.flushByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）',
@@ -1847,7 +1934,7 @@ export function startConsole(
           break;
         }
         case 'clear': {
-          const success = await pool.clearContextByLabel(targetLabel);
+          const success = await sessionManager.clearContextByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）',
@@ -1855,7 +1942,7 @@ export function startConsole(
           break;
         }
         case 'esc': {
-          const cancelled = await pool.interruptOldestByLabel(targetLabel);
+          const cancelled = await sessionManager.interruptOldestByLabel(targetLabel);
           result = cancelled
             ? {
               ok: true,
@@ -1866,11 +1953,11 @@ export function startConsole(
           break;
         }
         case 'session-restart':
-          await pool.restartByLabel(targetLabel);
+          await sessionManager.restartByLabel(targetLabel);
           result = { ok: true, message: 'Director 已重启' };
           break;
         case 'detach': {
-          const entry = await pool.detachByLabel(targetLabel);
+          const entry = await sessionManager.detachByLabel(targetLabel);
           result = {
             ok: true,
             message: 'Director 已 Detach，底层进程未主动关闭',
@@ -2229,11 +2316,13 @@ export function startConsole(
       const url = new URL(req.url);
 
       // Skip auth for static assets and HTML pages
+      // V2 (default at /): /, /assets/*, /favicon.svg
+      // V1 (kept at /v1): /v1, /v1/css/*, /v1/js/*
       const isStaticAsset = url.pathname === '/' ||
-        url.pathname.startsWith('/css/') ||
-        url.pathname.startsWith('/js/') ||
-        url.pathname === '/v2' ||
-        url.pathname.startsWith('/v2/');
+        url.pathname.startsWith('/assets/') ||
+        url.pathname === '/favicon.svg' ||
+        url.pathname === '/v1' ||
+        url.pathname.startsWith('/v1/');
       if (!isStaticAsset) {
         // Token 认证检查
         const authErr = checkAuth(req);
@@ -2248,34 +2337,65 @@ export function startConsole(
       // HTTP 路由
       switch (url.pathname) {
         case '/': {
+          // V2 SPA root
           try {
-            const html = readFileSync(htmlPath, 'utf-8');
+            const html = readFileSync(v2HtmlPath, 'utf-8');
             return new Response(html, {
               headers: { 'Content-Type': 'text/html; charset=utf-8' },
             });
           } catch (err) {
-            return new Response('index.html not found', { status: 500 });
+            return new Response(
+              'web-v2 dist 不存在，请先构建：cd web-v2 && bun run build\n' +
+              '（启动时通常会自动构建；若反复失败可先用 /v1 访问旧前端）',
+              { status: 500 },
+            );
           }
         }
         default: {
-          // Serve web-v2 SPA under /v2
-          if (url.pathname === '/v2' || url.pathname.startsWith('/v2/')) {
-            const subPath = url.pathname === '/v2' ? '' : url.pathname.slice(3);
-            if (subPath === '' || subPath === '/') {
-              try {
-                const html = readFileSync(v2HtmlPath, 'utf-8');
-                return new Response(html, {
-                  headers: { 'Content-Type': 'text/html; charset=utf-8' },
-                });
-              } catch {
-                return new Response('web-v2 not built. Run: cd web-v2 && bun run build', { status: 404 });
-              }
+          // V1 legacy frontend — kept at /v1 as fallback
+          if (url.pathname === '/v1') {
+            // 重定向带上尾斜杠 — V1 HTML 用相对路径 href="css/style.css",
+            // 不带尾斜杠时浏览器会解析成 /css/style.css(404)。
+            return Response.redirect(`${url.origin}/v1/${url.search}`, 308);
+          }
+          if (url.pathname === '/v1/') {
+            try {
+              const html = readFileSync(v1HtmlPath, 'utf-8');
+              return new Response(html, {
+                headers: { 'Content-Type': 'text/html; charset=utf-8' },
+              });
+            } catch {
+              return new Response('v1 index.html not found', { status: 500 });
             }
-            const filePath = resolve(v2Dir, subPath.slice(1));
-            if (!filePath.startsWith(v2Dir + '/')) {
+          }
+          if (url.pathname.startsWith('/v1/css/') || url.pathname.startsWith('/v1/js/')) {
+            // strip the '/v1' prefix, then resolve under publicDir
+            const filePath = resolve(v1Dir, url.pathname.slice(4));
+            if (!filePath.startsWith(v1Dir + '/')) {
               return new Response('Forbidden', { status: 403 });
             }
             if (existsSync(filePath) && statSync(filePath).isFile()) {
+              const ext = extname(filePath).toLowerCase();
+              const mimeTypes: Record<string, string> = {
+                '.css': 'text/css; charset=utf-8',
+                '.js': 'application/javascript; charset=utf-8',
+              };
+              const content = readFileSync(filePath, 'utf-8');
+              return new Response(content, {
+                headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
+              });
+            }
+            return new Response('Not found', { status: 404 });
+          }
+
+          // V2 static assets (/assets/* and root-level files like favicon.svg)
+          // SPA fallback: every non-/api, non-/ws path under root returns index.html
+          // so the React Router (client-side) can handle it after hydration.
+          if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/ws')) {
+            const filePath = resolve(v2Dir, url.pathname.slice(1));
+            // Prevent path traversal — resolved path must stay inside v2Dir
+            if (filePath.startsWith(v2Dir + '/') &&
+                existsSync(filePath) && statSync(filePath).isFile()) {
               const ext = extname(filePath).toLowerCase();
               const mimeTypes: Record<string, string> = {
                 '.css': 'text/css; charset=utf-8',
@@ -2293,34 +2413,19 @@ export function startConsole(
                 headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
               });
             }
-            // SPA fallback: unknown paths serve index.html for client-side routing
-            try {
-              const html = readFileSync(v2HtmlPath, 'utf-8');
-              return new Response(html, {
-                headers: { 'Content-Type': 'text/html; charset=utf-8' },
-              });
-            } catch {
-              return new Response('Not found', { status: 404 });
-            }
-          }
-
-          // Serve static files from /css/ and /js/ subdirectories
-          if (url.pathname.startsWith('/css/') || url.pathname.startsWith('/js/')) {
-            const filePath = resolve(publicDir, url.pathname.slice(1));
-            // Prevent path traversal — resolved path must stay inside publicDir
-            if (!filePath.startsWith(publicDir + '/')) {
-              return new Response('Forbidden', { status: 403 });
-            }
-            if (existsSync(filePath) && statSync(filePath).isFile()) {
-              const ext = extname(filePath).toLowerCase();
-              const mimeTypes: Record<string, string> = {
-                '.css': 'text/css; charset=utf-8',
-                '.js': 'application/javascript; charset=utf-8',
-              };
-              const content = readFileSync(filePath, 'utf-8');
-              return new Response(content, {
-                headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
-              });
+            // SPA fallback for client-side routes (e.g. /tasks, /files)
+            // Only fallback for GET requests without a file extension — bare HTML page requests.
+            // Requests with extensions (.js, .css, .svg, .map …) that miss should 404 cleanly,
+            // otherwise debugging "why is my asset 404" looks like "asset loaded but is HTML".
+            if (req.method === 'GET' && !extname(url.pathname)) {
+              try {
+                const html = readFileSync(v2HtmlPath, 'utf-8');
+                return new Response(html, {
+                  headers: { 'Content-Type': 'text/html; charset=utf-8' },
+                });
+              } catch {
+                return new Response('Not found', { status: 404 });
+              }
             }
           }
 
@@ -2429,9 +2534,9 @@ export function startConsole(
             if (directorLabel === 'main') {
               await director.notifyTaskDone(taskId, success, replyToMessageId);
             } else {
-              if (!pool) return Response.json({ ok: false, error: 'Director pool is unavailable' }, { status: 503 });
-              if (!pool.findByLabel(directorLabel)) return Response.json({ ok: false, error: `Director not found: ${directorLabel}` }, { status: 404 });
-              await pool.notifyTaskDone(directorLabel, taskId, success, replyToMessageId);
+              if (!sessionManager) return Response.json({ ok: false, error: 'Session manager is unavailable' }, { status: 503 });
+              if (!sessionManager.findByLabel(directorLabel)) return Response.json({ ok: false, error: `Director not found: ${directorLabel}` }, { status: 404 });
+              await sessionManager.notifyTaskDone(directorLabel, taskId, success, replyToMessageId);
             }
             writeAuditEntry('debug.simulate_task_completion', true, {
               target: taskId,
@@ -2721,7 +2826,7 @@ export function startConsole(
 
           // POST /api/send — send arbitrary text to Director (bypass messaging)
           if (url.pathname === '/api/send' && req.method === 'POST') {
-            const body = await req.json() as { text: string; director?: string; workspace?: string };
+            const body = await req.json() as { text: string; sessionId?: string; director?: string; workspace?: string };
             if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
 
             // Intercept /shell-restart commands
@@ -2738,49 +2843,64 @@ export function startConsole(
                   message: `Shell 重启已拒绝：当前有 ${runningTasks.length} 个后台任务仍在运行：${listed}${overflow}。请使用 /shell-restart --force 强制重启。`,
                 });
               }
-              broadcastWs(JSON.stringify({ type: 'chat_reply', director: 'main', messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
+              broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId('main'), messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
               writeAuditEntry('shell.restart', true, { source: 'web', force: isForce });
-              if (pool) await pool.detachAll();
+              if (sessionManager) await sessionManager.detachAll();
               await director.shutdown();
               setTimeout(() => process.exit(0), 500);
               return Response.json({ ok: true, message: 'restarting' });
             }
 
             try {
-              // Route to pool Director if specified
-              if (body.director && body.director !== 'main' && pool) {
-                let poolEntry = pool.getPoolStatus().find((e) => e.label === body.director);
-                let entry = poolEntry ? pool.get(poolEntry.routingKey) : undefined;
+              // New path: route by sessionId (preferred)
+              if (body.sessionId && sessionManager) {
+                const session = sessionManager.getSession(body.sessionId);
+                if (session) {
+                  await sessionManager.send(body.sessionId, body.text, `web-${randomUUID()}`, { webOnly: true });
+                  writeAuditEntry('director.send', true, { target: body.sessionId, bytes: Buffer.byteLength(body.text, 'utf-8') });
+                  return Response.json({ ok: true, message: 'sent to session', sessionId: body.sessionId });
+                }
+                writeAuditEntry('director.send', false, { target: body.sessionId, reason: 'session not found' });
+                return Response.json({ ok: false, message: `Session "${body.sessionId}" not found` }, { status: 404 });
+              }
 
-                // Auto-create pool Director for web workspace
-                if (!entry && body.workspace) {
+              // Legacy path: resolve by director/workspace name → SessionManager
+              const targetName = (body.director && body.director !== 'main')
+                ? body.director
+                : (body.workspace && body.workspace !== 'main')
+                  ? body.workspace
+                  : undefined;
+
+              if (targetName && sessionManager && sessionManager) {
+                let sessionEntry = sessionManager.getPool().resolveWorkspace(targetName);
+
+                if (!sessionEntry && body.workspace) {
                   const wsName = sanitizeWorkspaceName(body.workspace);
                   if (wsName) {
-                    const routingKey = `web-workspace:${wsName}`;
-                    const wsConfig = getWorkspaceConfig(wsName);
-                    entry = await pool.getOrCreate(routingKey, {
-                      groupName: wsName,
+                    const result = await sessionManager.getOrCreateForWorkspace(wsName, {
                       feishuChatId: 'web-console',
-                      directorAgentName: wsConfig?.agent,
+                      directorAgentName: getWorkspaceConfig(wsName)?.agent,
                     });
-                    broadcastWs(JSON.stringify({ type: 'context_update', workspace: wsName, label: entry.bridge.label }));
-                    writeAuditEntry('workspace.director.create', true, { workspace: wsName, routingKey, label: entry.bridge.label });
+                    sessionEntry = sessionManager.get(`web-workspace:${wsName}`);
+                    if (sessionEntry) {
+                      broadcastWs(JSON.stringify({ type: 'context_update', workspace: wsName, label: sessionEntry.bridge.label }));
+                    }
                   }
                 }
 
-                if (entry) {
-                  await pool.send(entry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
-                  writeAuditEntry('director.send', true, { target: body.director, bytes: Buffer.byteLength(body.text, 'utf-8') });
-                  return Response.json({ ok: true, message: 'sent to pool director', label: entry.bridge.label });
+                if (sessionEntry) {
+                  await sessionManager.getPool().send(sessionEntry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
+                  writeAuditEntry('director.send', true, { target: targetName, bytes: Buffer.byteLength(body.text, 'utf-8') });
+                  return Response.json({ ok: true, message: 'sent to workspace director', label: sessionEntry.bridge.label });
                 }
-                writeAuditEntry('director.send', false, { target: body.director, reason: 'pool director not found' });
-                return Response.json({ ok: false, message: `Pool director "${body.director}" not found` }, { status: 404 });
+                writeAuditEntry('director.send', false, { target: targetName, reason: 'workspace not found' });
+                return Response.json({ ok: false, message: `Workspace "${targetName}" not found` }, { status: 404 });
               }
               await director.send(body.text);
               writeAuditEntry('director.send', true, { target: 'main', bytes: Buffer.byteLength(body.text, 'utf-8') });
               return Response.json({ ok: true, message: 'sent' });
             } catch (err) {
-              writeAuditEntry('director.send', false, { target: body.director ?? 'main', error: String(err) });
+              writeAuditEntry('director.send', false, { target: body.workspace ?? body.director ?? 'main', error: String(err) });
               return Response.json({ ok: false, message: String(err) }, { status: 500 });
             }
           }
@@ -2816,8 +2936,8 @@ export function startConsole(
             // active turn so attachments are sent after the text reply completes.
             if (!body.target_channel) {
               const attachment = { path: resolved, sourceDirector };
-              const item = sourceDirector !== 'main' && pool
-                ? pool.enqueueAttachmentForHeadByLabel(sourceDirector, attachment)
+              const item = sourceDirector !== 'main' && sessionManager
+                ? sessionManager.getPool().enqueueAttachmentForHeadByLabel(sourceDirector, attachment)
                 : queue.addPendingAttachmentToOldest(attachment);
               if (item) {
                 writeAuditEntry('attachment.queue', true, {
@@ -2851,12 +2971,12 @@ export function startConsole(
             const isImage = imageExts.has(ext);
 
             try {
-              // Resolve target chatId: pool Director → its group chat, main → lastChatId
+              // Resolve target chatId: workspace Director → its group chat, main → lastChatId
               let targetChatId: string | null = null;
               if (body.target_channel === 'web') {
                 targetChatId = 'web-console';
-              } else if (sourceDirector && sourceDirector !== 'main' && pool) {
-                targetChatId = pool.getChatIdByLabel(sourceDirector);
+              } else if (sourceDirector && sourceDirector !== 'main' && sessionManager) {
+                targetChatId = sessionManager.getChatIdByLabel(sourceDirector);
               }
               if (!targetChatId) {
                 targetChatId = messaging?.getLastChatId() ?? null;
@@ -2870,8 +2990,8 @@ export function startConsole(
               // Only fall back to main queue when source IS main — otherwise the reply API
               // routes by parent-message chat, sending the attachment to the wrong conversation.
               let replyMessageId: string | null = null;
-              if (sourceDirector && sourceDirector !== 'main' && pool) {
-                replyMessageId = pool.getProcessingMessageIdByLabel(sourceDirector);
+              if (sourceDirector && sourceDirector !== 'main' && sessionManager) {
+                replyMessageId = sessionManager.getProcessingMessageIdByLabel(sourceDirector);
               } else {
                 const peeked = queue.peek();
                 replyMessageId = peeked?.messageId ?? null;
@@ -2974,11 +3094,11 @@ export function startConsole(
               writeAuditEntry('queue.cancel', false, { target: directorLabel || null, correlationId: correlationId || null, error: 'missing director_label or correlation_id' });
               return Response.json({ ok: false, error: 'director_label and correlation_id are required' }, { status: 400 });
             }
-            if (!pool) {
-              writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'pool unavailable' });
-              return Response.json({ ok: false, error: 'director pool unavailable' }, { status: 503 });
+            if (!sessionManager) {
+              writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'session manager unavailable' });
+              return Response.json({ ok: false, error: 'director session manager unavailable' }, { status: 503 });
             }
-            const cancelled = await pool.cancelQueuedByLabel(directorLabel, correlationId);
+            const cancelled = await sessionManager.cancelQueuedByLabel(directorLabel, correlationId);
             if (!cancelled) {
               writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'queue item not found or already cancelled' });
               return Response.json({ ok: false, error: 'queue item not found or already cancelled' }, { status: 404 });
@@ -3034,6 +3154,17 @@ export function startConsole(
             setWorkspaceConfig(wsName, wsConfig);
             return Response.json({ ok: true, name: wsName, config: wsConfig });
           }
+          if (url.pathname === '/api/workspaces/visibility' && req.method === 'PUT') {
+            const body = await req.json().catch(() => ({})) as { name?: string; hidden?: boolean };
+            const wsName = sanitizeWorkspaceName(body.name);
+            if (!wsName) {
+              return Response.json({ error: 'Workspace name is required' }, { status: 400 });
+            }
+            const existing = getWorkspaceConfig(wsName);
+            const wsConfig: WorkspaceConfig = { ...existing, hidden: !!body.hidden };
+            setWorkspaceConfig(wsName, wsConfig);
+            return Response.json({ ok: true, name: wsName, hidden: wsConfig.hidden });
+          }
           if (url.pathname === '/api/browse' && req.method === 'GET') {
             const rawPath = url.searchParams.get('path') || '~';
             const resolved = resolve(expandConsolePath(rawPath));
@@ -3067,39 +3198,93 @@ export function startConsole(
             const limit = Number(url.searchParams.get('limit') ?? 100);
             const sessionId = url.searchParams.get('sessionId') ?? undefined;
             const directorLabel = url.searchParams.get('director') ?? undefined;
-            const target = resolveDirectorLogTarget(directorLabel, director, pool);
+            const workspace = url.searchParams.get('workspace') ?? undefined;
+            // Resolve director label from workspace name if provided
+            let effectiveLabel = directorLabel;
+            if (!effectiveLabel && workspace && workspace !== 'main') {
+              const match = sessionManager?.getPoolStatus().find((e) => {
+                const safeName = e.groupName.replace(/[\/\\:*?"<>|]/g, '_');
+                return workspace === safeName || workspace === e.groupName;
+              });
+              effectiveLabel = match?.label;
+            }
+            const target = resolveDirectorLogTarget(effectiveLabel, director, sessionManager);
             return Response.json(parseConversationLogFiles(target.inputLogs, target.outputLogs, limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
             const directorLabel = url.searchParams.get('director') ?? undefined;
-            const target = resolveDirectorLogTarget(directorLabel, director, pool);
-            const sessions = parseSessionsFiles(target.outputLogs);
-            // Inject sessionName from persisted mapping + live Director status
-            const nameMap = getState<Record<string, string>>('session:names') ?? {};
-            for (const s of sessions) {
-              if (!s.sessionName && nameMap[s.sessionId]) {
-                s.sessionName = nameMap[s.sessionId];
-              }
+            const workspace = url.searchParams.get('workspace') ?? undefined;
+
+            // Resolve workspace name: direct param, or derive from director label
+            let wsName: string;
+            if (workspace) {
+              wsName = workspace;
+            } else if (!directorLabel || directorLabel === 'main') {
+              wsName = 'main';
+            } else {
+              const poolEntry = sessionManager?.getPoolStatus().find((e) => e.label === directorLabel);
+              wsName = poolEntry?.groupName ?? directorLabel;
             }
-            const poolEntry = target.label === 'main'
+
+            const dbRows = listSessionsFromDb(wsName);
+            const sessions = dbRows.map((r) => ({
+              sessionId: r.session_id,
+              sessionName: r.session_name ?? undefined,
+              alive: r.alive === 1,
+              messageCount: r.message_count,
+              firstMessageAt: r.first_message_at ?? undefined,
+              lastMessageAt: r.last_message_at ?? undefined,
+            }));
+
+            // Fallback: 仅当 DB 完全没有该 workspace 任何记录(包含 archived)时,才回退到 log 文件解析
+            // (pre-migration 环境兼容)。一旦 DB 已有数据,sessions 数组就是真相,
+            // 走 log fallback 会把已 archived 的 session 重新 unshift 回来(因为 parseSessionsFiles
+            // 只看 log 文件,不知道 archived 状态),破坏 WP5 归档语义。
+            // 边界:workspace 全部 session 都已 archived 时,SQL 过滤后 sessions=0 但 dbRows.length=0,
+            // 此时也不能走 fallback —— fallback 用的是"DB 完全没有这个 workspace 的认知"。
+            const totalDbRows = listSessionsFromDb(wsName, { includeArchived: true });
+            if (totalDbRows.length === 0) {
+              const target = resolveDirectorLogTarget(directorLabel, director, sessionManager);
+              const parsed = parseSessionsFiles(target.outputLogs);
+              const nameMap = getState<Record<string, string>>('session:names') ?? {};
+              for (const s of parsed) {
+                if (!s.sessionName && nameMap[s.sessionId]) {
+                  s.sessionName = nameMap[s.sessionId];
+                }
+              }
+              return Response.json(parsed);
+            }
+
+            // Merge live director status for current session
+            const resolvedLabel = directorLabel ?? 'main';
+            const poolEntry = resolvedLabel === 'main'
               ? undefined
-              : pool?.getPoolStatus().find((e) => e.label === target.label);
-            const activePoolEntry = poolEntry ? pool?.get(poolEntry.routingKey) : undefined;
-            const ds = target.label === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
-            if (ds?.sessionId && ds.sessionName) {
-              const live = sessions.find(s => s.sessionId === ds.sessionId);
-              if (live) {
-                live.sessionName = ds.sessionName;
-                live.alive = true;
-              } else {
-                sessions.unshift({
-                  sessionId: ds.sessionId,
-                  sessionName: ds.sessionName,
-                  alive: true,
-                  messageCount: 0,
-                  firstMessageAt: undefined,
-                  lastMessageAt: new Date().toISOString(),
-                });
+              : sessionManager?.getPoolStatus().find((e) => e.label === resolvedLabel);
+            const activePoolEntry = poolEntry ? sessionManager?.get(poolEntry.routingKey) : undefined;
+            const ds = resolvedLabel === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
+            if (ds?.sessionId) {
+              // WP5 修复:live session 合并时,跳过 DB 里已 archived 的 session。
+              // 否则归档"当前活跃 session"后,虽然 DB SQL 已经过滤了 archived=0,
+              // 这段 live 合并逻辑又把它 unshift 回列表,UI 永远看不到归档生效。
+              // 边界:in-memory session 还没注册到 DB(Director 重启后新 spawn),从 getSessionRecord
+              // 拿到 null,这时按"未归档"处理(原始行为)以避免新建 session 被错误隐藏。
+              const archivedRecord = getSessionRecord(ds.sessionId);
+              const isArchivedInDb = archivedRecord?.archived === 1;
+              if (!isArchivedInDb) {
+                const live = sessions.find(s => s.sessionId === ds.sessionId);
+                if (live) {
+                  if (ds.sessionName) live.sessionName = ds.sessionName;
+                  live.alive = true;
+                } else {
+                  sessions.unshift({
+                    sessionId: ds.sessionId,
+                    sessionName: ds.sessionName ?? undefined,
+                    alive: true,
+                    messageCount: 0,
+                    firstMessageAt: undefined,
+                    lastMessageAt: new Date().toISOString(),
+                  });
+                }
               }
             }
             return Response.json(sessions);
@@ -3115,13 +3300,14 @@ export function startConsole(
             if (rawName) nameMap[sessionId] = rawName;
             else delete nameMap[sessionId];
             setState('session:names', nameMap);
+            try { setSessionNameInDb(sessionId, rawName || null); } catch { /* best-effort */ }
 
             const directorLabel = typeof body.director === 'string' && body.director.trim() ? body.director.trim() : 'main';
             let targetDirector = director;
-            if (directorLabel !== 'main' && pool) {
-              const entry = pool.getPoolStatus().find((e) => e.label === directorLabel);
+            if (directorLabel !== 'main' && sessionManager) {
+              const entry = sessionManager.getPoolStatus().find((e) => e.label === directorLabel);
               if (entry) {
-                const poolEntry = pool.get(entry.routingKey);
+                const poolEntry = sessionManager.get(entry.routingKey);
                 if (poolEntry) targetDirector = poolEntry.bridge;
               }
             }
@@ -3130,6 +3316,46 @@ export function startConsole(
             return Response.json({ ok: true, sessionId, sessionName: rawName || null, liveUpdated });
           }
           // Persona orchestration APIs for Codex app / MCP clients
+          // WP7: POST /api/messages/regenerate —— 重新生成最后一条 assistant 回复
+          // 找到 entry.bridge 对应的 logDir,扫所有 input-*.log 找最后一条 user 消息,
+          // 重新发一次。不修改日志;只是触发一次新的 turn。
+          if (url.pathname === '/api/messages/regenerate' && req.method === 'POST') {
+            if (!sessionManager) return Response.json({ ok: false, error: 'Session manager not available' }, { status: 503 });
+            const body = (await req.json().catch(() => ({}))) as { sessionId?: string };
+            const sessionId = body.sessionId?.trim();
+            if (!sessionId) return Response.json({ ok: false, error: 'sessionId is required' }, { status: 400 });
+            const entry = sessionManager.getSession(sessionId);
+            if (!entry) {
+              writeAuditEntry('message.regenerate', false, { target: sessionId, error: 'session not found' });
+              return Response.json({ ok: false, error: 'session not found' }, { status: 404 });
+            }
+            // 扫 logDir 里所有 input-*.log,按文件名(日期)倒序,合并 tail
+            const logDir = entry.bridge.getInputLogDir();
+            let inputLogs: string[] = [];
+            try {
+              inputLogs = readdirSync(logDir)
+                .filter(f => f.startsWith('input-') && f.endsWith('.log'))
+                .sort()
+                .reverse() // 最新的在前
+                .map(f => join(logDir, f));
+            } catch {
+              // logDir 不存在 = 还没有任何消息
+            }
+            const text = readLastUserMessageText(inputLogs);
+            if (!text) {
+              writeAuditEntry('message.regenerate', false, { target: sessionId, error: 'no user message to regenerate' });
+              return Response.json({ ok: false, error: 'no user message to regenerate' }, { status: 404 });
+            }
+            try {
+              await entry.bridge.send(text);
+              writeAuditEntry('message.regenerate', true, { target: sessionId, length: text.length });
+              return Response.json({ ok: true, sessionId, text });
+            } catch (err) {
+              writeAuditEntry('message.regenerate', false, { target: sessionId, error: String(err) });
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+
           if (url.pathname === '/api/persona/roles' && req.method === 'GET') {
             return Response.json({ roles: listPersonaRoles(config.director.persona_dir) });
           }
@@ -3314,18 +3540,18 @@ export function startConsole(
                 err.status = 400;
                 throw err;
               }
-              if (!pool) {
-                const err = new Error('Director pool is unavailable') as Error & { status?: number };
+              if (!sessionManager) {
+                const err = new Error('Session manager is unavailable') as Error & { status?: number };
                 err.status = 503;
                 throw err;
               }
-              const target = pool.getPoolStatus().find((entry) => entry.label === targetLabel && !entry.closed);
+              const target = sessionManager.getPoolStatus().find((entry) => entry.label === targetLabel && !entry.closed);
               if (!target) {
                 const err = new Error(`Director "${targetLabel}" is not active`) as Error & { status?: number };
                 err.status = 404;
                 throw err;
               }
-              await pool.shutdown(target.routingKey);
+              await sessionManager.getPool().shutdown(target.routingKey);
               writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, groupName: target.groupName ?? null });
               return Response.json({ ok: true, director_label: targetLabel, routing_key: target.routingKey });
             } catch (err) {
@@ -3389,8 +3615,9 @@ export function startConsole(
             const status = url.searchParams.get('status') ?? undefined;
             const role = url.searchParams.get('role') ?? undefined;
             const sourceDirector = url.searchParams.get('source_director') ?? undefined;
+            const groupName = url.searchParams.get('group_name') ?? undefined;
             const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-            return Response.json(listTasks({ status, role, sourceDirector, limit }));
+            return Response.json(listTasks({ status, role, sourceDirector, groupName, limit }));
           }
           if (url.pathname === '/api/tasks/cleanup' && req.method === 'GET') {
             const olderThanDays = Number(url.searchParams.get('older_than_days') ?? 30);
@@ -3557,13 +3784,38 @@ export function startConsole(
             return Response.json({ ok: true, id });
           }
           // Web session API routes
+          // New: POST /api/sessions — create session via SessionManager
+          if (url.pathname === '/api/sessions' && req.method === 'POST') {
+            if (!sessionManager || !sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
+            try {
+              const body = await req.json() as { workspace: string; agent?: string };
+              if (!body.workspace) {
+                return Response.json({ ok: false, error: 'workspace is required' }, { status: 400 });
+              }
+              const wsName = sanitizeWorkspaceName(body.workspace);
+              if (!wsName) {
+                return Response.json({ ok: false, error: 'invalid workspace name' }, { status: 400 });
+              }
+              const entry = await sessionManager.createNewSession(wsName, {
+                feishuChatId: 'web-console',
+                directorAgentName: body.agent,
+              });
+              writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
+              return Response.json({ ok: true, sessionId: entry.sessionId, workspace: wsName });
+            } catch (err) {
+              writeAuditEntry('session.create', false, { error: String(err) });
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+
+          // Legacy: POST /api/web-sessions
           if (url.pathname === '/api/web-sessions' && req.method === 'POST') {
-            if (!pool) return Response.json({ error: 'Pool not available' }, { status: 503 });
+            if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
             try {
               const id = randomUUID().slice(0, 8);
               const routingKey = `web-${id}`;
               const timeStr = new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-              const entry = await pool.getOrCreate(routingKey, {
+              const entry = await sessionManager.getPool().getOrCreate(routingKey, {
                 groupName: `Web Chat ${timeStr}`,
                 feishuChatId: 'web-console',
               });
@@ -3575,23 +3827,45 @@ export function startConsole(
             }
           }
           if (url.pathname.startsWith('/api/web-sessions/') && req.method === 'DELETE') {
-            if (!pool) return Response.json({ error: 'Pool not available' }, { status: 503 });
+            if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
             const routingKey = decodeURIComponent(url.pathname.slice('/api/web-sessions/'.length));
             if (!routingKey) {
               writeAuditEntry('web_session.close', false, { target: null, routingKey: null, error: 'routing key is required' });
               return Response.json({ ok: false, error: 'routing key is required' }, { status: 400 });
             }
             try {
-              const entry = pool.get(routingKey);
+              const entry = sessionManager.get(routingKey);
               if (!entry) {
                 writeAuditEntry('web_session.close', false, { target: routingKey, routingKey, error: 'web session not found' });
                 return Response.json({ ok: false, error: `web session not found: ${routingKey}` }, { status: 404 });
               }
-              await pool.shutdown(routingKey);
+              await sessionManager.getPool().shutdown(routingKey);
               writeAuditEntry('web_session.close', true, { target: entry.bridge.label, routingKey, groupName: entry.groupName });
               return Response.json({ ok: true });
             } catch (err) {
               writeAuditEntry('web_session.close', false, { target: routingKey, routingKey, error: String(err) });
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+          // WP5: POST /api/sessions/{id}/archive — 软/硬两种归档模式
+          // body: { killDirector?: boolean };默认 false = 软归档(仅翻 DB 标志)
+          if (url.pathname.startsWith('/api/sessions/') && url.pathname.endsWith('/archive') && req.method === 'POST') {
+            if (!sessionManager) return Response.json({ ok: false, error: 'Session manager not available' }, { status: 503 });
+            const sessionId = decodeURIComponent(url.pathname.slice('/api/sessions/'.length, -'/archive'.length));
+            if (!sessionId) return Response.json({ ok: false, error: 'session_id is required' }, { status: 400 });
+            let body: { killDirector?: boolean } = {};
+            try { body = (await req.json()) as { killDirector?: boolean } } catch { /* 默认软归档 */ }
+            try {
+              if (body.killDirector) {
+                const ok = await sessionManager.archiveSession(sessionId);
+                writeAuditEntry('session.archive.kill', ok, { target: sessionId });
+                return Response.json({ ok, sessionId, mode: 'archived-and-shutdown' });
+              }
+              const ok = await sessionManager.markArchived(sessionId);
+              writeAuditEntry('session.archive.soft', ok, { target: sessionId });
+              return Response.json({ ok, sessionId, mode: 'archived' });
+            } catch (err) {
+              writeAuditEntry('session.archive', false, { target: sessionId, error: String(err) });
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
           }
@@ -3659,14 +3933,14 @@ export function startConsole(
           } else if (msg.type === 'chat' && msg.text) {
             // Web chat 消息 — route to specific Director if specified
             const targetLabel: string | null = msg.director ?? null;
-            if (targetLabel && pool) {
-              // Route to pool Director via queue (ensures response correlation)
-              const poolStatus = pool.getPoolStatus().find((e) => e.label === targetLabel);
+            if (targetLabel && sessionManager) {
+              // Route to workspace Director via queue (ensures response correlation)
+              const poolStatus = sessionManager.getPoolStatus().find((e) => e.label === targetLabel);
               if (poolStatus) {
                 const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
                 messageWsMap.set(messageId, { ws, createdAt: Date.now() });
                 try {
-                  await pool.send(poolStatus.routingKey, quotedText ? formatWebQuote(quotedText) + msg.text : msg.text, messageId);
+                  await sessionManager.getPool().send(poolStatus.routingKey, quotedText ? formatWebQuote(quotedText) + msg.text : msg.text, messageId);
                 } catch (err) {
                   console.error(`[console] Web chat send to pool "${targetLabel}" failed:`, err);
                 }

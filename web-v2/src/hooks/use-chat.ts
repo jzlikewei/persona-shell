@@ -1,6 +1,5 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { startTransition, useState, useCallback, useEffect, useRef } from 'react'
 import { useApi } from './use-api'
-import { ACTIVE_SESSION_EVENT, storageKeyForDirector } from './use-sessions'
 import { useWebSocket } from './use-websocket'
 import { mergeChatToolCall, type ChatToolCall } from './chat-tools'
 import { uuid } from '@/lib/utils'
@@ -16,7 +15,10 @@ export interface ChatMessage {
   director?: string
   tools?: ChatToolCall[]
   attachments?: string[]
+  model?: string
 }
+
+export type TurnPhase = 'thinking' | 'streaming' | 'tool_running' | null
 
 interface ApiConversationMessage {
   direction: 'in' | 'out'
@@ -24,6 +26,7 @@ interface ApiConversationMessage {
   sessionId?: string
   timestamp?: number
   tools?: ChatToolCall[]
+  model?: string
 }
 
 interface AssistantTurnEvent {
@@ -62,19 +65,25 @@ function mapMessage(message: ApiConversationMessage, index: number): ChatMessage
     timestamp,
     sessionId: message.sessionId,
     tools: message.tools,
+    model: message.model,
   }
 }
 
-export function useChat(director?: string, sessionId?: string, liveSession = false, workspace?: string) {
+export function useChat(sessionId?: string, liveSession = false, workspace?: string) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState('')
   const [streamingTools, setStreamingTools] = useState<ChatToolCall[]>([])
   const [activity, setActivity] = useState<string | null>(null)
+  const [turnPhase, setTurnPhase] = useState<TurnPhase>(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
+  // WP6: limit 状态(默认 100;loadMore 调成 500)。后端 /api/messages 不支持 offset/cursor,
+  // 所以"Load earlier"只能"调大 limit 重拉最后 N 条",不是真分页。
+  const [limit, setLimit] = useState(100)
+  // WP6: hideMessage 客户端过滤,Set 装被隐藏消息 id
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set())
   const { get, post } = useApi()
   const { on, status } = useWebSocket()
-  const directorRef = useRef(director)
   const sessionIdRef = useRef(sessionId)
   const liveSessionRef = useRef(liveSession)
   const requestSeq = useRef(0)
@@ -82,11 +91,26 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   const liveToolsRef = useRef<ChatToolCall[]>([])
   const liveTurnIdRef = useRef<string | null>(null)
   const usingTurnEventsRef = useRef(false)
-  directorRef.current = director
   sessionIdRef.current = sessionId
   liveSessionRef.current = liveSession
 
   const streamTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const turnPhaseTimeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined)
+
+  const clearTurnPhaseTimeout = useCallback(() => {
+    if (turnPhaseTimeoutRef.current) {
+      clearTimeout(turnPhaseTimeoutRef.current)
+      turnPhaseTimeoutRef.current = undefined
+    }
+  }, [])
+
+  const armTurnPhaseTimeout = useCallback(() => {
+    clearTurnPhaseTimeout()
+    turnPhaseTimeoutRef.current = setTimeout(() => {
+      setTurnPhase(null)
+      turnPhaseTimeoutRef.current = undefined
+    }, 600_000)
+  }, [clearTurnPhaseTimeout])
 
   const updateStreaming = useCallback((value: string | ((prev: string) => string)) => {
     setStreaming(prev => {
@@ -98,37 +122,63 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   }, [])
 
   const liveEventMatches = useCallback((data: Record<string, unknown>) => {
-    const eventDirector = data.director as string | undefined
-    if (directorRef.current && eventDirector && eventDirector !== directorRef.current) return false
-
     const eventSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : undefined
     const selectedSessionId = sessionIdRef.current
     if (selectedSessionId && eventSessionId && eventSessionId !== selectedSessionId) {
-      const eventDirector = (data.director as string | undefined) || directorRef.current || 'main'
-      localStorage.setItem(storageKeyForDirector(eventDirector), eventSessionId)
-      window.dispatchEvent(new CustomEvent(ACTIVE_SESSION_EVENT, { detail: { director: eventDirector, id: eventSessionId } }))
-      return true
+      return false
     }
     if (selectedSessionId && !eventSessionId && !liveSessionRef.current) return false
     return true
   }, [])
 
   const loadMessages = useCallback(async () => {
+    if (!sessionId) {
+      setMessages([])
+      setLoading(false)
+      return
+    }
     const seq = requestSeq.current + 1
     requestSeq.current = seq
     setLoading(true)
     try {
-      const params: Record<string, string> = { limit: '100' }
-      if (director) params.director = director
-      if (sessionId) params.sessionId = sessionId
+      const params: Record<string, string> = { limit: String(limit), sessionId }
+      if (workspace) params.workspace = workspace
       const data = await get<ApiConversationMessage[]>('/api/messages', params)
-      if (seq === requestSeq.current) setMessages(data.map(mapMessage).reverse())
+      if (seq === requestSeq.current) {
+        // 大列表 + 同步 markdown 渲染会堵主线程,startTransition 让它走低优先级,
+        // 不阻塞 loading spinner 绘制和后续用户输入(比如再点别的 session)
+        startTransition(() => setMessages(data.map(mapMessage).reverse()))
+      }
     } catch (e) {
       console.error('Failed to load messages:', e)
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [get, director, sessionId])
+  }, [get, sessionId, workspace, limit])
+
+  // WP6: "Load earlier" —— 调大 limit 重新拉窗口
+  const loadMore = useCallback(() => {
+    setLimit(500)
+  }, [])
+
+  // WP6: hideMessage / showMessage / showAllHidden —— 客户端过滤,可逆
+  const hideMessage = useCallback((id: string) => {
+    setHiddenIds(prev => {
+      const next = new Set(prev)
+      next.add(id)
+      return next
+    })
+  }, [])
+  const showMessage = useCallback((id: string) => {
+    setHiddenIds(prev => {
+      const next = new Set(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+  const showAllHidden = useCallback(() => {
+    setHiddenIds(new Set())
+  }, [])
 
   const flushStreaming = useCallback(() => {
     const text = streamingRef.current
@@ -144,7 +194,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
         role: 'assistant' as const,
         content: text,
         timestamp: new Date().toISOString(),
-        director: directorRef.current,
         sessionId: sessionIdRef.current,
       }]
     })
@@ -163,7 +212,9 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     setStreamingTools([])
     updateStreaming('')
     setActivity(null)
-  }, [updateStreaming])
+    setTurnPhase(null)
+    clearTurnPhaseTimeout()
+  }, [updateStreaming, clearTurnPhaseTimeout])
 
   const sendMessage = useCallback(async (content: string) => {
     if (!usingTurnEventsRef.current) flushStreaming()
@@ -172,7 +223,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
-      director,
       sessionId,
     }
     setMessages(prev => [...prev, userMsg])
@@ -181,15 +231,23 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     try {
       await post('/api/send', {
         text: content,
-        director: director || undefined,
+        sessionId: sessionId || undefined,
         workspace: workspace || undefined,
       })
     } catch (e) {
       console.error('Failed to send message:', e)
+      const errMsg: ChatMessage = {
+        id: uuid(),
+        role: 'assistant',
+        content: `[系统] 消息发送失败: ${e instanceof Error ? e.message : String(e)}`,
+        timestamp: new Date().toISOString(),
+        sessionId,
+      }
+      setMessages(prev => [...prev, errMsg])
     } finally {
       setSending(false)
     }
-  }, [post, director, sessionId, workspace, flushStreaming])
+  }, [post, sessionId, workspace, flushStreaming])
 
   useEffect(() => {
     const unsubs = [
@@ -204,6 +262,8 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
           setStreamingTools([])
           updateStreaming('')
           setActivity(null)
+          setTurnPhase('thinking')
+          armTurnPhaseTimeout()
           return
         }
 
@@ -217,17 +277,29 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
 
         if (event.type === 'assistant_delta') {
           updateStreaming(prev => prev + (event.text ?? ''))
+          setTurnPhase('streaming')
+          armTurnPhaseTimeout()
           return
         }
 
-        if (event.type === 'tool_started' || event.type === 'tool_completed') {
+        if (event.type === 'tool_started') {
           if (event.tool) upsertLiveTool(event.tool)
+          setTurnPhase('tool_running')
+          clearTurnPhaseTimeout()
+          return
+        }
+
+        if (event.type === 'tool_completed') {
+          if (event.tool) upsertLiveTool(event.tool)
+          armTurnPhaseTimeout()
           return
         }
 
         if (event.type === 'turn_completed') {
           const text = event.content ?? streamingRef.current
-          const tools = liveToolsRef.current
+          const tools = liveToolsRef.current.map(t =>
+            t.status === 'running' ? { ...t, status: 'completed' as const } : t
+          )
           if (text || tools.length) {
             const msg: ChatMessage = {
               id: event.messageId || event.turnId,
@@ -288,16 +360,16 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       on('chat_reply', (data) => {
         if (usingTurnEventsRef.current) return
         if (!liveEventMatches(data)) return
-        const replyDirector = data.director as string | undefined
         const replySessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : sessionIdRef.current
         const text = data.text as string || ''
-        const liveTools = liveToolsRef.current
+        const liveTools = liveToolsRef.current.map(t =>
+          t.status === 'running' ? { ...t, status: 'completed' as const } : t
+        )
         const msg: ChatMessage = {
           id: data.messageId as string || uuid(),
           role: 'assistant',
           content: text,
           timestamp: new Date().toISOString(),
-          director: replyDirector,
           sessionId: replySessionId,
           tools: liveTools.length ? liveTools : undefined,
           attachments: data.attachments as string[] | undefined,
@@ -315,7 +387,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
       }),
       on('chat_input', (data) => {
         if (!liveEventMatches(data)) return
-        const inputDirector = data.director as string | undefined
         const inputSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : sessionIdRef.current
         const text = data.text as string || ''
         const msg: ChatMessage = {
@@ -323,7 +394,6 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
           role: 'user',
           content: text,
           timestamp: typeof data.timestamp === 'string' ? data.timestamp : new Date().toISOString(),
-          director: inputDirector,
           sessionId: inputSessionId,
         }
         setMessages(prev => {
@@ -337,6 +407,10 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
   }, [clearLiveTurn, liveEventMatches, on, updateStreaming, upsertLiveTool])
 
   useEffect(() => {
+    return () => clearTurnPhaseTimeout()
+  }, [clearTurnPhaseTimeout])
+
+  useEffect(() => {
     if (status === 'connected') loadMessages()
   }, [status, loadMessages])
 
@@ -344,12 +418,14 @@ export function useChat(director?: string, sessionId?: string, liveSession = fal
     setMessages([])
     updateStreaming('')
     setActivity(null)
+    setTurnPhase(null)
+    clearTurnPhaseTimeout()
     liveToolsRef.current = []
     setStreamingTools([])
     liveTurnIdRef.current = null
     usingTurnEventsRef.current = false
     if (status === 'connected') loadMessages()
-  }, [director, sessionId, status, loadMessages, updateStreaming])
+  }, [sessionId, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
 
-  return { messages, streaming, streamingTools, activity, loading, sending, sendMessage, loadMessages }
+  return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden }
 }

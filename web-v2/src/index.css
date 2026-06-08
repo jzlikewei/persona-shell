@@ -127,3 +127,20 @@
     border-radius: 3px;
   }
 }
+
+/* Toast 入场动画(WP1)—— 自实现,避免引入 tailwindcss-animate */
+@keyframes toast-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.toast-enter {
+  animation: toast-slide-in 180ms ease-out;
+}
+

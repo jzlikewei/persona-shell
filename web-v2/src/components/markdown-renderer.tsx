@@ -1,4 +1,4 @@
-import { isValidElement, type ReactNode } from 'react'
+import { isValidElement, memo, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -18,13 +18,22 @@ interface MarkdownRendererProps {
   className?: string
 }
 
-export function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
+// detect:false — 无 language-X className 的 inline code 不再自动猜语言(highlight.js 大头)
+const REHYPE_HIGHLIGHT_OPTIONS = { detect: false, ignoreMissing: true } as const
+
+// WP6: 重新启用 —— document-panel / tasks.tsx 仍依赖此组件。
+// chat.tsx 内联了 MarkdownContent 走 Catppuccin hex 配色 + 文件路径点击,
+// 这里的通用版使用 prose/shadcn 语义色,适合非 chat 场景(tasks 输出、文件预览)。
+export const MarkdownRenderer = memo(function MarkdownRenderer({ content, className }: MarkdownRendererProps) {
   return (
     <div className={className ?? 'prose prose-sm prose-invert max-w-none [&_pre]:bg-background/50 [&_pre]:rounded-md [&_pre]:p-3 [&_pre]:my-2 [&_code]:text-xs'}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={[[rehypeHighlight, REHYPE_HIGHLIGHT_OPTIONS]]}
         components={{
+          a({ href, children, ...props }) {
+            return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>
+          },
           pre({ children }) {
             return <>{children}</>
           },
@@ -47,4 +56,4 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
       </ReactMarkdown>
     </div>
   )
-}
+})

@@ -104,6 +104,35 @@ CREATE TABLE IF NOT EXISTS state (
   value TEXT
 )`;
 
+const CREATE_SESSIONS_TABLE = `
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id       TEXT PRIMARY KEY,
+  workspace        TEXT NOT NULL,
+  session_name     TEXT,
+  archived         INTEGER NOT NULL DEFAULT 0,
+  role             TEXT,
+  cwd              TEXT,
+  created_at       TEXT,
+  -- Legacy columns kept for migration compatibility (not used by new code)
+  message_count    INTEGER NOT NULL DEFAULT 0,
+  first_message_at TEXT,
+  last_message_at  TEXT,
+  alive            INTEGER NOT NULL DEFAULT 0
+)`;
+
+const CREATE_SESSIONS_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace)`;
+
+const CREATE_WORKSPACES_TABLE = `
+CREATE TABLE IF NOT EXISTS workspaces (
+  name               TEXT PRIMARY KEY,
+  default_session_id  TEXT,
+  cwd                TEXT,
+  agent              TEXT,
+  created_at         TEXT NOT NULL,
+  updated_at         TEXT NOT NULL
+)`;
+
 const CREATE_CRON_JOBS_TABLE = `
 CREATE TABLE IF NOT EXISTS cron_jobs (
   id          TEXT PRIMARY KEY,
@@ -168,10 +197,14 @@ function openDb(): Database {
   db.run('PRAGMA journal_mode = WAL');
   db.run(CREATE_TABLE);
   db.run(CREATE_STATE_TABLE);
+  db.run(CREATE_WORKSPACES_TABLE);
+  db.run(CREATE_SESSIONS_TABLE);
+  db.run(CREATE_SESSIONS_INDEX);
   db.run(CREATE_CRON_JOBS_TABLE);
   // Schema 迁移
   migrateCronJobsTable(db);
   migrateTasksTable(db);
+  migrateSessionsTable(db);
   return db;
 }
 
@@ -216,6 +249,25 @@ function migrateTasksTable(db: Database): void {
   }
   if (!existing.has('timeout_ms')) {
     db.run('ALTER TABLE tasks ADD COLUMN timeout_ms INTEGER');
+  }
+}
+
+/** 安全地为 sessions 表添加新列 */
+function migrateSessionsTable(db: Database): void {
+  const columns = db.query("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+  const existing = new Set(columns.map((c) => c.name));
+
+  if (!existing.has('archived')) {
+    db.run("ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!existing.has('role')) {
+    db.run("ALTER TABLE sessions ADD COLUMN role TEXT");
+  }
+  if (!existing.has('cwd')) {
+    db.run("ALTER TABLE sessions ADD COLUMN cwd TEXT");
+  }
+  if (!existing.has('created_at')) {
+    db.run("ALTER TABLE sessions ADD COLUMN created_at TEXT");
   }
 }
 
@@ -280,7 +332,7 @@ export function getTaskTimeouts(ids: string[]): Map<string, number | null> {
   return result;
 }
 
-export function listTasks(filter?: { status?: string; role?: string; sourceDirector?: string; limit?: number }): Task[] {
+export function listTasks(filter?: { status?: string; role?: string; sourceDirector?: string; groupName?: string; limit?: number }): Task[] {
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
 
@@ -295,6 +347,10 @@ export function listTasks(filter?: { status?: string; role?: string; sourceDirec
   if (filter?.sourceDirector) {
     conditions.push('source_director = ?');
     params.push(filter.sourceDirector);
+  }
+  if (filter?.groupName) {
+    conditions.push(`(source_director = ? OR json_extract(extra, '$.parent_group_name') = ?)`);
+    params.push(filter.groupName, filter.groupName);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -564,4 +620,227 @@ export function toggleCronJob(id: string): CronJob | null {
   const lastRunAt = enabled && isDailySchedule(job.schedule) ? now : job.last_run_at;
   getDb().run('UPDATE cron_jobs SET enabled = ?, last_run_at = ?, updated_at = ? WHERE id = ?', [enabled ? 1 : 0, lastRunAt, now, id]);
   return getCronJob(id);
+}
+
+// --- Sessions CRUD ---
+
+export interface SessionRow {
+  session_id: string;
+  workspace: string;
+  session_name: string | null;
+  archived: number;
+  role: string | null;
+  cwd: string | null;
+  created_at: string | null;
+  // Legacy fields (kept for backward compat, not used by new code)
+  message_count: number;
+  first_message_at: string | null;
+  last_message_at: string | null;
+  alive: number;
+}
+
+export interface SessionPatch {
+  messageCountDelta?: number;
+  sessionName?: string | null;
+  firstMessageAt?: string;
+  lastMessageAt?: string;
+}
+
+export function upsertSession(workspace: string, sessionId: string, patch: SessionPatch): void {
+  const now = localNow();
+  const firstAt = patch.firstMessageAt ?? now;
+  const lastAt = patch.lastMessageAt ?? now;
+  const delta = patch.messageCountDelta ?? 0;
+  getDb().run(
+    `INSERT INTO sessions (session_id, workspace, session_name, message_count, first_message_at, last_message_at, alive)
+     VALUES (?, ?, ?, ?, ?, ?, 1)
+     ON CONFLICT(session_id) DO UPDATE SET
+       message_count = message_count + ?,
+       last_message_at = ?,
+       alive = 1`,
+    [sessionId, workspace, patch.sessionName ?? null, delta, firstAt, lastAt, delta, lastAt],
+  );
+}
+
+export function markSessionAlive(sessionId: string, alive: boolean): void {
+  getDb().run('UPDATE sessions SET alive = ? WHERE session_id = ?', [alive ? 1 : 0, sessionId]);
+}
+
+export function setSessionNameInDb(sessionId: string, name: string | null): void {
+  getDb().run('UPDATE sessions SET session_name = ? WHERE session_id = ?', [name, sessionId]);
+}
+
+export function listSessionsFromDb(workspace: string, opts?: { includeArchived?: boolean }): SessionRow[] {
+  // 与 listSessionRecords 行为对齐:默认隐藏 archived=1,供 UI 默认列表使用;
+  // 显式 includeArchived=true 时返回全部(管理面板/审计场景)。
+  if (opts?.includeArchived) {
+    return getDb().query(
+      'SELECT * FROM sessions WHERE workspace = ? ORDER BY last_message_at DESC',
+    ).all(workspace) as SessionRow[];
+  }
+  return getDb().query(
+    'SELECT * FROM sessions WHERE workspace = ? AND archived = 0 ORDER BY last_message_at DESC',
+  ).all(workspace) as SessionRow[];
+}
+
+export interface WorkspaceSessionStats {
+  sessionCount: number;
+  messageCount: number;
+  lastMessageAt: string | null;
+}
+
+export function getWorkspaceSessionStats(workspace: string): WorkspaceSessionStats {
+  const row = getDb().query(
+    `SELECT COUNT(*) AS sessionCount,
+            COALESCE(SUM(message_count), 0) AS messageCount,
+            MAX(last_message_at) AS lastMessageAt
+     FROM sessions WHERE workspace = ? AND archived = 0`,
+  ).get(workspace) as { sessionCount: number; messageCount: number; lastMessageAt: string | null } | null;
+  return {
+    sessionCount: Number(row?.sessionCount ?? 0),
+    messageCount: Number(row?.messageCount ?? 0),
+    lastMessageAt: row?.lastMessageAt ?? null,
+  };
+}
+
+export function hasAnySessionHistory(workspace: string): boolean {
+  const row = getDb().query(
+    'SELECT COUNT(*) AS cnt FROM sessions WHERE workspace = ?',
+  ).get(workspace) as { cnt: number } | null;
+  return (row?.cnt ?? 0) > 0;
+}
+
+export interface ImportedSession {
+  sessionId: string;
+  sessionName?: string;
+  messageCount: number;
+  firstMessageAt?: string;
+  lastMessageAt?: string;
+}
+
+export function importSessionsFromLogs(workspace: string, sessions: ImportedSession[]): void {
+  if (sessions.length === 0) return;
+  const d = getDb();
+  const stmt = d.prepare(
+    `INSERT OR IGNORE INTO sessions (session_id, workspace, session_name, message_count, first_message_at, last_message_at, alive)
+     VALUES (?, ?, ?, ?, ?, ?, 0)`,
+  );
+  const tx = d.transaction(() => {
+    for (const s of sessions) {
+      stmt.run(s.sessionId, workspace, s.sessionName ?? null, s.messageCount, s.firstMessageAt ?? null, s.lastMessageAt ?? null);
+    }
+  });
+  tx();
+}
+
+export function deleteSessionsByWorkspace(workspace: string): number {
+  const result = getDb().run('DELETE FROM sessions WHERE workspace = ?', [workspace]);
+  return result.changes;
+}
+
+// --- Workspaces CRUD ---
+
+export interface Workspace {
+  name: string;
+  default_session_id: string | null;
+  cwd: string | null;
+  agent: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function createWorkspace(name: string, opts?: { cwd?: string; agent?: string; defaultSessionId?: string }): Workspace {
+  const now = localNow();
+  getDb().run(
+    `INSERT INTO workspaces (name, default_session_id, cwd, agent, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET
+       cwd = COALESCE(?, cwd),
+       agent = COALESCE(?, agent),
+       updated_at = ?`,
+    [name, opts?.defaultSessionId ?? null, opts?.cwd ?? null, opts?.agent ?? null, now, now,
+     opts?.cwd ?? null, opts?.agent ?? null, now],
+  );
+  return getWorkspace(name)!;
+}
+
+export function getWorkspace(name: string): Workspace | null {
+  return getDb().query('SELECT * FROM workspaces WHERE name = ?').get(name) as Workspace | null;
+}
+
+export function listWorkspaces(): Workspace[] {
+  return getDb().query('SELECT * FROM workspaces ORDER BY updated_at DESC').all() as Workspace[];
+}
+
+export function updateWorkspace(name: string, patch: Partial<Omit<Workspace, 'name' | 'created_at'>>): Workspace | null {
+  const allowed = ['default_session_id', 'cwd', 'agent'] as const;
+  const sets: string[] = [];
+  const params: SQLQueryBindings[] = [];
+
+  for (const key of allowed) {
+    if (key in patch) {
+      sets.push(`${key} = ?`);
+      params.push((patch as Record<string, unknown>)[key] as SQLQueryBindings);
+    }
+  }
+
+  if (sets.length === 0) return getWorkspace(name);
+
+  sets.push('updated_at = ?');
+  params.push(localNow());
+  params.push(name);
+  getDb().run(`UPDATE workspaces SET ${sets.join(', ')} WHERE name = ?`, params);
+  return getWorkspace(name);
+}
+
+export function setDefaultSession(workspaceName: string, sessionId: string | null): void {
+  getDb().run(
+    'UPDATE workspaces SET default_session_id = ?, updated_at = ? WHERE name = ?',
+    [sessionId, localNow(), workspaceName],
+  );
+}
+
+export function deleteWorkspace(name: string): boolean {
+  const result = getDb().run('DELETE FROM workspaces WHERE name = ?', [name]);
+  return result.changes > 0;
+}
+
+// --- New Session CRUD (workspace-centric) ---
+
+export interface CreateSessionInput {
+  workspace: string;
+  sessionId: string;
+  sessionName?: string;
+  role?: string;
+  cwd?: string;
+}
+
+export function createSessionRecord(input: CreateSessionInput): SessionRow {
+  const now = localNow();
+  getDb().run(
+    `INSERT INTO sessions (session_id, workspace, session_name, archived, role, cwd, created_at, message_count, first_message_at, last_message_at, alive)
+     VALUES (?, ?, ?, 0, ?, ?, ?, 0, ?, ?, 0)`,
+    [input.sessionId, input.workspace, input.sessionName ?? null, input.role ?? null, input.cwd ?? null, now, now, now],
+  );
+  return getSessionRecord(input.sessionId)!;
+}
+
+export function getSessionRecord(sessionId: string): SessionRow | null {
+  return getDb().query('SELECT * FROM sessions WHERE session_id = ?').get(sessionId) as SessionRow | null;
+}
+
+export function archiveSession(sessionId: string): boolean {
+  const result = getDb().run('UPDATE sessions SET archived = 1 WHERE session_id = ?', [sessionId]);
+  return result.changes > 0;
+}
+
+export function listSessionRecords(workspace: string, opts?: { includeArchived?: boolean }): SessionRow[] {
+  if (opts?.includeArchived) {
+    return getDb().query(
+      'SELECT * FROM sessions WHERE workspace = ? ORDER BY created_at DESC',
+    ).all(workspace) as SessionRow[];
+  }
+  return getDb().query(
+    'SELECT * FROM sessions WHERE workspace = ? AND archived = 0 ORDER BY created_at DESC',
+  ).all(workspace) as SessionRow[];
 }

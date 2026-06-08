@@ -305,7 +305,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.agent.mcp_mode === 'mcp') {
       args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath, mcpEnvOverrides));
     }
-    const codexCd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
+    const codexCd = (options.projectDir && existsSync(options.projectDir))
       ? options.projectDir
       : options.personaDir;
     args.push('--cd', codexCd);
@@ -313,7 +313,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
 
   if (options.agent.type === 'kimi') {
     // Kimi print mode implies --yolo; no need to pass it explicitly.
-    const workDir = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
+    const workDir = (options.projectDir && existsSync(options.projectDir))
       ? options.projectDir
       : options.personaDir;
     args.push('--print', '--work-dir', workDir);
@@ -447,8 +447,8 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     return base;
   })();
 
-  // Resolve working directory: projectDir overrides personaDir for background tasks
-  const cwd = (options.mode === 'background' && options.projectDir && existsSync(options.projectDir))
+  // Resolve working directory: projectDir overrides personaDir
+  const cwd = (options.projectDir && existsSync(options.projectDir))
     ? options.projectDir
     : options.personaDir;
 

@@ -8,6 +8,9 @@
     "build": "bun build src/index.ts --outdir dist --target node",
     "check": "tsc --noEmit && sh scripts/check-no-any.sh",
     "smoke:web": "bun scripts/smoke-web-console.ts",
+    "test:api": "bun scripts/test-api-smoke.ts",
+    "test:e2e": "bun scripts/test-e2e-flow.ts",
+    "test:shell": "PERSONA_TEST=1 PERSONA_CONSOLE_PORT=3099 bun src/index.ts",
     "start": "bun dist/index.js",
     "install-service": "sh scripts/install-service.sh",
     "uninstall-service": "sh scripts/uninstall-service.sh"

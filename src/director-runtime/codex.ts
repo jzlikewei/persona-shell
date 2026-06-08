@@ -98,6 +98,7 @@ export class CodexDirectorRuntime {
     const { child } = spawnPersona({
       role: 'director',
       personaDir: this.options.config.persona_dir,
+      projectDir: this.options.agent.cwd,
       agent: this.options.agent,
       mode: 'background',
       prompt: content,

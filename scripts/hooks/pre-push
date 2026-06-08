@@ -1,0 +1,25 @@
+#!/bin/sh
+# persona-shell pre-push hook
+# 触发时机:git push 前
+# 作用:跑 ensure-web-v2-dist —— 若 web-v2/src 比 dist 新,则自动 vite build 验证;失败阻断 push。
+# dist 本身不进 git(.gitignore 屏蔽),这里只是确保"推上去的代码至少能 build 出 dist"。
+#
+# 设计取舍:
+# - 复用启动时 lazy build 的同一段判断逻辑(scripts/ensure-web-v2-dist.ts),不重复造轮子。
+# - 没改 web-v2 的 push 是零开销(脚本会判断不过期就直接返回 0)。
+# - 想跳过(比如紧急情况)可以 git push --no-verify。
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# bun 不在 PATH 时给一个清晰错误,而不是无意义的 "command not found"
+if ! command -v bun >/dev/null 2>&1; then
+  echo "✗ pre-push: 找不到 bun 命令,跳过 web-v2 构建验证" >&2
+  echo "  如果需要禁用此 hook,运行 git push --no-verify" >&2
+  exit 1
+fi
+
+echo "→ pre-push: 校验 web-v2 dist 是否需要重建..."
+bun src/ensure-web-v2-dist.ts
