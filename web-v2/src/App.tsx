@@ -8,8 +8,18 @@ import { TokenDialog } from '@/components/token-dialog'
 import { NotFoundPage } from '@/components/not-found-page'
 import { ToastProvider, Toaster } from '@/components/toast'
 
+const AUTH_TOKEN_STORAGE_KEY = 'auth_token'
+const AUTH_SKIP_STORAGE_KEY = 'persona-shell:v2:auth-skip'
+
+function hasStoredAuth() {
+  return Boolean(
+    localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) ||
+      localStorage.getItem(AUTH_SKIP_STORAGE_KEY)
+  )
+}
+
 export default function App() {
-  const [authenticated, setAuthenticated] = useState(() => !!localStorage.getItem('auth_token'))
+  const [authenticated, setAuthenticated] = useState(hasStoredAuth)
   const handleAuthenticated = useCallback(() => setAuthenticated(true), [])
 
   return (

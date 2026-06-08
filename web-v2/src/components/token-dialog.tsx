@@ -3,6 +3,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { KeyRound } from 'lucide-react'
 
+const AUTH_TOKEN_STORAGE_KEY = 'auth_token'
+const AUTH_SKIP_STORAGE_KEY = 'persona-shell:v2:auth-skip'
+
 export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [token, setToken] = useState('')
   const [visible, setVisible] = useState(false)
@@ -10,8 +13,9 @@ export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }
   const [checking, setChecking] = useState(false)
 
   useEffect(() => {
-    const stored = localStorage.getItem('auth_token')
-    if (stored) {
+    const storedToken = localStorage.getItem(AUTH_TOKEN_STORAGE_KEY)
+    const storedSkip = localStorage.getItem(AUTH_SKIP_STORAGE_KEY)
+    if (storedToken || storedSkip) {
       onAuthenticated()
     } else {
       setVisible(true)
@@ -30,7 +34,13 @@ export function TokenDialog({ onAuthenticated }: { onAuthenticated: () => void }
         setChecking(false)
         return
       }
-      if (authToken) localStorage.setItem('auth_token', authToken)
+      if (authToken) {
+        localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, authToken)
+        localStorage.removeItem(AUTH_SKIP_STORAGE_KEY)
+      } else {
+        localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY)
+        localStorage.setItem(AUTH_SKIP_STORAGE_KEY, '1')
+      }
       setVisible(false)
       onAuthenticated()
     } catch {
