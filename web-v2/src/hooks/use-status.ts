@@ -16,6 +16,7 @@ export interface StatusData {
     // Switch sheet 用来判断"当前"agent / persona。扩展为可选以保 BC。
     directorAgentName?: string
     directorAgentType?: string
+    directorAgentModel?: string | null
     personaRole?: string
   }
   context: {
@@ -41,6 +42,9 @@ export interface StatusData {
     // useSessions 据此判断 live pool session 是否已被归档,
     // 避免归档"当前 pool session"后前端 unshift 又把它拉回列表。
     liveSessionArchived?: boolean
+    directorAgentName?: string | null
+    directorAgentType?: string | null
+    directorAgentModel?: string | null
   }>
 }
 

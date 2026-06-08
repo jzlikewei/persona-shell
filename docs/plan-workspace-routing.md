@@ -13,12 +13,46 @@
 - `src/task/task-store.ts` 已有 `workspaces` / `sessions` 表和相关 CRUD。
 - web-v2 的主要 Chat / Tasks / Files 路径已经优先使用 `workspace` / `sessionId`。
 
-剩余工作不是"替换整套系统",而是把兼容层收窄:
+剩余工作不是"保留兼容层",而是把旧入口和旧字段下线:
 
-1. `DirectorPool` 仍然承担运行时池职责,短期不删除;它应被视为 SessionManager 的底层实现,不是领域事实源。
-2. `directorLabel` / `routingKey` / `source_director` 仍大量存在,需要分类为兼容 API、内部实现或可删除 legacy。
-3. Task 回调和 Cron 调度仍以 `source_director` 为主,尚未完全迁移到 `source_session_id` 或 workspace default session。
-4. console API 仍保留 `director` / `director_label` 参数,需要明确哪些只做兼容入口。
+1. `DirectorPool` 只保留运行时池职责;它是 SessionManager 的底层实现,不是领域事实源。
+2. `directorLabel` / `source_director` 对外入口在本期删除。
+3. `routingKey` 只允许留在 DirectorPool/SessionManager 内部运行时边界。
+4. Task 回调和 Cron 调度迁移到 `source_session_id` / workspace default session;旧字段只用于一次性迁移输入。
+5. console API 删除 `director` / `director_label` 业务入口;runtime debug 若必须保留,单独放到 debug 命名空间。
+
+## Legacy 路由字段盘点（2026-06-08）
+
+### 内部实现，保留在 runtime 边界
+
+| 字段 | 主要位置 | 结论 |
+|------|----------|------|
+| `routingKey` | `src/director-pool.ts`、`src/session-manager.ts`、飞书入口 `src/index.ts` | DirectorPool 的运行时 Map key。只允许出现在 DirectorPool/SessionManager 边界和运行时诊断里,不得作为 API/UI/业务事实源。 |
+| `DIRECTOR_LABEL` | `src/persona-process.ts`、runtime adapter、`src/task/task-mcp-server.ts` | runtime env。后续 task/cron 迁移后,不得再作为回调路由依据。 |
+
+### 本期删除的对外入口
+
+| 字段 | 主要位置 | 结论 |
+|------|----------|------|
+| `director_label` / `director` | `src/console.ts` 的 runtime command、switch agent/persona、queue cancel、shutdown、log/debug API；web-v2 `use-director-actions` | 从业务 API 删除。若仍需 runtime debug,迁到明确的 debug endpoint,不进入主 UI/API。 |
+| `source_director` | `src/console.ts` task/cron API、`src/task/task-store.ts`、`src/task/task-mcp-server.ts` | 新 task/cron 不再写入。旧数据只允许启动时一次性迁移到 `source_session_id` / workspace。运行时不再读取旧字段路由。 |
+| `directorLabel` / `routingKey` in `ConsoleWorkspace` | `src/console.ts`、`docs/plan-session-ssot.md` | 从 ConsoleWorkspace 主模型移除。若保留诊断信息,放入 `runtimeDebug`。 |
+
+### 可删除或降级的 legacy 表面
+
+| 表面 | 主要位置 | 处理方式 |
+|------|----------|----------|
+| Web v1 静态管理面 | `src/public/index.html` / `src/public/css/style.css` / `src/public/js/app.js` | 已删除;`/v1` 返回 410,不保留 fallback。 |
+| web-v2 `directorLabel="main"` 固定控制面 | `web-v2/src/components/*`、`web-v2/src/hooks/use-director-actions.ts` | 从主 UI 移除或迁到 debug 命名空间;Chat 数据路径不得依赖它。 |
+| `routingKeyToLabel()` | `src/director-pool.ts` | 仍用于日志目录/label 生成；等 SessionBridge label 改成 workspace/session 派生值后删除。 |
+
+### 下一步迁移顺序
+
+1. 在 `tasks` / `cron_jobs` 增加 `source_session_id` / `workspace`,并迁移旧 `source_director` 数据。
+2. Task 创建只记录当前 sessionId;MCP 不再用 `DIRECTOR_LABEL` 作为路由来源。
+3. Task 回调按 `source_session_id` 找 live/default session;不再退回 `source_director`。
+4. Cron 调度改为 workspace default session;旧 `source_director` job 迁移后不再读取。
+5. Console/Web API 使用 `sessionId` / workspace;删除 `director_label` 业务 API。
 
 ## 当前代码 vs 目标模型
 
@@ -31,7 +65,7 @@
 | WS 事件 | `{ director: label }` | `{ sessionId: "xxx" }` |
 | 回复路由 | PoolEntry.feishuChatId / web-console 哨兵 | MessagingRouter 基础设施层 |
 | 数据存储 | KV 散落（workspace:config / pool:entries / session:names） | workspaces 表 + sessions 表 |
-| Task 回调 | `source_director: label` | `source_session_id`，归档则 fallback default |
+| Task 回调 | `source_director: label` | `source_session_id`，归档则转入 workspace default |
 | Cron | `source_director: label` | workspace default session |
 
 ## 实施阶段
@@ -144,7 +178,7 @@
 
 2. **Task 回调路由**：
    - `source_director` → `source_session_id`
-   - 回调时找 session，已归档则 fallback workspace default
+   - 回调时找 session，已归档则转入 workspace default
 
 3. **Cron 调度**：
    - `source_director` → `workspace`

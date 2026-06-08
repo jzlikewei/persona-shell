@@ -216,23 +216,48 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     clearTurnPhaseTimeout()
   }, [updateStreaming, clearTurnPhaseTimeout])
 
-  const sendMessage = useCallback(async (content: string) => {
+  const sendMessage = useCallback(async (content: string, onSessionCreated?: (sessionId: string) => void) => {
     if (!usingTurnEventsRef.current) flushStreaming()
+    setSending(true)
+    let targetSessionId = sessionId
+    try {
+      if (!targetSessionId) {
+        const created = await post<{ ok: boolean; sessionId?: string; error?: string }>(
+          '/api/sessions',
+          { workspace: workspace || 'main' }
+        )
+        if (!created.ok || !created.sessionId) {
+          throw new Error(created.error || 'failed to create session')
+        }
+        targetSessionId = created.sessionId
+        onSessionCreated?.(targetSessionId)
+      }
+    } catch (e) {
+      console.error('Failed to create session:', e)
+      setMessages(prev => [...prev, {
+        id: uuid(),
+        role: 'assistant',
+        content: `[系统] 新建 session 失败: ${e instanceof Error ? e.message : String(e)}`,
+        timestamp: new Date().toISOString(),
+        sessionId,
+      }])
+      setSending(false)
+      return
+    }
+
     const userMsg: ChatMessage = {
       id: uuid(),
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
-      sessionId,
+      sessionId: targetSessionId,
     }
     setMessages(prev => [...prev, userMsg])
-    setSending(true)
 
     try {
       await post('/api/send', {
         text: content,
-        sessionId: sessionId || undefined,
-        workspace: workspace || undefined,
+        sessionId: targetSessionId,
       })
     } catch (e) {
       console.error('Failed to send message:', e)
@@ -241,7 +266,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
         role: 'assistant',
         content: `[系统] 消息发送失败: ${e instanceof Error ? e.message : String(e)}`,
         timestamp: new Date().toISOString(),
-        sessionId,
+        sessionId: targetSessionId,
       }
       setMessages(prev => [...prev, errMsg])
     } finally {

@@ -21,7 +21,6 @@ export interface WorkspaceInfo {
   alive?: boolean
   lastActiveAt?: number
   localSessionCount?: number
-  localMessageCount?: number
   lastMessageAt?: string
   hidden?: boolean
 }
@@ -55,7 +54,7 @@ export function useWorkContext() {
     return workspace
   }, [post, loadContext])
 
-  const updateWorkspaceConfig = useCallback(async (name: string, opts: { cwd?: string; agent?: string }) => {
+  const updateWorkspaceConfig = useCallback(async (name: string, opts: { cwd?: string; agent?: string; originalName?: string }) => {
     await request('/api/workspaces/config', {
       method: 'PUT',
       body: JSON.stringify({ name, ...opts }),

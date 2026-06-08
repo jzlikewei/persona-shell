@@ -190,7 +190,16 @@ export function buildCodexMcpOverrideArgs(mcpConfigPath?: string, mcpEnvOverride
   }
 }
 
-function buildCodexTaskCliPrompt(personaDir: string, mcpConfigPath?: string, directorLabel?: string): string {
+function taskRuntimeEnvFrom(optionsEnv?: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of ['DIRECTOR_LABEL', 'PERSONA_SESSION_ID', 'PERSONA_WORKSPACE']) {
+    const value = optionsEnv?.[key];
+    if (value) env[key] = value;
+  }
+  return env;
+}
+
+function buildCodexTaskCliPrompt(personaDir: string, mcpConfigPath?: string, runtimeEnv?: Record<string, string>): string {
   if (!mcpConfigPath || !existsSync(mcpConfigPath)) return '';
 
   try {
@@ -216,7 +225,7 @@ function buildCodexTaskCliPrompt(personaDir: string, mcpConfigPath?: string, dir
           .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
       : [];
     const mergedEnv = Object.fromEntries(envEntries);
-    if (directorLabel) mergedEnv.DIRECTOR_LABEL = directorLabel;
+    Object.assign(mergedEnv, runtimeEnv ?? {});
     if (!mergedEnv.PERSONA_DIR) mergedEnv.PERSONA_DIR = personaDir;
 
     const envPrefix = Object.entries(mergedEnv)
@@ -298,10 +307,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
     if (options.agent.search) {
       args.push('--search');
     }
-    const mcpEnvOverrides: Record<string, string> = {};
-    if (options.env?.DIRECTOR_LABEL) {
-      mcpEnvOverrides.DIRECTOR_LABEL = options.env.DIRECTOR_LABEL;
-    }
+    const mcpEnvOverrides = taskRuntimeEnvFrom(options.env);
     if (options.agent.mcp_mode === 'mcp') {
       args.push(...buildCodexMcpOverrideArgs(options.mcpConfigPath, mcpEnvOverrides));
     }
@@ -418,7 +424,7 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
             [
               readAgentPromptFile(options.agent, options.personaDir),
               options.agent.mcp_mode !== 'mcp' && options.agent.mcp_mode !== 'off'
-                ? buildCodexTaskCliPrompt(options.personaDir, options.mcpConfigPath, options.env?.DIRECTOR_LABEL)
+                ? buildCodexTaskCliPrompt(options.personaDir, options.mcpConfigPath, taskRuntimeEnvFrom(options.env))
                 : '',
             ].filter(Boolean).join('\n\n'),
           );
@@ -488,6 +494,12 @@ export function spawnPersona(options: PersonaSpawnOptions): SpawnResult {
   return { child, args };
 }
 
+/**
+ * @deprecated Legacy Tenbase/Codex prompt concatenation path.
+ * Keep only for provider type `codex` turn-based fallback; the maintained Codex
+ * path injects persona prompts through App Server instructions / native Codex
+ * instruction config.
+ */
 function buildInjectedPrompt(role: string, personaDir: string, taskPrompt: string, agentPrompt = ''): string {
   const sections: string[] = [];
 

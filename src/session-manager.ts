@@ -19,10 +19,11 @@ export interface SessionEntry {
 }
 
 /**
- * SessionManager — manages Session/Agent lifecycle with sessionId as the routing key.
+ * SessionManager is the domain boundary for workspace/session routing.
  *
- * Wraps DirectorPool and delegates lifecycle operations to it.
- * Adds workspace-centric routing on top.
+ * Business code should enter through workspace + sessionId methods here. The
+ * underlying DirectorPool remains a runtime implementation detail for process,
+ * queue, and streaming transport control.
  */
 export class SessionManager extends EventEmitter {
   private pool: DirectorPool;
@@ -54,6 +55,16 @@ export class SessionManager extends EventEmitter {
     return this.toSessionEntry(poolEntry);
   }
 
+  getPoolEntryBySessionId(sessionId: string): PoolEntry | null {
+    const routingKey = this.sessionToRoutingKey.get(sessionId);
+    if (!routingKey) return null;
+    return this.pool.get(routingKey) ?? null;
+  }
+
+  getChatIdBySessionId(sessionId: string): string | null {
+    return this.getPoolEntryBySessionId(sessionId)?.feishuChatId ?? null;
+  }
+
   /** Get or create a session for a workspace */
   async getOrCreateForWorkspace(workspaceName: string, opts: {
     feishuChatId: string;
@@ -65,13 +76,23 @@ export class SessionManager extends EventEmitter {
       ? `web-workspace:${workspaceName}`
       : opts.feishuChatId;
 
-    const entry = await this.pool.getOrCreate(routingKey, {
+    let entry = await this.pool.getOrCreate(routingKey, {
       groupName: opts.groupName ?? workspaceName,
       feishuChatId: opts.feishuChatId,
       directorAgentName: opts.directorAgentName,
     });
 
-    const sessionId = entry.bridge.getStatus().sessionId;
+    let sessionId = entry.bridge.getStatus().sessionId;
+    if (sessionId && getSessionRecord(sessionId)?.archived) {
+      this.sessionToRoutingKey.delete(sessionId);
+      entry = await this.pool.resetSession(routingKey, {
+        groupName: opts.groupName ?? workspaceName,
+        feishuChatId: opts.feishuChatId,
+        directorAgentName: opts.directorAgentName,
+      });
+      sessionId = entry.bridge.getStatus().sessionId;
+    }
+
     if (sessionId) {
       this.registerSession(sessionId, routingKey, workspaceName, entry);
     } else {
@@ -81,6 +102,27 @@ export class SessionManager extends EventEmitter {
     }
 
     return this.toSessionEntry(entry);
+  }
+
+  async sendToWorkspaceDefaultSession(workspaceName: string, opts: {
+    feishuChatId: string;
+    directorAgentName?: string;
+    groupName?: string;
+    text: string;
+    messageId: string;
+    sendOptions?: { webOnly?: boolean };
+  }): Promise<SessionEntry> {
+    const session = await this.getOrCreateForWorkspace(workspaceName, opts);
+    if (session.sessionId) {
+      await this.send(session.sessionId, opts.text, opts.messageId, opts.sendOptions);
+      return session;
+    }
+
+    const routingKey = opts.feishuChatId === 'web-console'
+      ? `web-workspace:${workspaceName}`
+      : opts.feishuChatId;
+    await this.pool.send(routingKey, opts.text, opts.messageId, opts.sendOptions);
+    return session;
   }
 
   /** Create a brand-new session for a workspace (always spawns a new Agent) */
@@ -112,16 +154,23 @@ export class SessionManager extends EventEmitter {
   registerSession(sessionId: string, routingKey: string, workspace: string, entry: PoolEntry): void {
     this.sessionToRoutingKey.set(sessionId, routingKey);
     const existing = getSessionRecord(sessionId);
+    if (existing?.archived) {
+      return;
+    }
     if (!existing) {
       createSessionRecord({
         sessionId,
         workspace,
         role: entry.bridge.getPersonaRole(),
         cwd: entry.bridge.getWorkspaceCwd(),
+        agentName: entry.bridge.getDirectorAgentName(),
+        agentType: entry.bridge.getDirectorAgentType(),
+        model: entry.bridge.getDirectorAgentModel(),
       });
     }
     const ws = this.workspaceRegistry.get(workspace);
-    if (ws && !ws.default_session_id) {
+    const defaultRecord = ws?.default_session_id ? getSessionRecord(ws.default_session_id) : null;
+    if (ws && (!ws.default_session_id || defaultRecord?.archived)) {
       this.workspaceRegistry.setDefaultSession(workspace, sessionId);
     }
   }
@@ -184,7 +233,10 @@ export class SessionManager extends EventEmitter {
     return this.workspaceRegistry.resolveDefaultSession(workspaceName);
   }
 
-  // --- Delegated pool operations (lifecycle management) ---
+  // --- Runtime operations ---
+  // These methods intentionally expose runtime controls for command handlers,
+  // diagnostics, queue cancellation, process recovery, and Web Console runtime
+  // panels. They are not domain sources for workspace/session routing.
 
   async restoreEntries(): Promise<void> {
     await this.pool.restoreEntries();
@@ -269,7 +321,7 @@ export class SessionManager extends EventEmitter {
     return this.pool.detachByLabel(label);
   }
 
-  // --- Lookup helpers (delegated) ---
+  // --- Runtime lookup helpers ---
 
   findByLabel(label: string): PoolEntry | undefined {
     return this.pool.findByLabel(label);
@@ -316,6 +368,7 @@ export class SessionManager extends EventEmitter {
       bridge: poolEntry.bridge,
       queue: poolEntry.queue,
       role: status.personaRole,
+      cwd: poolEntry.bridge.getWorkspaceCwd(),
       lastActiveAt: poolEntry.lastActiveAt,
     };
   }

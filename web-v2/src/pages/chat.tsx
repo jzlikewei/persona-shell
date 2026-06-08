@@ -357,6 +357,7 @@ export function ChatPage() {
     workspaceName,
     activeSession,
     activeSessionInfo,
+    setActiveSession,
   } = useOutletContext<ShellOutletContext>()
   const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
@@ -404,7 +405,7 @@ export function ChatPage() {
     if ((!body && attachments.length === 0) || sending || uploading) return
     const filesText = attachmentText(attachments)
     const content = [body, filesText].filter(Boolean).join('\n\n')
-    sendMessage(content)
+    sendMessage(content, setActiveSession)
     setInput('')
     setAttachments([])
     setUploadError(null)

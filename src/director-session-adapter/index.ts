@@ -50,6 +50,7 @@ export interface DirectorSessionAdapterHooks {
   clearSession(): void;
   getSessionId(): string | null;
   getSessionName(): string | null;
+  getRuntimeEnv(): Record<string, string>;
   setSessionName(sessionName: string | null): void;
   buildSessionName(): string;
   logOutput(line: string): void;

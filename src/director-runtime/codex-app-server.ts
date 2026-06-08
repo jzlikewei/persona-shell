@@ -46,6 +46,7 @@ interface TurnRecord {
 export interface CodexAppServerRuntimeHooks {
   getSessionId(): string | null;
   getSessionName(): string | null;
+  getRuntimeEnv(): Record<string, string>;
   setSessionName(name: string): void;
   buildSessionName(): string;
   persistSession(sessionId: string, sessionName: string | null): void;
@@ -231,6 +232,7 @@ export class CodexAppServerRuntime {
         optOutNotificationMethods: [],
       },
     });
+    this.notify('initialized');
     this.initialized = true;
 
     if (restoredSession) {
@@ -281,7 +283,7 @@ export class CodexAppServerRuntime {
       detached: true,
       stdio: ['pipe', 'pipe', stderrFd],
       cwd: this.runtimeCwd(),
-      env: { ...process.env, DIRECTOR_LABEL: this.options.label, NO_COLOR: '1' },
+      env: { ...process.env, ...this.hooks.getRuntimeEnv(), NO_COLOR: '1' },
     });
     closeSync(stderrFd);
 
@@ -307,7 +309,7 @@ export class CodexAppServerRuntime {
   }
 
   private buildSpawnArgs(): string[] {
-    const mcpEnvOverrides: Record<string, string> = { DIRECTOR_LABEL: this.options.label };
+    const mcpEnvOverrides = this.hooks.getRuntimeEnv();
     return [
       'app-server',
       ...(this.options.agent.mcp_mode === 'mcp'
@@ -337,6 +339,17 @@ export class CodexAppServerRuntime {
       }, timeoutMs);
       this.pending.set(id, { method, resolve, reject, timer });
     });
+  }
+
+  private notify(method: string, params?: unknown): void {
+    const child = this.child;
+    if (!child?.stdin || child.stdin.destroyed) return;
+    const payload = params === undefined
+      ? { jsonrpc: '2.0', method }
+      : { jsonrpc: '2.0', method, params };
+    const line = JSON.stringify(payload);
+    this.hooks.logOutput(line);
+    child.stdin.write(line + '\n');
   }
 
   private handleLine(line: string): void {

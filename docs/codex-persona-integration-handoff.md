@@ -54,6 +54,8 @@ personas/{role}.md                -> developerInstructions
 用户任务                           -> turn/start.input
 ```
 
+注：旧 Tenbase/Codex 方案会在 `codex exec` prompt 前手工拼接 `soul.md`、`meta.md` 和角色文件。该路径已经废弃，仅作为 provider `type: codex` 的 turn-based fallback 兼容，不再维护新能力；主线使用 App Server instructions / Codex 原生 instruction 配置。
+
 ### Pool cwd fallback
 
 `aa55d6d` 把 pool Director 的 Codex cwd 从全局 provider cwd 改为群/话题 workspace 目录：
@@ -328,4 +330,3 @@ bun run check
 - Web Console 会话历史仍可读。
 - `persona_list`、`persona_prompt`、`persona_memory_read/write` 仍可用。
 - 已有 `tasks` 表不需要立即迁移即可继续工作。
-

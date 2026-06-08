@@ -7,7 +7,7 @@
  * 设计取舍:
  * - 不监听 fs 变化(不是 dev server),只在启动时检查一次。
  * - mtime 比对覆盖 src/、index.html、vite.config.ts、package.json 这几类影响构建产物的输入。
- * - build 失败不阻断启动 —— 控制台会报错,/ 路由会返回 500,但 /v1 仍可用。
+ * - build 失败不阻断启动 —— 控制台会报错,/ 路由会返回 500。
  */
 import { existsSync, readdirSync, statSync } from 'fs';
 import { join, resolve } from 'path';
@@ -73,7 +73,7 @@ function runBuild(): Promise<number> {
 
 /**
  * 启动时调用一次。返回 true 表示 dist 可用(可能本来就在,也可能刚 build 完);
- * 返回 false 表示 build 失败 —— 调用方可以决定是否继续启动(默认继续,/ 会 500 但 /v1 仍可用)。
+ * 返回 false 表示 build 失败 —— 调用方可以决定是否继续启动(默认继续,/ 会 500)。
  */
 export async function ensureWebV2Dist(): Promise<boolean> {
   const reason = needsRebuild();
@@ -87,7 +87,7 @@ export async function ensureWebV2Dist(): Promise<boolean> {
     console.log(`[ensure-web-v2-dist] ✓ web-v2 构建完成 (${elapsed}s)`);
     return true;
   }
-  console.error(`[ensure-web-v2-dist] ✗ web-v2 构建失败 (exit=${code}, ${elapsed}s) — / 会返回 500,可临时访问 /v1`);
+  console.error(`[ensure-web-v2-dist] ✗ web-v2 构建失败 (exit=${code}, ${elapsed}s) — / 会返回 500`);
   return false;
 }
 

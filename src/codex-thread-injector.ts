@@ -85,6 +85,7 @@ export class CodexThreadInjector {
           optOutNotificationMethods: [],
         },
       }, timeoutMs);
+      this.notify('initialized');
 
       await this.request('thread/resume', {
         threadId,
@@ -172,6 +173,15 @@ export class CodexThreadInjector {
       }, timeoutMs);
       this.pending.set(id, { method, resolve, reject, timer });
     });
+  }
+
+  private notify(method: string, params?: unknown): void {
+    const child = this.child;
+    if (!child?.stdin || child.stdin.destroyed) return;
+    const payload = params === undefined
+      ? { jsonrpc: '2.0', method }
+      : { jsonrpc: '2.0', method, params };
+    child.stdin.write(JSON.stringify(payload) + '\n');
   }
 
   private waitForTurnCompletion(threadId: string, timeoutMs: number): Promise<CodexThreadInjectionResult> {

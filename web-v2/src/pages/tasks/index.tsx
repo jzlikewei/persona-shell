@@ -24,7 +24,8 @@ export interface Task {
   cost_usd?: number | null
   result_file?: string | null
   error?: string | null
-  source_director?: string | null
+  source_session_id?: string | null
+  workspace?: string | null
   extra?: Record<string, unknown> | null
 }
 
@@ -130,7 +131,7 @@ export function TasksPage() {
 
   const fetchTasks = useCallback((silent = false) => {
     const params: Record<string, string> = { limit: '200' }
-    if (scope === 'workspace') params.group_name = workspaceName || 'main'
+    if (scope === 'workspace') params.workspace = workspaceName || 'main'
     if (!silent) { setLoading(true); setError(null) }
     get<Task[]>('/api/tasks', params)
       .then(list => {

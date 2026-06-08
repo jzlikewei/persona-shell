@@ -143,9 +143,18 @@ Cron job 使用所属 workspace 的 default session 执行。
 | workspace name | Workspace | 唯一 key，对外 |
 | sessionId | Session | 消息路由标识，对外 |
 
-### 当前兼容层
+### DirectorPool 边界
 
-上述模型是目标领域模型。当前代码已经引入 `WorkspaceRegistry` 和 `SessionManager`,但仍保留 `DirectorPool` 作为运行时池和 legacy 路由兼容层。
+上述模型是当前领域模型。`WorkspaceRegistry` 和 `SessionManager` 是 workspace/session 的事实源和业务入口。
+
+`DirectorPool` 只负责运行时实现细节:
+
+- 活跃 Agent 进程池
+- 消息队列和队列取消
+- streaming reply transport
+- 进程恢复、detach、shutdown、idle 回收
+
+业务代码不能把 `DirectorPool` 作为 workspace/session 的事实源。需要发消息、创建 session、解析 workspace default session 时,必须先通过 `SessionManager`。
 
 需要区分三类标识:
 
@@ -153,11 +162,11 @@ Cron job 使用所属 workspace 的 default session 执行。
 |--------|----------|----------|
 | workspace name | 对外 workspace key | 保留 |
 | sessionId | 对外 session 路由 key | 保留并优先使用 |
-| routingKey | DirectorPool 内部 key,可能来自 chatId / web id | 降为内部实现细节 |
-| directorLabel | 旧 UI / API / 日志兼容字段 | 逐步移出领域模型 |
-| source_director | Task/Cron 旧回调路由字段 | 迁移到 source session 或 workspace default session |
+| routingKey | DirectorPool 内部 key,可能来自 chatId / web id | 只允许留在 runtime/control 边界 |
+| directorLabel | 运行时诊断、队列控制、日志定位字段 | 不作为业务路由参数 |
+| source_director | Task/Cron 旧回调路由字段 | 仅作为一次性迁移输入 |
 
-因此,看到 `directorLabel` / `routingKey` 不代表目标模型变化,只说明当前仍处于兼容迁移期。
+因此,看到 `directorLabel` / `routingKey` 只能说明代码正在做运行时控制或诊断,不能说明业务模型发生变化。
 
 ## 系统概览
 
@@ -236,12 +245,13 @@ SessionBridge (session-bridge.ts)
   │
   └─ DirectorSessionAdapter (director-session-adapter/)
       ├─ claude.ts — stream-json 双向协议
-      ├─ codex.ts — turn-based 协议
+      ├─ codex.ts — legacy turn-based 协议（兼容回退）
       ├─ kimi.ts — stream-json stdin/stdout 协议
       │
       └─ DirectorRuntime (director-runtime/)
           ├─ claude.ts — daemon 进程（FIFO named pipe，长驻）
-          ├─ codex.ts — 按 turn spawn（短驻，session resume）
+          ├─ codex-app-server.ts — App Server JSON-RPC runtime（主线）
+          ├─ codex.ts — legacy turn-based runtime（兼容回退）
           └─ kimi.ts — daemon 进程（stdin/stdout pipe，长驻）
 ```
 
@@ -279,14 +289,14 @@ SessionBridge (session-bridge.ts)
 
 封装协议差异：
 - **Claude**：管理 FIFO 读写句柄，逐行解析 stream-json（init → assistant → result），提取响应文本和 metrics（token 用量、cost）
-- **Codex**：每轮 spawn `codex exec --resume`，解析 stdout 直到 `turn_completed`
+- **Codex**：主线使用 App Server JSON-RPC runtime，解析 `agentMessage/delta`、tool items 和 `turn/completed`；`codex exec --resume` 仅保留 legacy turn-based fallback
 - **Kimi**：维护 stdin/stdout pipe，逐行解析 print stream-json（assistant → tool → assistant），不含 tool_calls 的 assistant message 触发 turn complete
 
 ### DirectorRuntime
 
 封装进程生命周期：
 - **Claude**：spawn detached daemon、PID 文件追踪、FIFO 创建/清理、SIGINT/SIGTERM
-- **Codex**：按需 spawn、session 文件管理、无常驻进程
+- **Codex**：Director 持有长驻 `codex app-server --listen stdio://`；后台任务默认临时 App Server runtime，`codex exec` 仅作为 provider `type: codex` 的兼容回退
 - **Kimi**：spawn detached daemon、stdin/stdout pipe、SIGINT/SIGTERM、resume hint 捕获
 
 ### 通信协议
@@ -305,7 +315,13 @@ SessionBridge (session-bridge.ts)
 {"type":"result","subtype":"success","cost":"...","duration":"..."}
 ```
 
-**Codex**（per-turn spawn）：
+**Codex**（App Server JSON-RPC）：
+```text
+initialize -> thread/start(baseInstructions, developerInstructions, cwd, sandbox)
+turn/start(input) -> item/agentMessage/delta ... -> turn/completed
+```
+
+Legacy turn-based fallback：
 ```bash
 codex exec --resume SESSION_ID "用户消息" \
   --full-auto --sandbox danger-full-access
@@ -442,11 +458,9 @@ Agent 和 Session 不感知消息来源。回复路由由基础设施层处理�
 | workspace name | Workspace | 唯一 key，对外 |
 | sessionId | Session | 消息路由标识，对外 |
 
-## DirectorPool → SessionManager
+## SessionManager / DirectorPool
 
-> 代码中现为 DirectorPool，目标重构为 SessionManager。
-
-管理活跃 Session/Agent 实例的生命周期：
+SessionManager 是 workspace/session 的业务边界,管理活跃 Session/Agent 实例的生命周期:
 
 ```
 SessionManager
@@ -463,6 +477,8 @@ SessionManager
 ```
 
 entries 持久化到 SQLite，Shell 重启后恢复。
+
+DirectorPool 位于 SessionManager 下方,只保存 runtime entry、queue、streaming handle 和进程恢复信息。它的 `routingKey` 是内部 Map key,不是 API/UI/Task/Cron 的路由标识。
 
 ## FLUSH 机制
 
@@ -515,12 +531,13 @@ Shell 重启：
 
 ## Web Console
 
-`localhost:3000` 嵌入 shell 进程运行。当前有两套入口:
+`localhost:3000` 嵌入 shell 进程运行。当前只保留 web-v2:
 
 | 入口 | 定位 |
 |------|------|
 | `/` | web-v2 主界面,聚焦 Chat / Tasks / Files |
-| `/v1` | legacy 管理面 fallback,覆盖 Runtime / Automations / Persona / Logs / Settings 等深度能力 |
+
+旧 Web v1 已下线,不再提供 fallback。Runtime / Automations / Persona / Logs / Settings 等能力若有真实使用场景,后续只迁移到 web-v2;没有真实使用场景的旧入口直接删除。
 
 Web 前端通过 WebSocket 推送两类数据：
 
@@ -550,7 +567,7 @@ Web 前端通过 WebSocket 推送两类数据：
 | 通讯层 | MessagingClient 接口 + MessagingRouter |
 | 飞书接入 | Lark SDK，WebSocket 长连接 |
 | Workspace 管理 | WorkspaceRegistry |
-| Session/Agent 编排 | SessionManager（原 DirectorPool）→ SessionBridge → Adapter → Runtime 三层 |
+| Session/Agent 编排 | SessionManager → DirectorPool(runtime) → SessionBridge → Adapter → Runtime |
 | 后台任务 | task-runner + task-store (SQLite)，MCP 派发 |
 | Cron | scheduler + task-store (SQLite) |
 | Web 控制台 | Bun.serve + WebSocket |

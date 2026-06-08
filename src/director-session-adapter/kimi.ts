@@ -22,7 +22,7 @@ export class KimiSessionAdapter implements DirectorSessionAdapter {
       mcpConfigPath: join(this.options.config.persona_dir, '.mcp.json'),
       sessionId: restored.sessionId ?? undefined,
       stderrPath: join(this.options.logDir, `${this.options.label}-kimi-stderr.log`),
-      env: { DIRECTOR_LABEL: this.options.label },
+      env: this.hooks.getRuntimeEnv(),
     });
 
     if (pid) {

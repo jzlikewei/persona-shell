@@ -11,7 +11,7 @@
 | Web 控制台 | ✅ | — | ✅ | localhost:3000，浏览器直接对话 |
 | **会话管理** | | | | |
 | 流式响应 | ✅ | ✅ | ⚠️ | Claude 实时 chunk 推送；飞书用 interactive 卡片原地更新；Kimi 整段 JSON 行 |
-| 上下文保持 | ✅ daemon | ✅ resume | ✅ daemon | Claude/Kimi 常驻进程；Codex 按 turn spawn |
+| 上下文保持 | ✅ daemon | ✅ app-server thread | ✅ daemon | Claude/Kimi 常驻进程；Codex 主线使用 App Server thread，`codex exec` 仅兼容回退 |
 | FLUSH（上下文刷新） | ✅ | ✅ | ✅ | checkpoint → kill → bootstrap |
 | /esc（取消请求） | ✅ | ✅ | ✅ | SIGINT 中断当前处理 |
 | **多角色系统** | | | | |
@@ -182,9 +182,9 @@ agents:
 
 | | Claude Code | Codex | Kimi |
 |---|---|---|---|
-| 进程模型 | 常驻 daemon（FIFO pipe） | Director 默认 app-server/live；后台任务按 turn spawn | 常驻 daemon（stdin/stdout pipe） |
+| 进程模型 | 常驻 daemon（FIFO pipe） | Director 默认 app-server/live；后台任务默认临时 App Server，`codex exec` 仅兼容回退 | 常驻 daemon（stdin/stdout pipe） |
 | 流式响应 | ✅ 实时推送 chunk | ✅ interactive 卡片原地更新 | ⚠️ 整段 JSON 行返回 |
-| 身份注入 | `--append-system-prompt-file` `--plugin-dir` | Prompt 拼接 + `.agents/skills` | `--agent-file` `--skills-dir` |
+| 身份注入 | `--append-system-prompt-file` `--plugin-dir` | App Server instructions / Codex 原生 instructions + `.agents/skills` | `--agent-file` `--skills-dir` |
 | 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |
 | 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 | 需要 Kimi 模型能力的场景 |
 
@@ -246,7 +246,16 @@ tools: [Read, Grep, Glob, Bash]
 
 ### 技能（Skills）
 
-技能定义在 `~/.persona/skills/` 下。Claude Code 通过 `.claude/skills` 软链接发现，Codex 通过 `.agents/skills` 软链接发现，Kimi 通过 `--skills-dir` 加载。Director 可以通过 `/skill-name` 调用技能。
+技能定义在 `~/.persona/skills/` 下。Claude Code 通过 `.claude/skills` 软链接发现，Codex / Codex App Server 通过 `.agents/skills` 软链接发现，Kimi 通过 `--skills-dir` 加载。Director 可以通过 `/skill-name` 调用技能。
+
+当前 Persona Shell 不给 `codex app-server` 传独立的 `--skills-dir` 参数；统一约定是让身份仓库维护软链接：
+
+```bash
+~/.persona/.agents/skills -> ../skills
+~/.persona/.claude/skills -> ../skills
+```
+
+如果新增或修改 Skill 后当前 Codex Director 没有看到变化，用 flush 开新线程重新加载身份资产。
 
 ```
 ~/.persona/skills/
@@ -299,14 +308,13 @@ cd ~/.persona && claude /soul-crafting
 
 `http://localhost:3000`，仅监听 localhost。
 
-当前有两套 Web 界面:
+当前只保留 web-v2:
 
 | 入口 | 定位 |
 |------|------|
 | `/` | web-v2 主入口,聚焦 Chat / Tasks / Files |
-| `/v1` | legacy Web Console fallback,覆盖 Runtime / Automations / Persona / Logs / Settings 等更完整管理面 |
 
-web-v2 不再承诺覆盖 legacy 的所有功能。Runtime、Cron 全量编辑、Persona 文档管理、日志和设置等深水区能力,仍以 `/v1` 为准。
+旧 Web v1 已下线,不再作为 Runtime、Cron、Persona、Logs 或 Settings 的 fallback。未迁移到 web-v2 的能力当前没有 Web 入口;等真实使用场景明确后再进入 web-v2。
 
 ### web-v2 面板功能
 
@@ -314,11 +322,6 @@ web-v2 不再承诺覆盖 legacy 的所有功能。Runtime、Cron 全量编辑�
 - **Tasks**：后台任务列表、状态、日志、结果和 Cron 摘要
 - **Files**：outbox、attachments、task results 等安全产物浏览和预览
 
-### legacy `/v1` 面板功能
-
-- **状态面板**：Director PID、token 用量、消息队列长度、运行时间
-- **会话查看**：完整对话历史，支持实时流式显示 Director 的回复
-- **DirectorPool**：查看所有群聊 Director 的状态（活跃/空闲/已退出）
 - **任务管理**：查看后台任务列表、状态、产出；取消运行中的任务
 - **Cron 管理**：查看/创建/删除/启停 Cron 定时任务
 - **操作按钮**：Flush / Clear / Esc / Restart（等同飞书 Slash 命令）
@@ -332,18 +335,24 @@ curl -X POST localhost:3000/api/clear
 curl -X POST localhost:3000/api/esc
 curl -X POST localhost:3000/api/session-restart
 
-# 向 Director 发消息（绕过飞书）
+# 向指定 session 发消息（绕过飞书）
 curl -X POST localhost:3000/api/send \
-  -H "Content-Type: application/json" -d '{"text":"你好"}'
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"main-xxxx","text":"你好"}'
+
+# 创建 workspace 会话
+curl -X POST localhost:3000/api/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"workspace":"main"}'
 
 # 任务
 curl localhost:3000/api/tasks
 curl localhost:3000/api/tasks/{id}
 curl -X POST localhost:3000/api/tasks/{id}/cancel
 
-# 会话（支持 ?director={label} 查询群 Director）
-curl localhost:3000/api/messages?limit=100
-curl localhost:3000/api/sessions
+# 会话
+curl 'localhost:3000/api/messages?sessionId=main-xxxx&limit=100'
+curl 'localhost:3000/api/sessions?workspace=main'
 ```
 
 ## 记忆系统

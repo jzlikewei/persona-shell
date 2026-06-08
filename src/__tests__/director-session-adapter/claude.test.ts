@@ -24,6 +24,7 @@ function buildCapturingHooks() {
     clearSession: () => {},
     getSessionId: () => null,
     getSessionName: () => null,
+    getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test' }),
     setSessionName: () => {},
     buildSessionName: () => 'test-session',
     logOutput: (line) => loggedLines.push(line),

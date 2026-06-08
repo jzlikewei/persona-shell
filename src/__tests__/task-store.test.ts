@@ -1,4 +1,5 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import {
@@ -91,15 +92,19 @@ describe('task-store', () => {
       expect(task.extra).toEqual(extra);
     });
 
-    test('stores source_director', () => {
+    test('stores source_session_id and workspace while ignoring source_director', () => {
       const task = createTask({
         type: 'role',
         role: 'explorer',
         description: 'test',
         prompt: 'prompt',
-        source_director: 'main',
+        source_session_id: 'session-1',
+        workspace: 'project-a',
+        source_director: 'legacy-label',
       });
-      expect(task.source_director).toBe('main');
+      expect(task.source_session_id).toBe('session-1');
+      expect(task.workspace).toBe('project-a');
+      expect(task.source_director).toBeNull();
     });
 
     test('source_director defaults to null', () => {
@@ -110,6 +115,46 @@ describe('task-store', () => {
         prompt: 'prompt',
       });
       expect(task.source_director).toBeNull();
+    });
+
+    test('migrates legacy source_director into workspace and clears the old field', () => {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+      const stateDir = join(TEST_DIR, 'state');
+      mkdirSync(stateDir, { recursive: true });
+      const db = new Database(join(stateDir, 'tasks.db'));
+      db.run(`
+        CREATE TABLE tasks (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          role TEXT NOT NULL,
+          agent TEXT,
+          description TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          completed_at TEXT,
+          result_file TEXT,
+          error TEXT,
+          retry_count INTEGER DEFAULT 0,
+          max_retry INTEGER DEFAULT 3,
+          cost_usd REAL,
+          duration_ms INTEGER,
+          extra TEXT,
+          source_director TEXT
+        )
+      `);
+      db.run(`
+        INSERT INTO tasks (id, type, role, description, prompt, status, created_at, source_director)
+        VALUES ('T-legacy', 'role', 'explorer', 'legacy', 'prompt', 'completed', '2026-06-08T00:00:00.000+08:00', 'project-a')
+      `);
+      db.close();
+
+      initTaskStore(TEST_DIR);
+
+      const task = getTask('T-legacy');
+      expect(task?.workspace).toBe('project-a');
+      expect(task?.source_director).toBeNull();
     });
 
     test('trims agent whitespace', () => {
@@ -214,6 +259,14 @@ describe('task-store', () => {
       createTask({ type: 'role', role: 'executor', description: 'd', prompt: 'p' });
       updateTask(t1.id, { status: 'running' });
       const result = listTasks({ status: 'running', role: 'explorer' });
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(t1.id);
+    });
+
+    test('filters by workspace', () => {
+      const t1 = createTask({ type: 'role', role: 'explorer', description: 'd', prompt: 'p', workspace: 'project-a' });
+      createTask({ type: 'role', role: 'explorer', description: 'd', prompt: 'p', workspace: 'project-b' });
+      const result = listTasks({ workspace: 'project-a' });
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe(t1.id);
     });
@@ -383,6 +436,55 @@ describe('task-store', () => {
         enabled: false,
       });
       expect(job.enabled).toBe(false);
+    });
+
+    test('stores workspace and ignores source_director for new cron jobs', () => {
+      const job = createCronJob({
+        name: 'test',
+        role: 'r',
+        description: 'd',
+        prompt: 'p',
+        schedule: '* * * * *',
+        workspace: 'project-a',
+        source_director: 'legacy-label',
+      });
+      expect(job.workspace).toBe('project-a');
+      expect(job.source_director).toBeNull();
+    });
+
+    test('migrates legacy cron source_director into workspace and clears the old field', () => {
+      rmSync(TEST_DIR, { recursive: true, force: true });
+      const stateDir = join(TEST_DIR, 'state');
+      mkdirSync(stateDir, { recursive: true });
+      const db = new Database(join(stateDir, 'tasks.db'));
+      db.run(`
+        CREATE TABLE cron_jobs (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          role TEXT NOT NULL,
+          agent TEXT,
+          description TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          schedule TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          last_run_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          action_type TEXT NOT NULL DEFAULT 'spawn_role',
+          source_director TEXT
+        )
+      `);
+      db.run(`
+        INSERT INTO cron_jobs (id, name, role, description, prompt, schedule, created_at, updated_at, source_director)
+        VALUES ('C-legacy', 'legacy', 'explorer', 'legacy', 'prompt', 'every 60m', '2026-06-08T00:00:00.000+08:00', '2026-06-08T00:00:00.000+08:00', 'project-a')
+      `);
+      db.close();
+
+      initTaskStore(TEST_DIR);
+
+      const job = getCronJob('C-legacy');
+      expect(job?.workspace).toBe('project-a');
+      expect(job?.source_director).toBeNull();
     });
 
     test('action_type defaults to spawn_role', () => {

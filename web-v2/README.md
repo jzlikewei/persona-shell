@@ -6,7 +6,7 @@ web-v2 是 persona-shell 的 React 工作台。它聚焦三件事:
 - Tasks:查看后台任务、日志、结果和 Cron 摘要。
 - Files:浏览 outbox、attachments、task results 等安全产物。
 
-legacy Web Console 仍保留在 `/v1`。它覆盖 Runtime、Automations、Persona、Logs、Settings 等更完整的管理面。web-v2 当前不是 legacy UI 的全量替代品。
+web-v2 是 persona-shell 唯一保留的 Web UI。旧 Web v1 已下线,不再作为 fallback 或深度管理入口维护。
 
 ## 启动方式
 
@@ -78,7 +78,7 @@ web-v2/
 
 web-v2 的原则是只保留真实接线的功能。没有稳定后端支撑、没有近期使用场景或只是占位的能力,不应该进入 v2。
 
-当前暂不覆盖:
+当前不提供 Web 入口:
 
 - Runtime 全量管理面
 - Automations 全量创建/编辑/审计视图
@@ -86,4 +86,4 @@ web-v2 的原则是只保留真实接线的功能。没有稳定后端支撑、�
 - Logs / Observability / Settings 全量页面
 - 真正的消息 cursor/offset 分页
 
-这些能力要么保留在 `/v1`,要么等使用场景明确后再迁移。
+这些能力等使用场景明确后再迁移到 web-v2;没有真实使用场景的旧功能直接删除,不保留隐藏入口。

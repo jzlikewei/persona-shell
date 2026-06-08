@@ -2,10 +2,10 @@
 
 ## Role
 
-web-v2 is the React workbench for day-to-day persona-shell use. It is intentionally narrower than the legacy Web Console:
+web-v2 is the React workbench for day-to-day persona-shell use and the only supported Web UI:
 
-- web-v2: Chat, Tasks, Files.
-- legacy `/v1`: Runtime, Automations, Persona, Logs, Settings, and deep diagnostics.
+- supported today: Chat, Tasks, Files.
+- not exposed on the Web today: full Runtime management, Automations editing, Persona editors, Logs, Settings, and deep diagnostics.
 
 The backend remains the single source of truth. web-v2 does not read local files, logs, or SQLite directly.
 
@@ -75,7 +75,7 @@ web-v2 uses the backend API surface exposed by `src/console.ts`.
 | Files | `GET /api/files`, `GET /api/files/preview`, `GET /api/files/download` |
 | Cron summary | `GET /api/cron-jobs` |
 
-Some endpoints still accept legacy `director` or `director_label` parameters. v2 should prefer `workspace` and `sessionId` when the backend supports them.
+web-v2 must use `workspace` and `sessionId` for business routing. Runtime-only endpoints may still expose diagnostic labels, but those labels are not workspace/session facts.
 
 ## WebSocket Events
 
@@ -97,7 +97,7 @@ Important events:
 - Do not add placeholder actions. Every visible control must call a real API or be removed.
 - Keep cards for repeated items or dialogs only; page layout should stay workbench-like and dense.
 - Prefer icons for tool actions and keep button labels short.
-- Do not turn web-v2 into a full clone of `/v1` unless a feature has a real current workflow.
+- Do not add old v1-only features unless a feature has a real current workflow and lands as a wired v2 feature.
 
 ## Verification
 

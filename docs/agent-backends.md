@@ -144,14 +144,16 @@ agents:
       transport: stdio
 ```
 
-如需退回 turn-based 模式，将 provider `type` 改为 `codex` 即可。
+如需退回 legacy turn-based 模式，将 provider `type` 改为 `codex` 即可。该路径仅作为兼容回退保留，不再作为新功能维护目标。
 
 ### 身份注入
 
-Codex 不支持 Claude Code 的 `--plugin-dir` / `--append-system-prompt-file` 参数。身份注入通过以下方式：
+Codex 不支持 Claude Code 的 `--plugin-dir` / `--append-system-prompt-file` 参数。当前主线身份注入走 Codex App Server instructions：
 
-- `--cd ~/.persona`：设置工作目录，Codex 会自动读取 CLAUDE.md
-- **Prompt 拼接**（turn-based 后台任务）：`buildInjectedPrompt()` 将 `soul.md`、`meta.md`、`personas/{role}.md` 的内容拼接到 prompt 前部
+- **App Server instructions**：`thread/start` 注入 `baseInstructions` / `developerInstructions`，其中 `soul.md`、`meta.md`、`personas/{role}.md` 和 provider `system_prompt_file` 在启动线程时进入 Codex instruction 层。
+- **Skills 发现**：当前不通过 `codex app-server` 启动参数显式传 `skills_dir`。Codex App Server 依赖 Codex 原生 skill 发现机制读取当前工作根下的 `.agents/skills`，因此身份仓库必须保持 `~/.persona/.agents/skills -> ~/.persona/skills` 软链接。Workspace Director 若配置了 provider/workspace `cwd`，仍建议保留该软链接作为 Persona skills 的统一入口；变更 skill 后用 flush 开新线程加载最新资产。
+- **Codex 原生配置**：Codex harness 支持通过 `model_instructions_file` / `developer_instructions` 等配置读取 instruction 内容；Persona Shell 的主线不再依赖 Tenbase 时代的手工拼 prompt 方案。
+- **Legacy Prompt 拼接（废弃）**：`buildInjectedPrompt()` 仅用于 provider `type: codex` 的 turn-based `codex exec` 兼容回退，不再扩展新能力。
 - **任务系统**：默认通过 task CLI 用法注入 prompt，避免 Codex 将 MCP tools schema 带进 Responses 请求；需要原生 MCP 时可设 `mcp_mode: mcp`
 
 ### 进程启动
@@ -252,6 +254,7 @@ agents:
 | 流式输出 | 监听 `item/agentMessage/delta` 并转发为 bridge `chunk` |
 | 多 turn | 首轮 `thread/start`，后续普通消息走 `turn/start` |
 | active turn 追加用户消息 | 当前 turn 未完成时，新用户消息走 `turn/steer` + `expectedTurnId` |
+| Skills | 通过 Codex 原生 `.agents/skills` 发现；初始化脚本维护 `~/.persona/.agents/skills -> ../skills` |
 | session 持久化 | 保存 `thread.id`，重启 runtime 后优先 `thread/resume` |
 | Codex app 可见性 | thread 写入 `threadSource=user`，并将 `sessionName` 同步到 `thread/name/set` |
 | 中断 | 优先 `turn/interrupt`，失败时退回进程信号 |
@@ -299,7 +302,7 @@ Prompt 分层约定：
 
 | 层级 | Persona 文件 | Codex 字段 |
 |------|--------------|------------|
-| 全局身份 | `soul.md` + `meta.md` | `baseInstructions` |
+| 全局身份 | `soul.md` + `meta.md` | `baseInstructions` / Codex `instructions` |
 | Agent 覆盖 | provider `system_prompt_file` | `developerInstructions` |
 | 人格角色 | `personas/{role}.md` | `developerInstructions` |
 | 用户任务 | 飞书/Web/Codex app 输入 | `turn/start.input` |
@@ -407,10 +410,10 @@ Shell 与 Kimi 通过 stdin/stdout 交换 JSON 行。
 
 | 维度 | Claude Code | Codex | Kimi |
 |------|------------|-------|------|
-| 运行模式 | 长驻 daemon | App Server（Director）/ 按 turn spawn（任务） | 长驻 daemon |
-| 通信方式 | FIFO named pipe | JSON-RPC stdio（Director）/ stdout pipe（任务） | stdin/stdout pipe |
-| 流式输出 | ✅ stream_event | ✅ agentMessage/delta（Director）/ ❌（任务） | ⚠️ 整段 JSON 行（非 token 级） |
-| 身份注入 | CLI 参数（plugin-dir 等） | Prompt 拼接 + --cd | `--agent-file` + `--skills-dir` |
+| 运行模式 | 长驻 daemon | App Server（Director）/ 临时 App Server（任务）/ legacy `codex exec` fallback | 长驻 daemon |
+| 通信方式 | FIFO named pipe | JSON-RPC stdio；legacy fallback 为 stdout pipe | stdin/stdout pipe |
+| 流式输出 | ✅ stream_event | ✅ agentMessage/delta（Director）；任务以 `turn/completed` 收尾 | ⚠️ 整段 JSON 行（非 token 级） |
+| 身份注入 | CLI 参数（plugin-dir 等） | App Server instructions / Codex 原生 instructions | `--agent-file` + `--skills-dir` |
 | MCP 注入 | --mcp-config 文件 | -c TOML 覆盖 | `--mcp-config-file` |
 | 会话恢复 | --resume session_id | exec resume thread_id | `--session` |
 | Skills/Plugins | ✅ `.claude/skills` | ✅ `.agents/skills` | ✅ `--skills-dir` |

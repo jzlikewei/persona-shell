@@ -157,33 +157,30 @@ export function Sidebar({
                         <SidebarItem
                           name={workspace.name}
                           path={workspace.cwd || workspace.path}
-                          meta={workspace.source === 'main' ? 'root' : (workspace.localSessionCount ?? 0) > 0 ? String(workspace.localMessageCount ?? 0) : undefined}
+                          meta={workspace.source === 'main' ? 'root' : (workspace.localSessionCount ?? 0) > 0 ? `${workspace.localSessionCount} sessions` : undefined}
                           status={isActive ? 'live' : 'off'}
-                          badges={[
-                            workspace.source,
-                            ...((workspace.localMessageCount ?? 0) > 0 ? [`${workspace.localMessageCount} msg`] : []),
-                          ]}
+                          badges={[workspace.source]}
                           active={isActive}
                           onClick={() => setActiveWorkspace(workspace.id)}
                         />
-                        {workspace.source !== 'main' && (
-                          <>
-                            <button
-                              onClick={() => onConfigureWorkspace(workspace)}
-                              className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]"
-                              title="配置 workspace"
-                              aria-label="Configure workspace"
-                            >
-                              <Settings2 className="size-3" />
-                            </button>
-                            <button
-                              onClick={() => onCreateSession(workspace)}
-                              className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]"
-                              title={`在 ${workspace.name} 下新建 session`}
-                              aria-label="New session"
-                            >
-                              <Plus className="size-3" />
-                            </button>
+                        <>
+                          <button
+                            onClick={() => onConfigureWorkspace(workspace)}
+                            className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]"
+                            title="配置 workspace"
+                            aria-label="Configure workspace"
+                          >
+                            <Settings2 className="size-3" />
+                          </button>
+                          <button
+                            onClick={() => onCreateSession(workspace)}
+                            className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]"
+                            title={`在 ${workspace.name} 下新建 session`}
+                            aria-label="New session"
+                          >
+                            <Plus className="size-3" />
+                          </button>
+                          {workspace.source !== 'main' && (
                             <button
                               onClick={() => onToggleHidden(workspace)}
                               className="shrink-0 rounded p-1 text-[#7f849c] hover:bg-[#313244] hover:text-[#f38ba8]"
@@ -192,8 +189,8 @@ export function Sidebar({
                             >
                               <EyeOff className="size-3" />
                             </button>
-                          </>
-                        )}
+                          )}
+                        </>
                       </div>
                       {/* sessions 嵌在它所属的 workspace 下方,以左侧 border 表达从属关系 */}
                       {isActive && sessions.length > 0 && (
@@ -217,9 +214,6 @@ export function Sidebar({
                                 >
                                   <span className={cn('size-[6px] shrink-0 rounded-full', session.alive ? 'bg-[#a6e3a1]' : 'bg-[#6c7086]')} />
                                   <span className="min-w-0 flex-1 truncate">{session.label || session.name || session.id}</span>
-                                  {(session.messageCount ?? 0) > 0 && (
-                                    <span className="shrink-0 text-[10px] text-[#6c7086]">{session.messageCount}</span>
-                                  )}
                                 </button>
                                 <button
                                   onClick={(e) => { e.stopPropagation(); onArchiveSession(session) }}

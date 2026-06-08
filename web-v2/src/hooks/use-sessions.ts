@@ -10,9 +10,11 @@ interface ApiSession {
   sessionId: string
   sessionName?: string
   alive?: boolean
-  messageCount: number
   firstMessageAt?: string
   lastMessageAt?: string
+  agentName?: string
+  agentType?: string
+  model?: string
 }
 
 export interface Session {
@@ -21,10 +23,12 @@ export interface Session {
   label: string
   alive: boolean
   status: 'live' | 'sleep'
-  messageCount: number
   firstMessageAt?: string
   lastActiveAt?: string
   queueLength?: number
+  agentName?: string
+  agentType?: string
+  model?: string
 }
 
 function shortId(id: string) {
@@ -48,6 +52,9 @@ export function useSessions(workspace?: string) {
   const livePoolEntry = wsKey === 'main' ? undefined : status?.pool?.find(entry => entry.groupName === wsKey || entry.label === wsKey)
   const liveSessionId = wsKey === 'main' ? status?.system?.sessionId : livePoolEntry?.sessionId ?? undefined
   const liveSessionName = wsKey === 'main' ? status?.system?.sessionName : livePoolEntry?.sessionName ?? undefined
+  const liveAgentName = wsKey === 'main' ? status?.system?.directorAgentName : livePoolEntry?.directorAgentName ?? undefined
+  const liveAgentType = wsKey === 'main' ? status?.system?.directorAgentType : livePoolEntry?.directorAgentType ?? undefined
+  const liveModel = wsKey === 'main' ? status?.system?.directorAgentModel : livePoolEntry?.directorAgentModel ?? undefined
   // Pool 路径也要查 archived。后端在 pool entry 上返回 liveSessionArchived,
   // 跟 system 路径对齐。否则归档"当前 pool session"后,前端 unshift 又把它拉回 UI。
   const liveSessionArchived = wsKey === 'main'
@@ -87,10 +94,12 @@ export function useSessions(workspace?: string) {
           label: session.sessionName || shortId(session.sessionId),
           alive: live,
           status: live ? 'live' as const : 'sleep' as const,
-          messageCount: session.messageCount,
           firstMessageAt: session.firstMessageAt,
           lastActiveAt: session.lastMessageAt,
           queueLength: 0,
+          agentName: session.agentName ?? (live ? liveAgentName ?? undefined : undefined),
+          agentType: session.agentType ?? (live ? liveAgentType ?? undefined : undefined),
+          model: session.model ?? (live ? liveModel ?? undefined : undefined),
         }
       })
 
@@ -104,10 +113,12 @@ export function useSessions(workspace?: string) {
           label: liveSessionName || shortId(liveSessionId),
           alive: true,
           status: 'live',
-          messageCount: 0,
           firstMessageAt: undefined,
           lastActiveAt: new Date().toISOString(),
           queueLength: 0,
+          agentName: liveAgentName ?? undefined,
+          agentType: liveAgentType ?? undefined,
+          model: liveModel ?? undefined,
         })
       }
 
@@ -118,6 +129,7 @@ export function useSessions(workspace?: string) {
           ? liveSessionId
           : mapped[0]?.id
         if (preferred) localStorage.setItem(storageKey, preferred)
+        else localStorage.removeItem(storageKey)
         return preferred
       })
     } catch (e) {
@@ -125,7 +137,7 @@ export function useSessions(workspace?: string) {
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [wsKey, get, liveSessionId, liveSessionName, liveSessionArchived, storageKey])
+  }, [wsKey, get, liveSessionId, liveSessionName, liveSessionArchived, liveAgentName, liveAgentType, liveModel, storageKey])
 
   useEffect(() => {
     loadSessions()

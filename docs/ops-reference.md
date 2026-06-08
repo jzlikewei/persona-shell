@@ -60,7 +60,7 @@ launchctl stop  com.persona.shell                                # 停止
 | Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`；app-server stderr 在 `codex-app-server-stderr.log` |
 | Pool Director（Kimi） | `logs/{label}-kimi-stderr.log`；stdin/stdout pipe，无 FIFO |
 
-当前默认 Codex pool Director 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`，后台任务继续使用 `codex exec`。
+当前默认 Codex pool Director 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`；`codex-app-server` provider 的后台任务使用临时 App Server task runtime，`codex exec` 仅作为 provider `type: codex` 的 legacy turn-based 回退。
 
 ## Web 控制台
 
@@ -69,12 +69,13 @@ launchctl stop  com.persona.shell                                # 停止
 | 入口 | 用途 |
 |------|------|
 | `/` | web-v2 主界面:Chat / Tasks / Files |
-| `/v1` | legacy 管理面:Runtime / Automations / Persona / Logs / Settings / 深度诊断 |
+
+旧 Web v1 已下线。Runtime、队列、Cron、日志、配置等未迁移到 web-v2 的能力当前没有 Web fallback;优先通过 CLI、日志和后端 API 排障。
 
 排障优先级:
 
 1. 日常会话、任务结果、文件产物:先看 `/`。
-2. 运行时状态、队列、Cron、日志、配置、安全审批:看 `/v1`。
+2. 运行时状态、队列、Cron、日志、配置、安全审批:走 CLI、日志或后端 API;确认有高频场景后再迁移到 web-v2。
 
 ## 生命周期操作对比
 

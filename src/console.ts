@@ -1,17 +1,17 @@
 import { createHash, randomUUID } from 'crypto';
 import { spawn } from 'child_process';
-import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, readdirSync, openSync, readSync, closeSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, readdirSync, openSync, readSync, closeSync, mkdirSync, renameSync } from 'fs';
 import { join, resolve, extname, relative, dirname, normalize, basename } from 'path';
 import { homedir } from 'os';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
-import { parseConversationLog, parseConversationLogFiles, parseSessionsFiles, parseTaskLog } from './log-parser.js';
+import { parseConversationLog, parseConversationLogFiles, parseTaskLog } from './log-parser.js';
 
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
@@ -19,6 +19,7 @@ import { getLogDir } from './logger.js';
 import { resolveCronMessage } from './prompt-loader.js';
 import { extractBashCommand, isBashAction, runBashAction } from './task/shell-bash.js';
 import { CodexThreadInjector } from './codex-thread-injector.js';
+import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace } from './console-api.js';
 
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
 interface WsConnection {
@@ -47,7 +48,6 @@ interface ConsoleWorkspace {
   alive?: boolean;
   lastActiveAt?: number;
   localSessionCount?: number;
-  localMessageCount?: number;
   lastMessageAt?: string;
   hidden?: boolean;
 }
@@ -64,6 +64,18 @@ function getWorkspaceConfig(name: string): WorkspaceConfig | null {
 
 function setWorkspaceConfig(name: string, wsConfig: WorkspaceConfig): void {
   setState(`workspace:config:${name}`, wsConfig);
+}
+
+function canonicalConsoleWorkspaceName(name: string | null | undefined): string | null {
+  if (typeof name !== 'string') return null;
+  const sanitized = name
+    .trim()
+    .replace(/[\/\\:*?"<>|\u0000-\u001f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80)
+    .trim();
+  if (!sanitized) return null;
+  return sanitized === 'Main director' ? 'main' : sanitized;
 }
 
 // Shell 启动时间，用于计算 uptime
@@ -132,6 +144,36 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
     ? deduplicateLogs(listDirectorLogs(groupName, 'output'), listDirectorLogs(closedLabel, 'output'))
     : listDirectorLogs(closedLabel, 'output');
   return { label: closedLabel, inputLogs, outputLogs };
+}
+
+function resolveSessionLogTarget(sessionId: string, director: SessionBridge, sessionMgr?: SessionManager): DirectorLogTarget {
+  const liveSession = sessionMgr?.getSession(sessionId);
+  if (liveSession) {
+    const inputLogs = listDirectorLogs(liveSession.workspace, 'input');
+    const outputLogs = listDirectorLogs(liveSession.workspace, 'output');
+    return {
+      label: liveSession.workspace,
+      inputLogs: inputLogs.length ? inputLogs : [liveSession.bridge.inputLogPath],
+      outputLogs: outputLogs.length ? outputLogs : [liveSession.bridge.outputLogPath],
+    };
+  }
+
+  const record = getSessionRecord(sessionId);
+  const workspace = record?.workspace ?? (director.getStatus().sessionId === sessionId ? 'main' : '');
+  if (workspace) {
+    const inputLogs = listDirectorLogs(workspace, 'input');
+    const outputLogs = listDirectorLogs(workspace, 'output');
+    if (workspace === 'main') {
+      return {
+        label: 'main',
+        inputLogs: inputLogs.length ? inputLogs : [director.inputLogPath],
+        outputLogs: outputLogs.length ? outputLogs : [director.outputLogPath],
+      };
+    }
+    return { label: workspace, inputLogs, outputLogs };
+  }
+
+  return { label: 'unknown', inputLogs: [], outputLogs: [] };
 }
 
 /** Merge log file lists from new (workspace name) and old (label) paths, deduplicating by basename. */
@@ -222,12 +264,9 @@ export function startConsole(
 ): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
-  // V2 (React/Vite) is the default frontend, served at /
-  // V1 (legacy static) is kept at /v1 as a fallback
+  // V2 (React/Vite) is the only frontend, served at /.
   const v2Dir = resolve(import.meta.dir, '..', 'web-v2', 'dist');
   const v2HtmlPath = join(v2Dir, 'index.html');
-  const v1Dir = join(import.meta.dir, 'public');
-  const v1HtmlPath = join(v1Dir, 'index.html');
 
   // Web chat 消息处理
   const chatHandlers: Array<(msg: IncomingMessage) => Promise<void> | void> = [];
@@ -359,16 +398,18 @@ export function startConsole(
       if (stats.sessionCount === 0) return {};
       return {
         localSessionCount: stats.sessionCount,
-        localMessageCount: stats.messageCount,
         lastMessageAt: stats.lastMessageAt ?? undefined,
       };
     };
 
+    const mainWorkspaceConfig = getWorkspaceConfig('main');
     const workspaces: ConsoleWorkspace[] = [{
       id: 'main',
       name: 'Main director',
       path: join(config.director.persona_dir, 'daily', 'state.md'),
       source: 'main',
+      cwd: mainWorkspaceConfig?.cwd,
+      agent: mainWorkspaceConfig?.agent,
       directorLabel: 'main',
       sessionId: mainStatus.sessionId ?? null,
       sessionName: mainStatus.sessionName ?? null,
@@ -415,8 +456,8 @@ export function startConsole(
     workspaces.sort((a, b) => {
       if (a.id === 'main') return -1;
       if (b.id === 'main') return 1;
-      const aHistory = (a.localMessageCount ?? 0) > 0 ? 1 : 0;
-      const bHistory = (b.localMessageCount ?? 0) > 0 ? 1 : 0;
+      const aHistory = (a.localSessionCount ?? 0) > 0 ? 1 : 0;
+      const bHistory = (b.localSessionCount ?? 0) > 0 ? 1 : 0;
       if (aHistory !== bHistory) return bHistory - aHistory;
       const aActive = a.alive ? 1 : 0;
       const bActive = b.alive ? 1 : 0;
@@ -569,6 +610,7 @@ export function startConsole(
           liveSessionArchived: ds.sessionId ? getSessionRecord(ds.sessionId)?.archived === 1 : false,
           directorAgentName: ds.agentName,
           directorAgentType: ds.agentType,
+          directorAgentModel: ds.agentModel,
           personaRole: ds.personaRole,
           restartCount: ds.restartCount,
           recentRestartCount: ds.recentRestartCount,
@@ -629,6 +671,7 @@ export function startConsole(
             : false,
           directorAgentName: entry.directorAgentName ?? entry.directorStatus?.agentName ?? null,
           directorAgentType: entry.directorStatus?.agentType ?? null,
+          directorAgentModel: entry.directorStatus?.agentModel ?? null,
           personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
           restartCount: entry.directorStatus?.restartCount ?? 0,
           recentRestartCount: entry.directorStatus?.recentRestartCount ?? 0,
@@ -1775,7 +1818,10 @@ export function startConsole(
         prompt: job.prompt,
         max_retry: job.max_retry,
         timeout_ms: job.timeout_ms ?? undefined,
-        source_director: job.source_director ?? undefined,
+        workspace: job.workspace || 'main',
+        source_session_id: (job.workspace || 'main') === 'main'
+          ? director.getStatus().sessionId ?? undefined
+          : sessionManager?.resolveDefaultSession(job.workspace || 'main') ?? undefined,
         extra: { cronJobId: job.id, manualRun: true },
       });
       runCreatedTask(task);
@@ -1789,18 +1835,19 @@ export function startConsole(
       d.setDate(d.getDate() - 1);
       const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
       const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
-      const source = job.source_director;
-      if (source && source !== 'main' && sessionManager) {
-        const entry = sessionManager.findByLabel(source);
+      const workspace = job.workspace || 'main';
+      const sessionId = workspace === 'main' ? director.getStatus().sessionId : sessionManager?.resolveDefaultSession(workspace);
+      if (sessionId && sessionId !== director.getStatus().sessionId && sessionManager) {
+        const entry = sessionManager.getPoolEntryBySessionId(sessionId);
         if (entry) {
           await entry.bridge.sendCronMessage(msg);
           updateCronJob(job.id, { last_run_at: localNow() });
-          return { ok: true, action_type: actionType, director: source };
+          return { ok: true, action_type: actionType, workspace, sessionId };
         }
       }
       await director.sendCronMessage(msg);
       updateCronJob(job.id, { last_run_at: localNow() });
-      return { ok: true, action_type: actionType, director: 'main' };
+      return { ok: true, action_type: actionType, workspace: 'main', sessionId: director.getStatus().sessionId };
     }
 
     if (actionType === 'shell_action') {
@@ -2307,6 +2354,28 @@ export function startConsole(
     };
   }
 
+  function normalizeTaskSource(input: CreateTaskInput): CreateTaskInput {
+    const workspace = input.workspace?.trim() || (input.source_session_id ? getSessionRecord(input.source_session_id)?.workspace : undefined) || 'main';
+    const sourceSessionId = input.source_session_id?.trim()
+      || (workspace === 'main'
+        ? director.getStatus().sessionId ?? undefined
+        : sessionManager?.resolveDefaultSession(workspace) ?? undefined);
+    return {
+      ...input,
+      workspace,
+      source_session_id: sourceSessionId,
+      source_director: undefined,
+    };
+  }
+
+  function normalizeCronSource(input: CreateCronJobInput): CreateCronJobInput {
+    return {
+      ...input,
+      workspace: input.workspace?.trim() || 'main',
+      source_director: undefined,
+    };
+  }
+
   let webClientRef: MessagingClient | null = null;
 
   const server = Bun.serve({
@@ -2315,14 +2384,14 @@ export function startConsole(
     async fetch(req, server) {
       const url = new URL(req.url);
 
-      // Skip auth for static assets and HTML pages
-      // V2 (default at /): /, /assets/*, /favicon.svg
-      // V1 (kept at /v1): /v1, /v1/css/*, /v1/js/*
+      if (url.pathname === '/v1' || url.pathname.startsWith('/v1/')) {
+        return new Response('Legacy Web v1 has been removed. Use / for web-v2.', { status: 410 });
+      }
+
+      // Skip auth for static assets and HTML pages.
       const isStaticAsset = url.pathname === '/' ||
         url.pathname.startsWith('/assets/') ||
-        url.pathname === '/favicon.svg' ||
-        url.pathname === '/v1' ||
-        url.pathname.startsWith('/v1/');
+        url.pathname === '/favicon.svg';
       if (!isStaticAsset) {
         // Token 认证检查
         const authErr = checkAuth(req);
@@ -2346,48 +2415,12 @@ export function startConsole(
           } catch (err) {
             return new Response(
               'web-v2 dist 不存在，请先构建：cd web-v2 && bun run build\n' +
-              '（启动时通常会自动构建；若反复失败可先用 /v1 访问旧前端）',
+              '（启动时通常会自动构建；若反复失败请先修复 web-v2 构建错误）',
               { status: 500 },
             );
           }
         }
         default: {
-          // V1 legacy frontend — kept at /v1 as fallback
-          if (url.pathname === '/v1') {
-            // 重定向带上尾斜杠 — V1 HTML 用相对路径 href="css/style.css",
-            // 不带尾斜杠时浏览器会解析成 /css/style.css(404)。
-            return Response.redirect(`${url.origin}/v1/${url.search}`, 308);
-          }
-          if (url.pathname === '/v1/') {
-            try {
-              const html = readFileSync(v1HtmlPath, 'utf-8');
-              return new Response(html, {
-                headers: { 'Content-Type': 'text/html; charset=utf-8' },
-              });
-            } catch {
-              return new Response('v1 index.html not found', { status: 500 });
-            }
-          }
-          if (url.pathname.startsWith('/v1/css/') || url.pathname.startsWith('/v1/js/')) {
-            // strip the '/v1' prefix, then resolve under publicDir
-            const filePath = resolve(v1Dir, url.pathname.slice(4));
-            if (!filePath.startsWith(v1Dir + '/')) {
-              return new Response('Forbidden', { status: 403 });
-            }
-            if (existsSync(filePath) && statSync(filePath).isFile()) {
-              const ext = extname(filePath).toLowerCase();
-              const mimeTypes: Record<string, string> = {
-                '.css': 'text/css; charset=utf-8',
-                '.js': 'application/javascript; charset=utf-8',
-              };
-              const content = readFileSync(filePath, 'utf-8');
-              return new Response(content, {
-                headers: { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' },
-              });
-            }
-            return new Response('Not found', { status: 404 });
-          }
-
           // V2 static assets (/assets/* and root-level files like favicon.svg)
           // SPA fallback: every non-/api, non-/ws path under root returns index.html
           // so the React Router (client-side) can handle it after hydration.
@@ -2523,28 +2556,30 @@ export function startConsole(
 
           // POST /api/debug/simulate-task-completion — notify a Director as if a task finished
           if (url.pathname === '/api/debug/simulate-task-completion' && req.method === 'POST') {
-            const body = await req.json() as { task_id?: string; success?: boolean; director_label?: string; reply_to_message_id?: string };
+            const body = await req.json() as { task_id?: string; success?: boolean; source_session_id?: string; reply_to_message_id?: string };
             const taskId = (body.task_id ?? '').trim();
             if (!taskId) return Response.json({ ok: false, error: 'task_id is required' }, { status: 400 });
             const task = getTask(taskId);
             if (!task) return Response.json({ ok: false, error: `task not found: ${taskId}` }, { status: 404 });
             const success = body.success !== false;
-            const directorLabel = (body.director_label || task.source_director || 'main').trim() || 'main';
+            const sourceSessionId = (body.source_session_id || task.source_session_id || director.getStatus().sessionId || '').trim();
             const replyToMessageId = body.reply_to_message_id?.trim() || undefined;
-            if (directorLabel === 'main') {
+            if (!sourceSessionId) return Response.json({ ok: false, error: 'source_session_id is required' }, { status: 400 });
+            if (sourceSessionId === director.getStatus().sessionId) {
               await director.notifyTaskDone(taskId, success, replyToMessageId);
             } else {
               if (!sessionManager) return Response.json({ ok: false, error: 'Session manager is unavailable' }, { status: 503 });
-              if (!sessionManager.findByLabel(directorLabel)) return Response.json({ ok: false, error: `Director not found: ${directorLabel}` }, { status: 404 });
-              await sessionManager.notifyTaskDone(directorLabel, taskId, success, replyToMessageId);
+              const entry = sessionManager.getPoolEntryBySessionId(sourceSessionId);
+              if (!entry) return Response.json({ ok: false, error: `Session not found: ${sourceSessionId}` }, { status: 404 });
+              await entry.bridge.notifyTaskDone(taskId, success, replyToMessageId);
             }
             writeAuditEntry('debug.simulate_task_completion', true, {
               target: taskId,
               success,
-              directorLabel,
+              sourceSessionId,
               replyToMessageId: replyToMessageId ?? null,
             });
-            return Response.json({ ok: true, task_id: taskId, success, director_label: directorLabel });
+            return Response.json({ ok: true, task_id: taskId, success, source_session_id: sourceSessionId });
           }
 
           // GET /api/audit-log — recent Web Console mutation operations
@@ -2824,83 +2859,61 @@ export function startConsole(
             });
           }
 
-          // POST /api/send — send arbitrary text to Director (bypass messaging)
-          if (url.pathname === '/api/send' && req.method === 'POST') {
-            const body = await req.json() as { text: string; sessionId?: string; director?: string; workspace?: string };
-            if (!body.text) return Response.json({ ok: false, message: 'text is required' }, { status: 400 });
-
-            // Intercept /shell-restart commands
-            const trimmed = body.text.trim();
-            if (trimmed === '/shell-restart' || trimmed === '/restart-shell' ||
-                trimmed === '/shell-restart --force' || trimmed === '/restart-shell --force') {
-              const isForce = trimmed.includes('--force');
-              const runningTasks = taskRunner?.getRunningTasks() ?? [];
-              if (runningTasks.length > 0 && !isForce) {
-                const listed = runningTasks.slice(0, 5).join(', ');
-                const overflow = runningTasks.length > 5 ? ` ...+${runningTasks.length - 5}` : '';
-                return Response.json({
-                  ok: false,
-                  message: `Shell 重启已拒绝：当前有 ${runningTasks.length} 个后台任务仍在运行：${listed}${overflow}。请使用 /shell-restart --force 强制重启。`,
-                });
-              }
-              broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId('main'), messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
-              writeAuditEntry('shell.restart', true, { source: 'web', force: isForce });
-              if (sessionManager) await sessionManager.detachAll();
-              await director.shutdown();
-              setTimeout(() => process.exit(0), 500);
-              return Response.json({ ok: true, message: 'restarting' });
+          // POST /api/shell/restart — restart the whole shell process.
+          if (url.pathname === '/api/shell/restart' && req.method === 'POST') {
+            const body = await req.json().catch(() => ({})) as { force?: boolean };
+            const isForce = body.force === true;
+            const runningTasks = taskRunner?.getRunningTasks() ?? [];
+            if (runningTasks.length > 0 && !isForce) {
+              const listed = runningTasks.slice(0, 5).join(', ');
+              const overflow = runningTasks.length > 5 ? ` ...+${runningTasks.length - 5}` : '';
+              return Response.json({
+                ok: false,
+                message: `Shell 重启已拒绝：当前有 ${runningTasks.length} 个后台任务仍在运行：${listed}${overflow}。请设置 force=true 强制重启。`,
+              });
             }
+            broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId('main'), messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
+            writeAuditEntry('shell.restart', true, { source: 'web', force: isForce });
+            if (sessionManager) await sessionManager.detachAll();
+            await director.shutdown();
+            setTimeout(() => process.exit(0), 500);
+            return Response.json({ ok: true, message: 'restarting' });
+          }
 
+          // POST /api/send — send text to a session.
+          if (url.pathname === '/api/send' && req.method === 'POST') {
+            const payload = parseSendApiPayload(await req.json());
+            if (!payload.ok) return Response.json({ ok: false, message: payload.message }, { status: payload.status });
+            const { sessionId, text } = payload;
             try {
-              // New path: route by sessionId (preferred)
-              if (body.sessionId && sessionManager) {
-                const session = sessionManager.getSession(body.sessionId);
-                if (session) {
-                  await sessionManager.send(body.sessionId, body.text, `web-${randomUUID()}`, { webOnly: true });
-                  writeAuditEntry('director.send', true, { target: body.sessionId, bytes: Buffer.byteLength(body.text, 'utf-8') });
-                  return Response.json({ ok: true, message: 'sent to session', sessionId: body.sessionId });
+              const mainSessionId = director.getStatus().sessionId;
+              if (mainSessionId && sessionId === mainSessionId) {
+                const messageId = `web-${randomUUID()}`;
+                const webClient = clients.values().next().value;
+                if (webClient) messageWsMap.set(messageId, { ws: webClient, createdAt: Date.now() });
+                for (const handler of chatHandlers) {
+                  await handler({
+                    text,
+                    messageId,
+                    chatId: 'web-console',
+                    chatType: 'p2p',
+                  });
                 }
-                writeAuditEntry('director.send', false, { target: body.sessionId, reason: 'session not found' });
-                return Response.json({ ok: false, message: `Session "${body.sessionId}" not found` }, { status: 404 });
+                writeAuditEntry('director.send', true, { target: sessionId, director: 'main', bytes: Buffer.byteLength(text, 'utf-8') });
+                return Response.json({ ok: true, message: 'sent to main session', sessionId });
               }
 
-              // Legacy path: resolve by director/workspace name → SessionManager
-              const targetName = (body.director && body.director !== 'main')
-                ? body.director
-                : (body.workspace && body.workspace !== 'main')
-                  ? body.workspace
-                  : undefined;
-
-              if (targetName && sessionManager && sessionManager) {
-                let sessionEntry = sessionManager.getPool().resolveWorkspace(targetName);
-
-                if (!sessionEntry && body.workspace) {
-                  const wsName = sanitizeWorkspaceName(body.workspace);
-                  if (wsName) {
-                    const result = await sessionManager.getOrCreateForWorkspace(wsName, {
-                      feishuChatId: 'web-console',
-                      directorAgentName: getWorkspaceConfig(wsName)?.agent,
-                    });
-                    sessionEntry = sessionManager.get(`web-workspace:${wsName}`);
-                    if (sessionEntry) {
-                      broadcastWs(JSON.stringify({ type: 'context_update', workspace: wsName, label: sessionEntry.bridge.label }));
-                    }
-                  }
-                }
-
-                if (sessionEntry) {
-                  await sessionManager.getPool().send(sessionEntry.routingKey, body.text, `web-${randomUUID()}`, { webOnly: true });
-                  writeAuditEntry('director.send', true, { target: targetName, bytes: Buffer.byteLength(body.text, 'utf-8') });
-                  return Response.json({ ok: true, message: 'sent to workspace director', label: sessionEntry.bridge.label });
-                }
-                writeAuditEntry('director.send', false, { target: targetName, reason: 'workspace not found' });
-                return Response.json({ ok: false, message: `Workspace "${targetName}" not found` }, { status: 404 });
+              if (!sessionManager) return Response.json({ ok: false, message: 'Session manager not available' }, { status: 503 });
+              const session = sessionManager.getSession(sessionId);
+              if (!session) {
+                writeAuditEntry('director.send', false, { target: sessionId, reason: 'session not found' });
+                return Response.json({ ok: false, message: `Session "${sessionId}" not found` }, { status: 404 });
               }
-              await director.send(body.text);
-              writeAuditEntry('director.send', true, { target: 'main', bytes: Buffer.byteLength(body.text, 'utf-8') });
-              return Response.json({ ok: true, message: 'sent' });
+              await sessionManager.send(sessionId, text, `web-${randomUUID()}`, { webOnly: true });
+              writeAuditEntry('director.send', true, { target: sessionId, bytes: Buffer.byteLength(text, 'utf-8') });
+              return Response.json({ ok: true, message: 'sent to session', sessionId });
             } catch (err) {
-              writeAuditEntry('director.send', false, { target: body.workspace ?? body.director ?? 'main', error: String(err) });
+              writeAuditEntry('director.send', false, { target: sessionId, error: String(err) });
               return Response.json({ ok: false, message: String(err) }, { status: 500 });
             }
           }
@@ -3132,14 +3145,35 @@ export function startConsole(
             }
           }
           if (url.pathname === '/api/workspaces/config' && req.method === 'PUT') {
-            const body = await req.json().catch(() => ({})) as { name?: string; cwd?: string; agent?: string };
-            const wsName = sanitizeWorkspaceName(body.name);
+            const body = await req.json().catch(() => ({})) as { name?: string; originalName?: string; cwd?: string; agent?: string };
+            const originalName = canonicalConsoleWorkspaceName(body.originalName ?? body.name);
+            const targetName = canonicalConsoleWorkspaceName(body.name);
+            const wsName = targetName;
             if (!wsName) {
               return Response.json({ error: 'Workspace name is required' }, { status: 400 });
             }
-            const workspacePath = join(config.director.persona_dir, 'workspaces', wsName);
-            if (!existsSync(workspacePath)) {
-              return Response.json({ error: `Workspace not found: ${wsName}` }, { status: 404 });
+            const sourceName = originalName ?? wsName;
+            if (sourceName === 'main' && wsName !== 'main') {
+              return Response.json({ error: 'Main director workspace cannot be renamed' }, { status: 400 });
+            }
+            if (sourceName !== 'main') {
+              const sourcePath = join(config.director.persona_dir, 'workspaces', sourceName);
+              if (!existsSync(sourcePath)) {
+                return Response.json({ error: `Workspace not found: ${sourceName}` }, { status: 404 });
+              }
+              if (wsName !== sourceName) {
+                const targetPath = join(config.director.persona_dir, 'workspaces', wsName);
+                if (existsSync(targetPath)) {
+                  return Response.json({ error: `Workspace already exists: ${wsName}` }, { status: 409 });
+                }
+                renameSync(sourcePath, targetPath);
+                renameWorkspaceInDb(sourceName, wsName);
+                const legacyConfig = getWorkspaceConfig(sourceName);
+                if (legacyConfig) {
+                  deleteState(`workspace:config:${sourceName}`);
+                  setWorkspaceConfig(wsName, legacyConfig);
+                }
+              }
             }
             let resolvedCwd: string | undefined;
             if (body.cwd && typeof body.cwd === 'string') {
@@ -3196,72 +3230,36 @@ export function startConsole(
           // Message history and session APIs
           if (url.pathname === '/api/messages' && req.method === 'GET') {
             const limit = Number(url.searchParams.get('limit') ?? 100);
-            const sessionId = url.searchParams.get('sessionId') ?? undefined;
-            const directorLabel = url.searchParams.get('director') ?? undefined;
-            const workspace = url.searchParams.get('workspace') ?? undefined;
-            // Resolve director label from workspace name if provided
-            let effectiveLabel = directorLabel;
-            if (!effectiveLabel && workspace && workspace !== 'main') {
-              const match = sessionManager?.getPoolStatus().find((e) => {
-                const safeName = e.groupName.replace(/[\/\\:*?"<>|]/g, '_');
-                return workspace === safeName || workspace === e.groupName;
-              });
-              effectiveLabel = match?.label;
-            }
-            const target = resolveDirectorLogTarget(effectiveLabel, director, sessionManager);
+            const sessionId = parseMessagesSessionId(url);
+            if (!sessionId) return Response.json({ error: 'sessionId is required' }, { status: 400 });
+            const target = resolveSessionLogTarget(sessionId, director, sessionManager);
             return Response.json(parseConversationLogFiles(target.inputLogs, target.outputLogs, limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
-            const directorLabel = url.searchParams.get('director') ?? undefined;
-            const workspace = url.searchParams.get('workspace') ?? undefined;
-
-            // Resolve workspace name: direct param, or derive from director label
-            let wsName: string;
-            if (workspace) {
-              wsName = workspace;
-            } else if (!directorLabel || directorLabel === 'main') {
-              wsName = 'main';
-            } else {
-              const poolEntry = sessionManager?.getPoolStatus().find((e) => e.label === directorLabel);
-              wsName = poolEntry?.groupName ?? directorLabel;
-            }
+            const wsName = parseSessionsWorkspace(url);
 
             const dbRows = listSessionsFromDb(wsName);
             const sessions = dbRows.map((r) => ({
               sessionId: r.session_id,
+              workspace: r.workspace,
               sessionName: r.session_name ?? undefined,
+              archived: r.archived === 1,
+              role: r.role ?? undefined,
+              cwd: r.cwd ?? undefined,
               alive: r.alive === 1,
-              messageCount: r.message_count,
               firstMessageAt: r.first_message_at ?? undefined,
               lastMessageAt: r.last_message_at ?? undefined,
+              agentName: r.agent_name ?? undefined,
+              agentType: r.agent_type ?? undefined,
+              model: r.model ?? undefined,
             }));
 
-            // Fallback: 仅当 DB 完全没有该 workspace 任何记录(包含 archived)时,才回退到 log 文件解析
-            // (pre-migration 环境兼容)。一旦 DB 已有数据,sessions 数组就是真相,
-            // 走 log fallback 会把已 archived 的 session 重新 unshift 回来(因为 parseSessionsFiles
-            // 只看 log 文件,不知道 archived 状态),破坏归档语义。
-            // 边界:workspace 全部 session 都已 archived 时,SQL 过滤后 sessions=0 但 dbRows.length=0,
-            // 此时也不能走 fallback —— fallback 用的是"DB 完全没有这个 workspace 的认知"。
-            const totalDbRows = listSessionsFromDb(wsName, { includeArchived: true });
-            if (totalDbRows.length === 0) {
-              const target = resolveDirectorLogTarget(directorLabel, director, sessionManager);
-              const parsed = parseSessionsFiles(target.outputLogs);
-              const nameMap = getState<Record<string, string>>('session:names') ?? {};
-              for (const s of parsed) {
-                if (!s.sessionName && nameMap[s.sessionId]) {
-                  s.sessionName = nameMap[s.sessionId];
-                }
-              }
-              return Response.json(parsed);
-            }
-
             // Merge live director status for current session
-            const resolvedLabel = directorLabel ?? 'main';
-            const poolEntry = resolvedLabel === 'main'
+            const poolEntry = wsName === 'main'
               ? undefined
-              : sessionManager?.getPoolStatus().find((e) => e.label === resolvedLabel);
+              : sessionManager?.getPoolStatus().find((e) => e.groupName === wsName);
             const activePoolEntry = poolEntry ? sessionManager?.get(poolEntry.routingKey) : undefined;
-            const ds = resolvedLabel === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
+            const ds = wsName === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
             if (ds?.sessionId) {
               // live session 合并时,跳过 DB 里已 archived 的 session。
               // 否则归档"当前活跃 session"后,虽然 DB SQL 已经过滤了 archived=0,
@@ -3275,14 +3273,29 @@ export function startConsole(
                 if (live) {
                   if (ds.sessionName) live.sessionName = ds.sessionName;
                   live.alive = true;
+                  live.role = ds.personaRole;
+                  live.cwd = wsName === 'main'
+                    ? director.getWorkspaceCwd()
+                    : activePoolEntry?.bridge.getWorkspaceCwd();
+                  live.agentName = ds.agentName;
+                  live.agentType = ds.agentType;
+                  live.model = ds.agentModel ?? undefined;
                 } else {
                   sessions.unshift({
                     sessionId: ds.sessionId,
+                    workspace: wsName,
                     sessionName: ds.sessionName ?? undefined,
+                    archived: false,
+                    role: ds.personaRole,
+                    cwd: wsName === 'main'
+                      ? director.getWorkspaceCwd()
+                      : activePoolEntry?.bridge.getWorkspaceCwd(),
                     alive: true,
-                    messageCount: 0,
                     firstMessageAt: undefined,
                     lastMessageAt: new Date().toISOString(),
+                    agentName: ds.agentName,
+                    agentType: ds.agentType,
+                    model: ds.agentModel ?? undefined,
                   });
                 }
               }
@@ -3601,23 +3614,23 @@ export function startConsole(
             if (!body.role || !body.prompt || !body.description) {
               writeAuditEntry('task.create', false, {
                 role: body.role ?? null,
-                sourceDirector: body.source_director ?? null,
+                sourceSessionId: body.source_session_id ?? null,
+                workspace: body.workspace ?? null,
                 error: 'role, description, prompt are required',
               });
               return Response.json({ ok: false, error: 'role, description, prompt are required' }, { status: 400 });
             }
-            const task = createTask(body);
+            const task = createTask(normalizeTaskSource(body));
             runCreatedTask(task);
-            writeAuditEntry('task.create', true, { target: task.id, role: task.role, agent: task.agent, sourceDirector: task.source_director });
+            writeAuditEntry('task.create', true, { target: task.id, role: task.role, agent: task.agent, sourceSessionId: task.source_session_id, workspace: task.workspace });
             return Response.json(task);
           }
           if (url.pathname === '/api/tasks' && req.method === 'GET') {
             const status = url.searchParams.get('status') ?? undefined;
             const role = url.searchParams.get('role') ?? undefined;
-            const sourceDirector = url.searchParams.get('source_director') ?? undefined;
-            const groupName = url.searchParams.get('group_name') ?? undefined;
+            const workspace = url.searchParams.get('workspace') ?? undefined;
             const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-            return Response.json(listTasks({ status, role, sourceDirector, groupName, limit }));
+            return Response.json(listTasks({ status, role, workspace, limit }));
           }
           if (url.pathname === '/api/tasks/cleanup' && req.method === 'GET') {
             const olderThanDays = Number(url.searchParams.get('older_than_days') ?? 30);
@@ -3679,7 +3692,7 @@ export function startConsole(
               return Response.json({ ok: false, taskId, error: `task not found: ${taskId}` }, { status: 404 });
             }
             const extra: Record<string, unknown> = { ...((original.extra ?? {}) as Record<string, unknown>), retried_from: original.id };
-            const task = createTask({
+            const task = createTask(normalizeTaskSource({
               type: (original.type === 'cron' ? 'cron' : 'role') as CreateTaskInput['type'],
               role: original.role,
               agent: original.agent ?? undefined,
@@ -3689,9 +3702,10 @@ export function startConsole(
               max_retry: original.max_retry,
               project_dir: extra.project_dir as string | undefined,
               timeout_ms: original.timeout_ms ?? undefined,
-              source_director: original.source_director ?? undefined,
+              source_session_id: original.source_session_id ?? undefined,
+              workspace: original.workspace ?? undefined,
               extra,
-            });
+            }));
             runCreatedTask(task);
             writeAuditEntry('task.retry', true, { target: task.id, originalTaskId: original.id, role: task.role, agent: task.agent });
             return Response.json(task);
@@ -3725,8 +3739,8 @@ export function startConsole(
               });
               return Response.json({ ok: false, error: 'name, role, description, prompt, schedule are required' }, { status: 400 });
             }
-            const job = createCronJob(body);
-            writeAuditEntry('cron.create', true, { target: job.id, name: job.name, actionType: job.action_type, schedule: job.schedule });
+            const job = createCronJob(normalizeCronSource(body));
+            writeAuditEntry('cron.create', true, { target: job.id, name: job.name, actionType: job.action_type, schedule: job.schedule, workspace: job.workspace });
             return Response.json(job);
           }
           if (url.pathname.startsWith('/api/cron-jobs/') && url.pathname.endsWith('/toggle') && req.method === 'POST') {
@@ -3765,7 +3779,7 @@ export function startConsole(
           if (url.pathname.startsWith('/api/cron-jobs/') && req.method === 'PUT') {
             const id = url.pathname.slice('/api/cron-jobs/'.length);
             const body = await req.json() as Partial<CreateCronJobInput>;
-            const job = updateCronJob(id, body);
+            const job = updateCronJob(id, { ...body, source_director: undefined });
             if (!job) {
               writeAuditEntry('cron.update', false, { target: id, error: 'cron job not found' });
               return Response.json({ ok: false, id, error: `cron job not found: ${id}` }, { status: 404 });
@@ -3784,78 +3798,63 @@ export function startConsole(
             return Response.json({ ok: true, id });
           }
           // Web session API routes
-          // New: POST /api/sessions — create session via SessionManager
           if (url.pathname === '/api/sessions' && req.method === 'POST') {
-            if (!sessionManager || !sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
             try {
               const body = await req.json() as { workspace: string; agent?: string };
               if (!body.workspace) {
                 return Response.json({ ok: false, error: 'workspace is required' }, { status: 400 });
               }
-              const wsName = sanitizeWorkspaceName(body.workspace);
+              const wsName = canonicalConsoleWorkspaceName(body.workspace);
               if (!wsName) {
                 return Response.json({ ok: false, error: 'invalid workspace name' }, { status: 400 });
               }
+              if (wsName === 'main') {
+                if (body.agent?.trim()) {
+                  const switched = await director.switchAgent(body.agent.trim());
+                  if (!switched) return Response.json({ ok: false, error: `failed to switch main Director to ${body.agent}` }, { status: 500 });
+                }
+                await director.resetSession();
+                const sessionId = director.getStatus().sessionId;
+                if (!sessionId) return Response.json({ ok: false, error: 'main session was not initialized' }, { status: 500 });
+                writeAuditEntry('session.create', true, { workspace: wsName, sessionId, director: 'main' });
+                return Response.json({ ok: true, sessionId, workspace: wsName });
+              }
+              if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
               const entry = await sessionManager.createNewSession(wsName, {
                 feishuChatId: 'web-console',
                 directorAgentName: body.agent,
               });
               writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
-              return Response.json({ ok: true, sessionId: entry.sessionId, workspace: wsName });
+              return Response.json({
+                ok: true,
+                sessionId: entry.sessionId,
+                workspace: wsName,
+                archived: false,
+                role: entry.role,
+                cwd: entry.cwd,
+              });
             } catch (err) {
               writeAuditEntry('session.create', false, { error: String(err) });
-              return Response.json({ ok: false, error: String(err) }, { status: 500 });
-            }
-          }
-
-          // Legacy: POST /api/web-sessions
-          if (url.pathname === '/api/web-sessions' && req.method === 'POST') {
-            if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
-            try {
-              const id = randomUUID().slice(0, 8);
-              const routingKey = `web-${id}`;
-              const timeStr = new Date().toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-              const entry = await sessionManager.getPool().getOrCreate(routingKey, {
-                groupName: `Web Chat ${timeStr}`,
-                feishuChatId: 'web-console',
-              });
-              writeAuditEntry('web_session.create', true, { target: entry.bridge.label, routingKey, groupName: entry.groupName });
-              return Response.json({ ok: true, routingKey, label: entry.bridge.label });
-            } catch (err) {
-              writeAuditEntry('web_session.create', false, { error: String(err) });
-              return Response.json({ ok: false, error: String(err) }, { status: 500 });
-            }
-          }
-          if (url.pathname.startsWith('/api/web-sessions/') && req.method === 'DELETE') {
-            if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
-            const routingKey = decodeURIComponent(url.pathname.slice('/api/web-sessions/'.length));
-            if (!routingKey) {
-              writeAuditEntry('web_session.close', false, { target: null, routingKey: null, error: 'routing key is required' });
-              return Response.json({ ok: false, error: 'routing key is required' }, { status: 400 });
-            }
-            try {
-              const entry = sessionManager.get(routingKey);
-              if (!entry) {
-                writeAuditEntry('web_session.close', false, { target: routingKey, routingKey, error: 'web session not found' });
-                return Response.json({ ok: false, error: `web session not found: ${routingKey}` }, { status: 404 });
-              }
-              await sessionManager.getPool().shutdown(routingKey);
-              writeAuditEntry('web_session.close', true, { target: entry.bridge.label, routingKey, groupName: entry.groupName });
-              return Response.json({ ok: true });
-            } catch (err) {
-              writeAuditEntry('web_session.close', false, { target: routingKey, routingKey, error: String(err) });
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
           }
           // POST /api/sessions/{id}/archive — 软/硬两种归档模式
           // body: { killDirector?: boolean };默认 false = 软归档(仅翻 DB 标志)
           if (url.pathname.startsWith('/api/sessions/') && url.pathname.endsWith('/archive') && req.method === 'POST') {
-            if (!sessionManager) return Response.json({ ok: false, error: 'Session manager not available' }, { status: 503 });
             const sessionId = decodeURIComponent(url.pathname.slice('/api/sessions/'.length, -'/archive'.length));
             if (!sessionId) return Response.json({ ok: false, error: 'session_id is required' }, { status: 400 });
             let body: { killDirector?: boolean } = {};
             try { body = (await req.json()) as { killDirector?: boolean } } catch { /* 默认软归档 */ }
             try {
+              const record = getSessionRecord(sessionId);
+              if (record?.workspace === 'main') {
+                const isCurrentMain = director.getStatus().sessionId === sessionId;
+                if (isCurrentMain) await director.resetSession();
+                const ok = archiveSessionInDb(sessionId);
+                writeAuditEntry(body.killDirector ? 'session.archive.kill' : 'session.archive.soft', ok, { target: sessionId, director: 'main', rotated: isCurrentMain });
+                return Response.json({ ok, sessionId, mode: isCurrentMain ? 'archived-and-rotated' : 'archived' });
+              }
+              if (!sessionManager) return Response.json({ ok: false, error: 'Session manager not available' }, { status: 503 });
               if (body.killDirector) {
                 const ok = await sessionManager.archiveSession(sessionId);
                 writeAuditEntry('session.archive.kill', ok, { target: sessionId });

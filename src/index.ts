@@ -15,7 +15,7 @@ import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
 import { isBashAction, extractBashCommand, runBashAction } from './task/shell-bash.js';
 import { resolveCronMessage } from './prompt-loader.js';
-import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow } from './task/task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow, getSessionRecord } from './task/task-store.js';
 import { writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
@@ -332,33 +332,49 @@ async function main() {
     (id, data) => updateTask(id, data),
   );
 
-  /** Resolve the target chatId and Director for a task callback based on source_director.
-   *  Falls back to main Director + last chatId if source is unknown. */
-  async function resolveTaskTarget(task: { source_director?: string | null }): Promise<{
+  /** Resolve the target chatId and Director for a task callback using source_session_id. */
+  async function resolveTaskTarget(task: { source_session_id?: string | null; workspace?: string | null }): Promise<{
     chatId: string | null;
     isWeb: boolean;
     webLabel: string | null;
     notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
   }> {
-    const source = task.source_director;
-    if (source && source !== 'main') {
-      // Pool Director — look up or revive
-      const poolChatId = sessionManager.getChatIdByLabel(source);
-      if (poolChatId) {
-        // Check if this is a web session (chatId === 'web-console' is not a valid messaging target)
-        const entry = sessionManager.findByLabel(source);
-        const isWeb = poolChatId === 'web-console' || (entry?.routingKey.startsWith('web-') ?? false);
+    const sourceSessionId = task.source_session_id?.trim() || null;
+    const sourceRecord = sourceSessionId ? getSessionRecord(sourceSessionId) : null;
+    const workspace = task.workspace?.trim() || sourceRecord?.workspace || 'main';
+    const defaultSessionId = sourceRecord?.archived === 1
+      ? sessionManager.resolveDefaultSession(workspace)
+      : sourceSessionId ?? sessionManager.resolveDefaultSession(workspace);
+    const mainSessionId = director.getStatus().sessionId;
+
+    if (defaultSessionId && defaultSessionId === mainSessionId) {
+      return {
+        chatId: messaging.getLastChatId(),
+        isWeb: false,
+        webLabel: null,
+        notifyDirector: async (taskId, success, msgId) => {
+          if (msgId) await startSystemStreamingReply(msgId);
+          await director.notifyTaskDone(taskId, success, msgId);
+        },
+      };
+    }
+
+    if (defaultSessionId) {
+      const entry = sessionManager.getPoolEntryBySessionId(defaultSessionId);
+      if (entry) {
+        const isWeb = entry.feishuChatId === 'web-console' || entry.routingKey.startsWith('web-');
         return {
-          chatId: isWeb ? null : poolChatId,
+          chatId: isWeb ? null : entry.feishuChatId,
           isWeb,
-          webLabel: isWeb ? source : null,
-          notifyDirector: (taskId, success, msgId) => sessionManager.notifyTaskDone(source, taskId, success, msgId),
+          webLabel: isWeb ? entry.groupName : null,
+          notifyDirector: async (taskId, success, msgId) => {
+            await entry.bridge.notifyTaskDone(taskId, success, msgId);
+          },
         };
       }
-      // Pool entry lost (no routing context to revive) — fall through to main
-      console.warn(`[shell] Task source_director=${source} not found in pool, falling back to main`);
+      console.warn(`[shell] Task source_session_id=${defaultSessionId} is not live, falling back to main`);
     }
-    // Main Director or unknown source
+
     return {
       chatId: messaging.getLastChatId(),
       isWeb: false,
@@ -412,6 +428,14 @@ async function main() {
       meta.parent_routing_key = poolEntry.routingKey;
     }
     return meta;
+  }
+
+  function resolveWorkspaceDefaultEntry(workspace: string) {
+    const sessionId = sessionManager.resolveDefaultSession(workspace);
+    if (!sessionId) return null;
+    if (sessionId === director.getStatus().sessionId) return { kind: 'main' as const, sessionId };
+    const entry = sessionManager.getPoolEntryBySessionId(sessionId);
+    return entry ? { kind: 'pool' as const, sessionId, entry } : null;
   }
 
   function codexCallbackFromTask(task: { extra?: unknown } | null | undefined): { threadId: string; cwd?: string } | null {
@@ -632,6 +656,8 @@ async function main() {
     {
       listEnabledJobs: () => listCronJobs({ enabled: true }),
       executeSpawnRole: async (job) => {
+        const workspace = job.workspace || 'main';
+        const defaultEntry = resolveWorkspaceDefaultEntry(workspace);
         const task = createTask({
           type: 'cron',
           role: job.role,
@@ -641,9 +667,10 @@ async function main() {
           max_retry: job.max_retry,
           timeout_ms: job.timeout_ms ?? undefined,
           extra: { cronJobId: job.id },
-          source_director: job.source_director ?? undefined,
+          workspace,
+          source_session_id: defaultEntry?.sessionId,
         });
-        mergeTaskExtra(task.id, taskParentMetadata(job.source_director));
+        mergeTaskExtra(task.id, { parent_workspace: workspace, parent_session_id: defaultEntry?.sessionId });
         taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, model: (task.extra as Record<string, unknown>)?.model as string | undefined, prompt: task.prompt, description: task.description, timeoutMs: task.timeout_ms ?? undefined });
         return task.id;
       },
@@ -664,16 +691,18 @@ async function main() {
         const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
         const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
 
-        // Route to source Director if available
-        const source = job.source_director;
-        if (source && source !== 'main') {
-          const entry = sessionManager.findByLabel(source);
-          if (entry) {
-            await entry.bridge.sendCronMessage(msg);
-            return;
-          }
-          // Pool entry lost — fall through to main
-          console.warn(`[scheduler] Cron job ${job.name} source_director=${source} not found in pool, falling back to main`);
+        const workspace = job.workspace || 'main';
+        const target = resolveWorkspaceDefaultEntry(workspace);
+        if (target?.kind === 'pool') {
+          await target.entry.bridge.sendCronMessage(msg);
+          return;
+        }
+        if (target?.kind === 'main') {
+          await director.sendCronMessage(msg);
+          return;
+        }
+        if (workspace !== 'main') {
+          console.warn(`[scheduler] Cron job ${job.name} workspace=${workspace} has no live default session, falling back to main`);
         }
         await director.sendCronMessage(msg);
       },
@@ -738,12 +767,11 @@ async function main() {
         }
       },
       notifyCronFired: (job) => {
-        // Resolve target chatId: prefer source Director's chat, fallback to last active chat
-        const source = job.source_director;
+        const workspace = job.workspace || 'main';
         let targetChatId: string | null = null;
-
-        if (source && source !== 'main') {
-          targetChatId = sessionManager.getChatIdByLabel(source);
+        const target = resolveWorkspaceDefaultEntry(workspace);
+        if (target?.kind === 'pool') {
+          targetChatId = target.entry.feishuChatId === 'web-console' ? null : target.entry.feishuChatId;
         }
         if (!targetChatId) {
           targetChatId = messaging.getLastChatId();
@@ -986,7 +1014,8 @@ async function main() {
         const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
         const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
-        poolEntry = await sessionManager.getPool().getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
+        const session = await sessionManager.getOrCreateForWorkspace(groupName, { groupName, feishuChatId: chatId, directorAgentName });
+        poolEntry = session.sessionId ? sessionManager.getPoolEntryBySessionId(session.sessionId) ?? undefined : getTargetEntry();
       }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
@@ -1266,19 +1295,18 @@ async function main() {
     metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
 
     if (routingKey) {
-      // 小群/话题群 → DirectorPool
+      // 小群/话题群 → workspace default session
       try {
         const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
         const directorAgentName = sessionManager.getDirectorAgentName(routingKey);
-        const entry = await sessionManager.getPool().getOrCreate(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
-        // Register workspace + session mapping for new domain model
-        workspaceRegistry.getOrCreate(groupName);
-        const sessionId = entry.bridge.getStatus().sessionId;
-        if (sessionId) {
-          sessionManager.registerSession(sessionId, routingKey, groupName, entry);
-        }
-        await sessionManager.getPool().send(routingKey, directorText, messageId);
-        console.log(`[shell] Sent to pool Director "${groupName}" (${routingKey.slice(0, 8)})`);
+        const session = await sessionManager.sendToWorkspaceDefaultSession(groupName, {
+          groupName,
+          feishuChatId: chatId,
+          directorAgentName,
+          text: directorText,
+          messageId,
+        });
+        console.log(`[shell] Sent to workspace "${groupName}" default session ${session.sessionId || '(pending)'}`);
       } catch (err) {
         if (String(err).includes('flushing')) {
           await messaging.reply(messageId, '正在刷新上下文，请稍后重试').catch(() => {});

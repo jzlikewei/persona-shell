@@ -29,7 +29,11 @@ export interface CreateTaskInput {
   extra?: Record<string, unknown>;
   /** 任务超时时间（毫秒）；为空时使用 config 默认值 */
   timeout_ms?: number;
-  /** 发起方 Director 的标识（如 'main' 或 pool label），用于回调路由 */
+  /** 发起方 sessionId，用于任务回调路由 */
+  source_session_id?: string;
+  /** 发起方 workspace，用于 source session 归档后的 default session 回退 */
+  workspace?: string;
+  /** 旧发起方 Director 标识；仅作为历史迁移输入，不再作为运行时回调路由 */
   source_director?: string;
 }
 
@@ -53,7 +57,11 @@ export interface Task {
   extra: Record<string, unknown> | null;
   /** 任务超时时间（毫秒）；null 表示使用 config 默认值 */
   timeout_ms: number | null;
-  /** 发起方 Director 标识，用于任务回调路由 */
+  /** 发起方 sessionId，用于任务回调路由 */
+  source_session_id: string | null;
+  /** 发起方 workspace，用于 source session 归档后的 default session 回退 */
+  workspace: string | null;
+  /** 旧发起方 Director 标识；仅作为历史迁移输入/展示残留 */
   source_director: string | null;
 }
 
@@ -112,9 +120,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   archived         INTEGER NOT NULL DEFAULT 0,
   role             TEXT,
   cwd              TEXT,
+  agent_name       TEXT,
+  agent_type       TEXT,
+  model            TEXT,
   created_at       TEXT,
-  -- Legacy columns kept for migration compatibility (not used by new code)
-  message_count    INTEGER NOT NULL DEFAULT 0,
   first_message_at TEXT,
   last_message_at  TEXT,
   alive            INTEGER NOT NULL DEFAULT 0
@@ -234,6 +243,15 @@ function migrateCronJobsTable(db: Database): void {
   if (!existing.has('max_retry')) {
     db.run("ALTER TABLE cron_jobs ADD COLUMN max_retry INTEGER NOT NULL DEFAULT 3");
   }
+  if (!existing.has('workspace')) {
+    db.run('ALTER TABLE cron_jobs ADD COLUMN workspace TEXT');
+  }
+  db.run(`
+    UPDATE cron_jobs
+    SET workspace = COALESCE(NULLIF(workspace, ''), CASE WHEN source_director IS NULL OR source_director = '' THEN 'main' ELSE source_director END),
+        source_director = NULL
+    WHERE source_director IS NOT NULL
+  `);
 }
 
 /** 安全地为 tasks 表添加新列 */
@@ -250,6 +268,18 @@ function migrateTasksTable(db: Database): void {
   if (!existing.has('timeout_ms')) {
     db.run('ALTER TABLE tasks ADD COLUMN timeout_ms INTEGER');
   }
+  if (!existing.has('source_session_id')) {
+    db.run('ALTER TABLE tasks ADD COLUMN source_session_id TEXT');
+  }
+  if (!existing.has('workspace')) {
+    db.run('ALTER TABLE tasks ADD COLUMN workspace TEXT');
+  }
+  db.run(`
+    UPDATE tasks
+    SET workspace = COALESCE(NULLIF(workspace, ''), CASE WHEN source_director IS NULL OR source_director = '' THEN 'main' ELSE source_director END),
+        source_director = NULL
+    WHERE source_director IS NOT NULL
+  `);
 }
 
 /** 安全地为 sessions 表添加新列 */
@@ -268,6 +298,15 @@ function migrateSessionsTable(db: Database): void {
   }
   if (!existing.has('created_at')) {
     db.run("ALTER TABLE sessions ADD COLUMN created_at TEXT");
+  }
+  if (!existing.has('agent_name')) {
+    db.run("ALTER TABLE sessions ADD COLUMN agent_name TEXT");
+  }
+  if (!existing.has('agent_type')) {
+    db.run("ALTER TABLE sessions ADD COLUMN agent_type TEXT");
+  }
+  if (!existing.has('model')) {
+    db.run("ALTER TABLE sessions ADD COLUMN model TEXT");
   }
 }
 
@@ -302,14 +341,15 @@ export function createTask(input: CreateTaskInput): Task {
   if (input.project_dir) extraObj.project_dir = input.project_dir;
   if (input.model) extraObj.model = input.model;
   const extra = Object.keys(extraObj).length > 0 ? JSON.stringify(extraObj) : null;
-  const sourceDirector = input.source_director ?? null;
+  const sourceSessionId = input.source_session_id?.trim() || null;
+  const workspace = input.workspace?.trim() || null;
   const agent = input.agent?.trim() || null;
   const timeoutMs = input.timeout_ms ?? null;
 
   d.run(
-    `INSERT INTO tasks (id, type, role, agent, description, prompt, status, created_at, retry_count, max_retry, extra, source_director, timeout_ms)
-     VALUES (?, ?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?, ?)`,
-    [id, input.type, input.role, agent, input.description, input.prompt, now, input.max_retry ?? 3, extra, sourceDirector, timeoutMs],
+    `INSERT INTO tasks (id, type, role, agent, description, prompt, status, created_at, retry_count, max_retry, extra, source_director, timeout_ms, source_session_id, workspace)
+     VALUES (?, ?, ?, ?, ?, ?, 'dispatched', ?, 0, ?, ?, ?, ?, ?, ?)`,
+    [id, input.type, input.role, agent, input.description, input.prompt, now, input.max_retry ?? 3, extra, null, timeoutMs, sourceSessionId, workspace],
   );
 
   return getTask(id)!;
@@ -332,7 +372,7 @@ export function getTaskTimeouts(ids: string[]): Map<string, number | null> {
   return result;
 }
 
-export function listTasks(filter?: { status?: string; role?: string; sourceDirector?: string; groupName?: string; limit?: number }): Task[] {
+export function listTasks(filter?: { status?: string; role?: string; workspace?: string; limit?: number }): Task[] {
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
 
@@ -344,13 +384,9 @@ export function listTasks(filter?: { status?: string; role?: string; sourceDirec
     conditions.push('role = ?');
     params.push(filter.role);
   }
-  if (filter?.sourceDirector) {
-    conditions.push('source_director = ?');
-    params.push(filter.sourceDirector);
-  }
-  if (filter?.groupName) {
-    conditions.push(`(source_director = ? OR json_extract(extra, '$.parent_group_name') = ?)`);
-    params.push(filter.groupName, filter.groupName);
+  if (filter?.workspace) {
+    conditions.push('workspace = ?');
+    params.push(filter.workspace);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -365,7 +401,7 @@ export function updateTask(id: string, update: Partial<Omit<Task, 'id'>>): void 
     'type', 'role', 'agent', 'description', 'prompt', 'status',
     'started_at', 'completed_at', 'result_file', 'error',
     'retry_count', 'max_retry', 'cost_usd', 'duration_ms', 'extra',
-    'source_director', 'timeout_ms',
+    'source_director', 'timeout_ms', 'source_session_id', 'workspace',
   ] as const;
 
   const sets: string[] = [];
@@ -510,7 +546,9 @@ export interface CronJob {
   timeout_ms: number | null;
   /** shell_action 失败后的最大重试次数；默认 3 */
   max_retry: number;
-  /** 创建该 cron job 的 Director 标识，用于通知/回调路由 */
+  /** Cron 所属 workspace,用于调度到 workspace default session */
+  workspace: string | null;
+  /** 旧 Director 标识；仅作为历史迁移输入/展示残留 */
   source_director: string | null;
 }
 
@@ -527,7 +565,9 @@ export interface CreateCronJobInput {
   action_name?: string;
   timeout_ms?: number;
   max_retry?: number;
-  /** 发起方 Director 标识（如 'main' 或 pool label） */
+  /** Cron 所属 workspace,用于调度到 workspace default session */
+  workspace?: string;
+  /** 旧发起方 Director 标识；仅作为历史迁移输入 */
   source_director?: string;
 }
 
@@ -540,6 +580,7 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
     action_name: (row.action_name as string) ?? null,
     timeout_ms: row.timeout_ms === null || row.timeout_ms === undefined ? null : Number(row.timeout_ms),
     max_retry: row.max_retry === null || row.max_retry === undefined ? 3 : Number(row.max_retry),
+    workspace: (row.workspace as string) ?? null,
     source_director: (row.source_director as string) ?? null,
   } as CronJob;
 }
@@ -555,12 +596,12 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const actionName = input.action_name ?? null;
   const timeoutMs = input.timeout_ms ?? null;
   const maxRetry = input.max_retry ?? 3;
-  const sourceDirector = input.source_director ?? null;
+  const workspace = input.workspace?.trim() || null;
 
   d.run(
-    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, last_run_at, created_at, updated_at, action_type, message, action_name, timeout_ms, max_retry, source_director)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, lastRunAt, now, now, actionType, message, actionName, timeoutMs, maxRetry, sourceDirector],
+    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, last_run_at, created_at, updated_at, action_type, message, action_name, timeout_ms, max_retry, source_director, workspace)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, lastRunAt, now, now, actionType, message, actionName, timeoutMs, maxRetry, null, workspace],
   );
 
   return getCronJob(id)!;
@@ -585,7 +626,7 @@ export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
 }
 
 export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
-  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'timeout_ms', 'max_retry', 'source_director'] as const;
+  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'timeout_ms', 'max_retry', 'source_director', 'workspace'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 
@@ -631,34 +672,43 @@ export interface SessionRow {
   archived: number;
   role: string | null;
   cwd: string | null;
+  agent_name: string | null;
+  agent_type: string | null;
+  model: string | null;
   created_at: string | null;
-  // Legacy fields (kept for backward compat, not used by new code)
-  message_count: number;
   first_message_at: string | null;
   last_message_at: string | null;
   alive: number;
 }
 
 export interface SessionPatch {
-  messageCountDelta?: number;
   sessionName?: string | null;
   firstMessageAt?: string;
   lastMessageAt?: string;
+  agentName?: string | null;
+  agentType?: string | null;
+  model?: string | null;
 }
 
 export function upsertSession(workspace: string, sessionId: string, patch: SessionPatch): void {
   const now = localNow();
   const firstAt = patch.firstMessageAt ?? now;
   const lastAt = patch.lastMessageAt ?? now;
-  const delta = patch.messageCountDelta ?? 0;
   getDb().run(
-    `INSERT INTO sessions (session_id, workspace, session_name, message_count, first_message_at, last_message_at, alive)
-     VALUES (?, ?, ?, ?, ?, ?, 1)
+    `INSERT INTO sessions (session_id, workspace, session_name, first_message_at, last_message_at, alive, agent_name, agent_type, model)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
      ON CONFLICT(session_id) DO UPDATE SET
-       message_count = message_count + ?,
        last_message_at = ?,
-       alive = 1`,
-    [sessionId, workspace, patch.sessionName ?? null, delta, firstAt, lastAt, delta, lastAt],
+       alive = 1,
+       agent_name = COALESCE(?, agent_name),
+       agent_type = COALESCE(?, agent_type),
+       model = COALESCE(?, model)`,
+    [
+      sessionId, workspace, patch.sessionName ?? null, firstAt, lastAt,
+      patch.agentName ?? null, patch.agentType ?? null, patch.model ?? null,
+      lastAt,
+      patch.agentName ?? null, patch.agentType ?? null, patch.model ?? null,
+    ],
   );
 }
 
@@ -685,20 +735,17 @@ export function listSessionsFromDb(workspace: string, opts?: { includeArchived?:
 
 export interface WorkspaceSessionStats {
   sessionCount: number;
-  messageCount: number;
   lastMessageAt: string | null;
 }
 
 export function getWorkspaceSessionStats(workspace: string): WorkspaceSessionStats {
   const row = getDb().query(
     `SELECT COUNT(*) AS sessionCount,
-            COALESCE(SUM(message_count), 0) AS messageCount,
             MAX(last_message_at) AS lastMessageAt
      FROM sessions WHERE workspace = ? AND archived = 0`,
-  ).get(workspace) as { sessionCount: number; messageCount: number; lastMessageAt: string | null } | null;
+  ).get(workspace) as { sessionCount: number; lastMessageAt: string | null } | null;
   return {
     sessionCount: Number(row?.sessionCount ?? 0),
-    messageCount: Number(row?.messageCount ?? 0),
     lastMessageAt: row?.lastMessageAt ?? null,
   };
 }
@@ -708,29 +755,6 @@ export function hasAnySessionHistory(workspace: string): boolean {
     'SELECT COUNT(*) AS cnt FROM sessions WHERE workspace = ?',
   ).get(workspace) as { cnt: number } | null;
   return (row?.cnt ?? 0) > 0;
-}
-
-export interface ImportedSession {
-  sessionId: string;
-  sessionName?: string;
-  messageCount: number;
-  firstMessageAt?: string;
-  lastMessageAt?: string;
-}
-
-export function importSessionsFromLogs(workspace: string, sessions: ImportedSession[]): void {
-  if (sessions.length === 0) return;
-  const d = getDb();
-  const stmt = d.prepare(
-    `INSERT OR IGNORE INTO sessions (session_id, workspace, session_name, message_count, first_message_at, last_message_at, alive)
-     VALUES (?, ?, ?, ?, ?, ?, 0)`,
-  );
-  const tx = d.transaction(() => {
-    for (const s of sessions) {
-      stmt.run(s.sessionId, workspace, s.sessionName ?? null, s.messageCount, s.firstMessageAt ?? null, s.lastMessageAt ?? null);
-    }
-  });
-  tx();
 }
 
 export function deleteSessionsByWorkspace(workspace: string): number {
@@ -793,6 +817,18 @@ export function updateWorkspace(name: string, patch: Partial<Omit<Workspace, 'na
   return getWorkspace(name);
 }
 
+export function renameWorkspace(oldName: string, newName: string): Workspace | null {
+  const now = localNow();
+  const d = getDb();
+  const tx = d.transaction(() => {
+    d.run('UPDATE workspaces SET name = ?, updated_at = ? WHERE name = ?', [newName, now, oldName]);
+    d.run('UPDATE sessions SET workspace = ? WHERE workspace = ?', [newName, oldName]);
+    d.run('UPDATE cron_jobs SET workspace = ? WHERE workspace = ?', [newName, oldName]);
+  });
+  tx();
+  return getWorkspace(newName);
+}
+
 export function setDefaultSession(workspaceName: string, sessionId: string | null): void {
   getDb().run(
     'UPDATE workspaces SET default_session_id = ?, updated_at = ? WHERE name = ?',
@@ -813,14 +849,22 @@ export interface CreateSessionInput {
   sessionName?: string;
   role?: string;
   cwd?: string;
+  agentName?: string;
+  agentType?: string;
+  model?: string;
 }
 
 export function createSessionRecord(input: CreateSessionInput): SessionRow {
   const now = localNow();
   getDb().run(
-    `INSERT INTO sessions (session_id, workspace, session_name, archived, role, cwd, created_at, message_count, first_message_at, last_message_at, alive)
-     VALUES (?, ?, ?, 0, ?, ?, ?, 0, ?, ?, 0)`,
-    [input.sessionId, input.workspace, input.sessionName ?? null, input.role ?? null, input.cwd ?? null, now, now, now],
+    `INSERT INTO sessions (session_id, workspace, session_name, archived, role, cwd, agent_name, agent_type, model, created_at, first_message_at, last_message_at, alive)
+     VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    [
+      input.sessionId, input.workspace, input.sessionName ?? null,
+      input.role ?? null, input.cwd ?? null,
+      input.agentName ?? null, input.agentType ?? null, input.model ?? null,
+      now, now, now,
+    ],
   );
   return getSessionRecord(input.sessionId)!;
 }

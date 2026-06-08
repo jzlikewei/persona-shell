@@ -62,7 +62,6 @@ export interface SessionInfo {
   sessionId: string;
   sessionName?: string;
   alive?: boolean;
-  messageCount: number;
   firstMessageAt?: string;
   lastMessageAt?: string;
 }
@@ -511,7 +510,7 @@ export function parseSessions(outputLog: string): SessionInfo[] {
 
 /** Extract unique session IDs from multiple director output logs. */
 export function parseSessionsFiles(outputLogs: string[]): SessionInfo[] {
-  const sessionMap = new Map<string, { count: number; first?: string; last?: string }>();
+  const sessionMap = new Map<string, { first?: string; last?: string }>();
 
   try {
     const raw = readTailFromFiles(outputLogs);
@@ -536,8 +535,7 @@ export function parseSessionsFiles(outputLogs: string[]): SessionInfo[] {
           if (!sid) continue;
           currentSession = sid;
 
-          const entry = sessionMap.get(sid) || { count: 0 };
-          entry.count++;
+          const entry = sessionMap.get(sid) || {};
           const timestamp = evt._ts || evt.timestamp || new Date().toISOString();
           if (!entry.first) entry.first = timestamp;
           entry.last = timestamp;
@@ -547,8 +545,7 @@ export function parseSessionsFiles(outputLogs: string[]): SessionInfo[] {
           const sid = currentSession;
           if (!sid) continue;
 
-          const entry = sessionMap.get(sid) || { count: 0 };
-          entry.count++;
+          const entry = sessionMap.get(sid) || {};
           const timestamp = evt._ts || evt.timestamp || new Date().toISOString();
           if (!entry.first) entry.first = timestamp;
           entry.last = timestamp;
@@ -559,8 +556,7 @@ export function parseSessionsFiles(outputLogs: string[]): SessionInfo[] {
           if (!sid) continue;
           currentSession = sid;
 
-          const entry = sessionMap.get(sid) || { count: 0 };
-          entry.count++;
+          const entry = sessionMap.get(sid) || {};
           const timestamp = evt._ts || evt.timestamp || new Date().toISOString();
           if (!entry.first) entry.first = timestamp;
           entry.last = timestamp;
@@ -572,7 +568,6 @@ export function parseSessionsFiles(outputLogs: string[]): SessionInfo[] {
 
   return Array.from(sessionMap.entries()).map(([sessionId, info]) => ({
     sessionId,
-    messageCount: info.count,
     firstMessageAt: info.first,
     lastMessageAt: info.last,
   })).sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? ''));

@@ -476,7 +476,7 @@ describe('log-parser', () => {
       expect(ids).toContain('sess-002');
     });
 
-    test('message count accumulates for same session', () => {
+    test('same session events are collapsed into one session', () => {
       const outLog = join(TMP_DIR, 'output.log');
       writeFileSync(outLog, [
         outputInit('sess-001'),
@@ -490,7 +490,8 @@ describe('log-parser', () => {
 
       const sessions = parseSessions(outLog);
       expect(sessions.length).toBe(1);
-      expect(sessions[0].messageCount).toBe(3);
+      expect(sessions[0].sessionId).toBe('sess-001');
+      expect(sessions[0].lastMessageAt).toBe('2026-04-15T10:02:01+08:00');
     });
 
     test('multiple daily session logs accumulate same session', () => {
@@ -510,7 +511,6 @@ describe('log-parser', () => {
       const sessions = parseSessionsFiles([outLog1, outLog2]);
       expect(sessions.length).toBe(1);
       expect(sessions[0].sessionId).toBe('sess-cross-day');
-      expect(sessions[0].messageCount).toBe(2);
       expect(sessions[0].firstMessageAt).toBe('2026-04-15T10:00:01+08:00');
       expect(sessions[0].lastMessageAt).toBe('2026-04-16T10:00:01+08:00');
     });
@@ -541,7 +541,7 @@ describe('log-parser', () => {
       const sessions = parseSessions(outLog);
       expect(sessions.length).toBe(1);
       expect(sessions[0].sessionId).toBe('thread-001');
-      expect(sessions[0].messageCount).toBe(1);
+      expect(sessions[0].lastMessageAt).toBe('2026-04-15T10:00:01+08:00');
     });
 
     test('codex-live thread/started + turn/completed counted as session', () => {
@@ -555,7 +555,7 @@ describe('log-parser', () => {
       const sessions = parseSessions(outLog);
       expect(sessions.length).toBe(1);
       expect(sessions[0].sessionId).toBe('thread-live-001');
-      expect(sessions[0].messageCount).toBe(1);
+      expect(sessions[0].lastMessageAt).toBe('2026-04-15T10:00:02+08:00');
     });
 
     test('sessions sorted by lastMessageAt descending', () => {

@@ -16,6 +16,7 @@ import { SwitchSheet } from '@/components/switch-sheet'
 import { NewSessionDialog } from '@/components/new-session-dialog'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { useSessionsMut } from '@/hooks/use-sessions-mut'
+import { useAgents } from '@/hooks/use-agents'
 import { ShortcutRoot } from '@/hooks/use-shortcut'
 import { useIsMobile } from '@/hooks/use-is-mobile'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
@@ -62,6 +63,11 @@ export function RootLayout() {
   const { sessions, activeSession, setActiveSession, loadSessions } = useSessions(activeWorkspaceName)
   const activeSessionInfo = sessions.find(session => session.id === activeSession) ?? sessions[0]
   const { on } = useWebSocket()
+  const { agents } = useAgents()
+  const activeAgentName = activeSessionInfo?.agentName ?? activeWorkspaceInfo?.agent
+  const activeAgent = activeAgentName ? agents[activeAgentName] : undefined
+  const activeAgentType = activeSessionInfo?.agentType ?? activeAgent?.type
+  const activeModel = activeSessionInfo?.model ?? activeAgent?.model
 
   useEffect(() => {
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
@@ -188,7 +194,7 @@ export function RootLayout() {
           </Sheet>
         )}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
-          {!isTasksPage && <div className="flex min-h-[42px] shrink-0 items-center gap-2 border-b border-[#45475a] bg-[#313244] px-4">
+          {!isTasksPage && <div className="flex min-h-[64px] shrink-0 items-center gap-2 border-b border-[#45475a] bg-[#313244] px-4 py-2">
             {isSubPage ? (
               <button
                 onClick={() => navigate('/')}
@@ -200,12 +206,18 @@ export function RootLayout() {
             ) : (
               <span className="font-mono text-[#89b4fa]">&lt;-</span>
             )}
-            <div className="min-w-0">
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="truncate text-sm font-bold text-[#cdd6f4]">
                 Project / {activeProject?.name ?? '-'} · Workspace / {activeWorkspaceInfo?.name ?? '-'}
               </div>
-              <div className="truncate font-mono text-[11px] text-[#7f849c]">
-                project cwd: {shortPath(activeProject?.path)} | workspace: {activeWorkspaceName ?? '-'} | session id: {activeSessionInfo?.id ?? '-'}
+              <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5 font-mono text-[11px] text-[#7f849c]">
+                <span className="min-w-0 max-w-full truncate">project cwd: {shortPath(activeProject?.path)}</span>
+                <span className="min-w-0 max-w-full truncate">workspace: {activeWorkspaceName ?? '-'}</span>
+              </div>
+              <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5 font-mono text-[11px] text-[#7f849c]">
+                <span className="min-w-0 max-w-full truncate">agent: {activeAgentName ?? '-'}{activeAgentType ? ` (${activeAgentType})` : ''}</span>
+                <span className="min-w-0 max-w-full truncate">model: {activeModel ?? '-'}</span>
+                <span className="min-w-0 max-w-full truncate">session id: {activeSessionInfo?.id ?? '-'}</span>
               </div>
             </div>
             <nav className="ml-auto flex shrink-0 gap-1">
@@ -230,7 +242,7 @@ export function RootLayout() {
             activeWorkspace: activeWorkspaceInfo,
             workspaceName: activeWorkspaceName,
             sessions,
-            activeSession: activeSessionInfo?.id,
+            activeSession: activeSession ?? activeSessionInfo?.id,
             activeSessionInfo,
             setActiveSession,
           } satisfies ShellOutletContext} />
@@ -252,12 +264,13 @@ export function RootLayout() {
       <NewSessionDialog
         open={newSessionTarget !== null}
         onOpenChange={(open) => { if (!open) setNewSessionTarget(null) }}
-        workspace={newSessionTarget?.name ?? ''}
+        workspace={newSessionTarget?.source === 'main' ? 'main' : newSessionTarget?.name ?? ''}
         defaultAgent={newSessionTarget?.agent}
         onCreate={async ({ agent, sessionName }) => {
           if (!newSessionTarget) return
+          const targetWorkspaceName = newSessionTarget.source === 'main' ? 'main' : newSessionTarget.name
           const result = await sessionsMut.create(
-            { workspace: newSessionTarget.name, agent },
+            { workspace: targetWorkspaceName, agent },
             { onSuccess: () => { void loadSessions() } }
           )
           if (result?.sessionId) {

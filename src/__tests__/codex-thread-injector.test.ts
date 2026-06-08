@@ -90,9 +90,9 @@ rl.on('line', (line) => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(requests.map((request) => request.method)).toEqual(['initialize', 'thread/resume', 'turn/start']);
-    expect(requests[1].params.threadId).toBe('thread-existing-1');
-    expect(requests[2].params.input[0].text).toBe('synthetic callback');
+    expect(requests.map((request) => request.method)).toEqual(['initialize', 'initialized', 'thread/resume', 'turn/start']);
+    expect(requests[2].params.threadId).toBe('thread-existing-1');
+    expect(requests[3].params.input[0].text).toBe('synthetic callback');
   });
 
   test('injects a user message into an existing thread by default', async () => {
@@ -132,9 +132,9 @@ rl.on('line', (line) => {
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(requests.map((request) => request.method)).toEqual(['initialize', 'thread/resume', 'thread/inject_items']);
-    expect(requests[1].params.threadId).toBe('thread-existing-2');
-    expect(requests[2].params.items).toEqual([
+    expect(requests.map((request) => request.method)).toEqual(['initialize', 'initialized', 'thread/resume', 'thread/inject_items']);
+    expect(requests[2].params.threadId).toBe('thread-existing-2');
+    expect(requests[3].params.items).toEqual([
       {
         type: 'message',
         role: 'user',

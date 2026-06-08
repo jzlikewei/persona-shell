@@ -105,7 +105,7 @@ export class CodexDirectorRuntime {
       resumeSessionId: this.hooks.getSessionId() ?? undefined,
       mcpConfigPath: join(this.options.config.persona_dir, ".mcp.json"),
       stderrPath,
-      env: { DIRECTOR_LABEL: this.options.label },
+      env: this.hooks.getRuntimeEnv(),
     });
 
     this.activeChild = child;

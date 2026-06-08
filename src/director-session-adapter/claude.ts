@@ -130,7 +130,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
       sessionId: savedSession ?? undefined,
       sessionName,
       stderrPath: join(this.runtime.pipeDir, 'director-stderr.log'),
-      env: { DIRECTOR_LABEL: this.options.label },
+      env: this.hooks.getRuntimeEnv(),
     });
 
     if (pid) {

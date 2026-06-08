@@ -236,7 +236,7 @@ Shell 内置了 watchdog 机制，断连超过 2 分钟且飞书 API 可达时�
 
 ### 自定义 Skills 未被 Claude Code / Codex 加载
 
-`skills/` 目录下的自定义 Skill（如 abstract-dog-style、code-review、browser-harness 等）需要通过后端各自的发现入口加载：Claude Code 扫描 `.claude/skills`，Codex 扫描 `.agents/skills`。
+`skills/` 目录下的自定义 Skill（如 abstract-dog-style、code-review、browser-harness 等）需要通过后端各自的发现入口加载：Claude Code 扫描 `.claude/skills`，Codex / Codex App Server 扫描 `.agents/skills`。Persona Shell 当前不向 `codex app-server` 传独立的 `--skills-dir` 参数，因此 `.agents/skills` 软链接是 Codex 路径的正式加载入口。
 
 **解决方法**：确保身份仓库中存在两个软链接：`~/.persona/.claude/skills` → `~/.persona/skills`，`~/.persona/.agents/skills` → `~/.persona/skills`。`bun run init` 会自动创建这些软链接。如果是已有身份仓库缺少链接，手动执行：
 
@@ -246,3 +246,5 @@ ln -sf ../skills ~/.persona/.claude/skills
 mkdir -p ~/.persona/.agents
 ln -sf ../skills ~/.persona/.agents/skills
 ```
+
+如果软链接已补齐但 Codex Director 仍未看到新增 Skill，先执行 flush，让 App Server 创建新线程并重新读取当前身份资产；单纯 restart/resume 可能继续复用旧上下文。

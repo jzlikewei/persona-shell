@@ -7,13 +7,13 @@ import { useToast, type ToastTone } from '@/hooks/use-toast.tsx'
 const TONE_BORDER: Record<ToastTone, string> = {
   info: 'border-l-blue-500',
   success: 'border-l-emerald-500',
-  error: 'border-l-destructive',
+  error: 'border-l-red-900',
 }
 
 const TONE_BG: Record<ToastTone, string> = {
   info: 'bg-blue-500/10',
   success: 'bg-emerald-500/10',
-  error: 'bg-destructive/10',
+  error: 'border-red-700 bg-[#dc2626]',
 }
 
 const TONE_ICON: Record<ToastTone, typeof Info> = {
@@ -25,7 +25,7 @@ const TONE_ICON: Record<ToastTone, typeof Info> = {
 const TONE_ICON_COLOR: Record<ToastTone, string> = {
   info: 'text-blue-500',
   success: 'text-emerald-500',
-  error: 'text-destructive',
+  error: 'text-white',
 }
 
 export function ToastViewport() {
@@ -62,14 +62,19 @@ export function ToastViewport() {
           >
             <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', TONE_ICON_COLOR[t.tone])} />
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-card-foreground">{t.title}</div>
+              <div className={cn('text-sm font-medium', t.tone === 'error' ? 'text-white' : 'text-card-foreground')}>{t.title}</div>
               {t.description && (
-                <div className="mt-0.5 text-xs text-muted-foreground">{t.description}</div>
+                <div className={cn('mt-0.5 text-xs', t.tone === 'error' ? 'text-red-50' : 'text-muted-foreground')}>{t.description}</div>
               )}
             </div>
             <button
               onClick={() => dismiss(t.id)}
-              className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+              className={cn(
+                'shrink-0 rounded p-0.5',
+                t.tone === 'error'
+                  ? 'text-red-50 hover:bg-red-700 hover:text-white'
+                  : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
               aria-label="Dismiss notification"
             >
               <X className="h-3.5 w-3.5" />

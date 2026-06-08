@@ -25,6 +25,7 @@ describe('CodexAppServerRuntime', () => {
       {
         getSessionId: () => 'thread-1',
         getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
         setSessionName: () => {},
         buildSessionName: () => 'session-1',
         persistSession: () => {},
@@ -103,6 +104,7 @@ describe('CodexAppServerRuntime', () => {
       {
         getSessionId: () => 'thread-1',
         getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'f95f0739', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
         setSessionName: () => {},
         buildSessionName: () => 'session-1',
         persistSession: () => {},
@@ -126,6 +128,8 @@ describe('CodexAppServerRuntime', () => {
     expect(args.slice(0, 2)).toEqual(['app-server', '-c']);
     expect(cFlags).toContain('mcp_servers.persona-tasks.command="bun"');
     expect(cFlags.some((flag) => flag.includes('DIRECTOR_LABEL = "f95f0739"'))).toBe(true);
+    expect(cFlags.some((flag) => flag.includes('PERSONA_SESSION_ID = "thread-1"'))).toBe(true);
+    expect(cFlags.some((flag) => flag.includes('PERSONA_WORKSPACE = "main"'))).toBe(true);
     expect(args.slice(-2)).toEqual(['--listen', 'stdio://']);
 
     rmSync(personaDir, { recursive: true, force: true });
@@ -156,6 +160,7 @@ describe('CodexAppServerRuntime', () => {
       {
         getSessionId: () => 'thread-1',
         getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
         setSessionName: () => {},
         buildSessionName: () => 'session-1',
         persistSession: () => {},

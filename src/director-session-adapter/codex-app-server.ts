@@ -20,6 +20,7 @@ export class CodexAppServerSessionAdapter implements DirectorSessionAdapter {
       {
         getSessionId: () => this.hooks.getSessionId(),
         getSessionName: () => this.hooks.getSessionName(),
+        getRuntimeEnv: () => this.hooks.getRuntimeEnv(),
         setSessionName: (name) => this.hooks.setSessionName(name),
         buildSessionName: () => this.hooks.buildSessionName(),
         persistSession: (sessionId, sessionName) => this.hooks.persistSession(sessionId, sessionName),

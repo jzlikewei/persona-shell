@@ -22,6 +22,7 @@ export interface CodexTurnCloseEvent {
 export interface CodexTurnRuntimeHooks {
   getSessionId(): string | null;
   getSessionName(): string | null;
+  getRuntimeEnv(): Record<string, string>;
   setSessionName(name: string): void;
   buildSessionName(): string;
   onLine(line: string, sessionName: string): void;

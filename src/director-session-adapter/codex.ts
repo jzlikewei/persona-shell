@@ -101,6 +101,7 @@ export class CodexSessionAdapter implements DirectorSessionAdapter {
       {
         getSessionId: () => this.hooks.getSessionId(),
         getSessionName: () => this.hooks.getSessionName(),
+        getRuntimeEnv: () => this.hooks.getRuntimeEnv(),
         setSessionName: (name) => this.hooks.setSessionName(name),
         buildSessionName: () => this.hooks.buildSessionName(),
         onLine: (line, sessionName) => this.handleLine(line, sessionName),

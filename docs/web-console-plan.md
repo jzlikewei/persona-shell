@@ -1,7 +1,7 @@
 # Web 管理控制台 — 设计与状态
 
 > 当前状态说明（2026-06-08）:
-> 这份文档描述的是 legacy Web Console 的设计和历史状态。当前 `http://localhost:3000/` 已由 web-v2 承担主入口,聚焦 Chat / Tasks / Files；legacy 控制台保留在 `/v1`,作为 Runtime / Automations / Persona / Logs / Settings 等深度管理能力的 fallback。
+> 这份文档描述的是 legacy Web Console 的设计和历史状态。当前 `http://localhost:3000/` 已由 web-v2 承担唯一 Web 入口,聚焦 Chat / Tasks / Files；legacy 控制台和 `/v1` 入口已下线,不再作为 fallback 维护。
 >
 > web-v2 的当前事实源见 `web-v2/README.md`、`web-v2/ARCHITECTURE.md` 和 `web-v2/BLUEPRINT.md`。
 
@@ -22,7 +22,7 @@ persona-shell (Bun)
     │     ├── WebSocket           推状态(1s) + 推 chunk(实时) + 收命令
     │     ├── buildSnapshot()     状态快照（含 DirectorPool）
     │     └── broadcastWs()       chunk / stream-abort 广播
-    └── public/index.html ← 前端 SPA（vanilla JS + marked.js）
+    └── public/index.html ← 已删除的 legacy SPA（vanilla JS + marked.js）
 ```
 
 嵌入 Shell 进程，不独立部署。原因：Queue 状态在内存里，Director 实例引用在进程内。
@@ -62,9 +62,11 @@ persona-shell (Bun)
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/messages?limit=N&sessionId=&director=` | GET | 会话消息。`director={label}` 查询 pool Director |
-| `/api/sessions?director=` | GET | 会话列表。`director={label}` 查询 pool Director |
-| `/api/send` | POST | 向 Director 发消息（绕过飞书） |
+| `/api/messages?sessionId={id}&limit=N` | GET | 按 sessionId 查询会话消息 |
+| `/api/sessions?workspace={name}` | GET | 查询 workspace 下的会话列表 |
+| `/api/sessions` | POST | 创建 workspace 会话 |
+| `/api/send` | POST | 向指定 session 发送消息；body 只接受 `{ sessionId, text }` |
+| `/api/shell/restart` | POST | 重启整个 Shell |
 | `/api/flush` | POST | 手动 flush |
 | `/api/esc` | POST | 取消最旧消息 |
 | `/api/restart` | POST | 重启 Director |

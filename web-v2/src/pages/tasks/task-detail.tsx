@@ -540,7 +540,8 @@ export function ResultPanel({ task, onClose }: { task: Task | null; onClose: () 
               {task.agent && <div className="flex justify-between"><span className="text-[#6c7086]">Agent</span><span className="text-[#a6adc8]">{task.agent}</span></div>}
               {model && <div className="flex justify-between"><span className="text-[#6c7086]">Model</span><span className="text-[#a6adc8]">{model}</span></div>}
               {projectDir && <div className="flex justify-between"><span className="text-[#6c7086]">Project Dir</span><span className="truncate ml-4 text-[#a6adc8]">{projectDir}</span></div>}
-              <div className="flex justify-between"><span className="text-[#6c7086]">Source</span><span className="text-[#a6adc8]">{task.source_director || 'main'}</span></div>
+              <div className="flex justify-between"><span className="text-[#6c7086]">Workspace</span><span className="text-[#a6adc8]">{task.workspace || 'main'}</span></div>
+              {task.source_session_id && <div className="flex justify-between"><span className="text-[#6c7086]">Session</span><span className="ml-4 truncate text-[#a6adc8]">{task.source_session_id}</span></div>}
               <div className="flex justify-between"><span className="text-[#6c7086]">Created</span><span className="text-[#a6adc8]">{formatTime(task.created_at)}</span></div>
               {task.duration_ms != null && (
                 <div className="flex justify-between"><span className="text-[#6c7086]">Duration</span><span className="text-[#a6adc8]">{formatDuration(task.duration_ms)}</span></div>

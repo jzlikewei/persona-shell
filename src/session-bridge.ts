@@ -23,9 +23,8 @@ import type {
   DirectorTurnResult,
   RestoredSessionState,
 } from './director-session-adapter/index.js';
-import { getState, setState, listTasks, upsertSession, markSessionAlive, setSessionNameInDb, importSessionsFromLogs, getWorkspaceSessionStats } from './task/task-store.js';
+import { getState, setState, listTasks, upsertSession, markSessionAlive, setSessionNameInDb } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
-import { parseSessionsFiles } from './log-parser.js';
 
 let _localHostName: string | null = null;
 function getLocalHostName(): string {
@@ -253,55 +252,8 @@ export class SessionBridge extends EventEmitter {
   async start(): Promise<boolean> {
     const freshStart = await this.adapter.start();
     this.persistDirectorAgentName(this.directorAgent.name);
-    this.backfillSessionsFromLogs();
     console.log(this.adapter.describeSessionReady(this.label, this.sessionId, this.sessionName));
     return freshStart;
-  }
-
-  /** One-time backfill: import sessions from old log files into DB if DB is empty for this workspace. */
-  private backfillSessionsFromLogs(): void {
-    try {
-      const stats = getWorkspaceSessionStats(this.workspaceName);
-      if (stats.sessionCount > 0) return;
-
-      // Scan old label-based log path + new workspace-based path
-      const oldLogs = this.listLogFiles(this.label, 'output');
-      const newLogs = this.workspaceName !== this.label ? this.listLogFiles(this.workspaceName, 'output') : [];
-      const allLogs = [...new Set([...newLogs, ...oldLogs])].sort();
-      if (allLogs.length === 0) return;
-
-      const parsed = parseSessionsFiles(allLogs);
-      if (parsed.length === 0) return;
-
-      const nameMap = getState<Record<string, string>>('session:names') ?? {};
-      importSessionsFromLogs(
-        this.workspaceName,
-        parsed.map((s) => ({
-          sessionId: s.sessionId,
-          sessionName: s.sessionName ?? nameMap[s.sessionId],
-          messageCount: s.messageCount,
-          firstMessageAt: s.firstMessageAt,
-          lastMessageAt: s.lastMessageAt,
-        })),
-      );
-      console.log(`[bridge:${this.label}] Backfilled ${parsed.length} sessions into DB for workspace "${this.workspaceName}"`);
-    } catch (err) {
-      console.warn(`[bridge:${this.label}] Session backfill failed:`, err);
-    }
-  }
-
-  private listLogFiles(dir: string, kind: 'input' | 'output'): string[] {
-    const logPath = join(getLogDir(), dir);
-    if (!existsSync(logPath)) return [];
-    const pattern = new RegExp('^' + kind + '-\\d{8}\\.log$');
-    try {
-      return readdirSync(logPath)
-        .filter((name) => pattern.test(name))
-        .sort()
-        .map((name) => join(logPath, name));
-    } catch {
-      return [];
-    }
   }
 
   /** Whether this bridge resumed an existing session (has a persisted session ID). */
@@ -559,6 +511,10 @@ export class SessionBridge extends EventEmitter {
     return this.directorAgent.type;
   }
 
+  getDirectorAgentModel(): string | undefined {
+    return this.directorAgent.model;
+  }
+
   getPersonaRole(): string {
     return this.personaRole;
   }
@@ -579,6 +535,7 @@ export class SessionBridge extends EventEmitter {
     pendingCount: number;
     agentName: string;
     agentType: AgentRuntimeConfig['type'];
+    agentModel: string | null;
     personaRole: string;
     lastInputTokens: number;
     contextTokens: number;
@@ -626,6 +583,7 @@ export class SessionBridge extends EventEmitter {
       pendingCount: this.pendingCount,
       agentName: this.directorAgent.name,
       agentType: this.directorAgent.type,
+      agentModel: this.directorAgent.model ?? null,
       personaRole: this.personaRole,
       lastInputTokens: this.lastInputTokens,
       contextTokens: this.contextTokens,
@@ -1191,6 +1149,7 @@ export class SessionBridge extends EventEmitter {
       clearSession: () => this.clearSession(),
       getSessionId: () => this.sessionId,
       getSessionName: () => this.sessionName,
+      getRuntimeEnv: () => this.buildRuntimeEnv(),
       setSessionName: (sessionName) => { this.sessionName = sessionName; },
       buildSessionName: () => this.buildSessionName(),
       logOutput: (line) => this.logOutputEvent(line),
@@ -1201,6 +1160,14 @@ export class SessionBridge extends EventEmitter {
       onTurnComplete: (result) => this.handleTurnComplete(result),
       onTurnFailure: (message) => this.handleTurnFailure(message),
       onRuntimeClosed: () => this.handleRuntimeClosed(),
+    };
+  }
+
+  private buildRuntimeEnv(): Record<string, string> {
+    return {
+      DIRECTOR_LABEL: this.label,
+      PERSONA_WORKSPACE: this.workspaceName,
+      ...(this.sessionId ? { PERSONA_SESSION_ID: this.sessionId } : {}),
     };
   }
 
@@ -1222,8 +1189,10 @@ export class SessionBridge extends EventEmitter {
     if (sessionName) this.rememberSessionName(sessionId, sessionName);
     try {
       upsertSession(this.workspaceName, sessionId, {
-        messageCountDelta: 0,
         sessionName: sessionName ?? undefined,
+        agentName: this.directorAgent.name,
+        agentType: this.directorAgent.type,
+        model: this.directorAgent.model ?? null,
       });
       markSessionAlive(sessionId, true);
     } catch { /* best-effort */ }
@@ -1532,7 +1501,7 @@ export class SessionBridge extends EventEmitter {
     // Write to sessions DB on meaningful turns
     if (this.sessionId && resolvedTurnType === 'user') {
       try {
-        upsertSession(this.workspaceName, this.sessionId, { messageCountDelta: 1 });
+        upsertSession(this.workspaceName, this.sessionId, {});
       } catch { /* best-effort */ }
     }
 

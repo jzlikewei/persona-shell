@@ -13,6 +13,8 @@ import {
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
 const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
+const PERSONA_SESSION_ID = process.env.PERSONA_SESSION_ID?.trim() || undefined;
+const PERSONA_WORKSPACE = process.env.PERSONA_WORKSPACE?.trim() || (DIRECTOR_LABEL === 'main' ? 'main' : DIRECTOR_LABEL);
 const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
@@ -368,7 +370,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         prompt: enrichedArgs.prompt,
         project_dir: enrichedArgs.project_dir,
         timeout_ms: enrichedArgs.timeout_ms,
-        source_director: DIRECTOR_LABEL,
+        source_session_id: PERSONA_SESSION_ID,
+        workspace: PERSONA_WORKSPACE,
         extra: compactRecord({
           persona_role: enrichedArgs.role,
           parent_codex_thread_id: enrichedArgs.parent_codex_thread_id,
@@ -398,7 +401,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         max_retry: enrichedArgs.max_retry,
         project_dir: enrichedArgs.project_dir,
         timeout_ms: enrichedArgs.timeout_ms,
-        source_director: DIRECTOR_LABEL,
+        source_session_id: PERSONA_SESSION_ID,
+        workspace: PERSONA_WORKSPACE,
         extra: compactRecord({
           codex_callback: buildCodexCallback(enrichedArgs),
         }),
@@ -428,7 +432,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         action_name: enrichedArgs.action_name,
         timeout_ms: enrichedArgs.timeout_ms,
         max_retry: enrichedArgs.max_retry,
-        source_director: DIRECTOR_LABEL,
+        workspace: PERSONA_WORKSPACE,
       });
     case 'list_cron_jobs':
       return callShell('GET', '/api/cron-jobs');

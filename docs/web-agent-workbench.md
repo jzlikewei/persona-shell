@@ -1,9 +1,9 @@
 # Persona Web Console — 本地操作台升级蓝图
 
 > 当前状态说明（2026-06-08）:
-> 这份文档是 Workbench/legacy Web Console 的产品蓝图,记录的是完整本地操作台方向。当前主入口 web-v2 只承诺 Chat / Tasks / Files,并不等同于这里规划的 Runtime / Automations / Persona / Observability / Settings 全量工作台。
+> 这份文档是 Workbench/legacy Web Console 的产品蓝图,记录的是完整本地操作台方向。当前唯一 Web 入口 web-v2 只承诺 Chat / Tasks / Files,并不等同于这里规划的 Runtime / Automations / Persona / Observability / Settings 全量工作台。
 >
-> 因此,本文适合作为能力迁移候选池和 legacy `/v1` 能力说明;web-v2 当前边界以 `web-v2/README.md`、`web-v2/ARCHITECTURE.md`、`web-v2/BLUEPRINT.md` 为准。
+> 旧 `/v1` 已下线。本文只作为能力迁移候选池和历史参考;web-v2 当前边界以 `web-v2/README.md`、`web-v2/ARCHITECTURE.md`、`web-v2/BLUEPRINT.md` 为准。
 
 ## 定位
 
@@ -316,9 +316,10 @@ Web Console 的一级导航建议保持稳定，不直接暴露过多技术细�
 |------|----------|
 | 状态快照 | WebSocket `status`，包含 context live/cache、context window、flush limit、auto flush 状态 |
 | 流式响应 | WebSocket `chunk` / `stream-abort` |
-| Web Chat | WebSocket `chat` / `chat_reply`，`POST/DELETE /api/web-sessions` |
-| 会话消息 | `GET /api/messages` |
-| 会话列表 | `GET /api/sessions` |
+| Web Chat | `POST /api/send { sessionId, text }` + WebSocket 状态/流式事件 |
+| 会话消息 | `GET /api/messages?sessionId={id}` |
+| 会话列表 | `GET /api/sessions?workspace={name}` |
+| 会话创建 | `POST /api/sessions { workspace }` |
 | 会话重命名 | `PUT /api/sessions/name` |
 | Director provider 切换 | `POST /api/directors/switch-agent` |
 | Director persona 切换 | `POST /api/directors/switch-persona` |

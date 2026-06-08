@@ -52,10 +52,13 @@ interface ClosedPoolEntry {
 
 const MIN_MESSAGES_FOR_FLUSH = 5;
 
-/** 管理多个 Director 会话实例的生命周期。
+/**
+ * Runtime pool for non-main Agent processes.
  *
- *  命名说明："DirectorPool" 是领域概念（管理多个 Director 角色的会话），
- *  底层实现使用 SessionBridge。保留 "Director" 命名以对齐架构文档和用户心智模型。 */
+ * DirectorPool owns process lifecycle, queues, streaming transports, recovery,
+ * and low-level runtime commands. Workspace/session routing belongs to
+ * SessionManager; routingKey is only this pool's internal Map key.
+ */
 export class DirectorPool extends EventEmitter {
   private entries: Map<string, PoolEntry> = new Map();
   private closedEntries: Map<string, ClosedPoolEntry> = new Map();

@@ -34,7 +34,7 @@ interface WorkspaceCreateSheetProps {
   createWorkspace: (name: string, opts?: { cwd?: string; agent?: string }) => Promise<WorkspaceInfo>
   /** When set, the sheet is in "configure existing workspace" mode */
   existingWorkspace?: WorkspaceInfo
-  updateWorkspaceConfig?: (name: string, opts: { cwd?: string; agent?: string }) => Promise<void>
+  updateWorkspaceConfig?: (name: string, opts: { cwd?: string; agent?: string; originalName?: string }) => Promise<void>
   /** 打开时预选 cwd,用于 "Bind project" 模式 */
   initialCwd?: string
 }
@@ -128,7 +128,7 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
     setError(null)
     try {
       if (isConfigMode && updateWorkspaceConfig) {
-        await updateWorkspaceConfig(name.trim(), { cwd: selectedCwd, agent: selectedAgent })
+        await updateWorkspaceConfig(name.trim(), { cwd: selectedCwd, agent: selectedAgent, originalName: existingWorkspace?.name })
         onOpenChange(false)
       } else {
         const workspace = await createWorkspace(name.trim(), { cwd: selectedCwd, agent: selectedAgent })
@@ -139,7 +139,7 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
     } finally {
       setCreating(false)
     }
-  }, [name, selectedCwd, selectedAgent, isConfigMode, createWorkspace, updateWorkspaceConfig, onCreated, onOpenChange])
+  }, [name, selectedCwd, selectedAgent, isConfigMode, createWorkspace, updateWorkspaceConfig, onCreated, onOpenChange, existingWorkspace?.name])
 
   const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~')
   const agentNames = Object.keys(agents)
@@ -161,8 +161,8 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
               value={name}
               onChange={e => setName(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') handleCreate() }}
-              readOnly={isConfigMode}
-              autoFocus={!isConfigMode}
+              readOnly={existingWorkspace?.source === 'main'}
+              autoFocus
             />
           </div>
 

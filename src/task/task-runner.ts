@@ -354,6 +354,7 @@ export class TaskRunner extends EventEmitter {
     const hooks: CodexAppServerRuntimeHooks = {
       getSessionId: () => sessionId,
       getSessionName: () => sessionName,
+      getRuntimeEnv: () => ({ DIRECTOR_LABEL: input.taskId }),
       setSessionName: (name) => { sessionName = name; },
       buildSessionName: () => sessionName ?? `${input.taskId} ${input.role}`,
       persistSession: (id, name) => {

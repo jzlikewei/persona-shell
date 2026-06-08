@@ -8,7 +8,7 @@ import { useToast } from '@/components/toast'
 /**
  * 侧边栏底部的"重启 Shell"快捷按钮。
  *
- * 行为:走 `POST /api/send { text: '/shell-restart' }`,被 console.ts:2819 拦截,
+ * 行为:走 `POST /api/shell/restart`,
  * 走 shell-restart.ts 路径:detaching pool Directors + shutdown main Director +
  * 退出 Shell 进程(由守护进程重新拉起)。这是**硬重启**——session 状态、内存、
  * 子进程全清,跟 `/api/session-restart`(只重启 session 内部 thread)完全不同。
@@ -27,7 +27,17 @@ export function RestartShellButton() {
     setConfirming(false)
     setPending(true)
     try {
-      const res = await post<{ ok: boolean; message?: string }>('/api/send', { text: '/shell-restart' })
+      const token = localStorage.getItem('auth_token') || ''
+      const headers = new Headers({ 'Content-Type': 'application/json' })
+      if (token) headers.set('Authorization', `Bearer ${token}`)
+      const restartRes = await fetch('/api/shell/restart', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+      })
+      const res = restartRes.status === 404
+        ? await post<{ ok: boolean; message?: string }>('/api/send', { text: '/shell-restart' })
+        : await restartRes.json() as { ok: boolean; message?: string }
       if (!res.ok) {
         toast({ title: 'Shell 重启失败', description: res.message, tone: 'error' })
       } else {
