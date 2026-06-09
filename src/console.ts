@@ -133,12 +133,12 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
 
   // Closed/unknown director: try workspace name path + old label path
   const closedLabel = entry?.label ?? requested;
-  const groupName = entry?.groupName;
-  const inputLogs = groupName
-    ? deduplicateLogs(listDirectorLogs(groupName, 'input'), listDirectorLogs(closedLabel, 'input'))
+  const workspaceName = entry?.workspaceName;
+  const inputLogs = workspaceName
+    ? deduplicateLogs(listDirectorLogs(workspaceName, 'input'), listDirectorLogs(closedLabel, 'input'))
     : listDirectorLogs(closedLabel, 'input');
-  const outputLogs = groupName
-    ? deduplicateLogs(listDirectorLogs(groupName, 'output'), listDirectorLogs(closedLabel, 'output'))
+  const outputLogs = workspaceName
+    ? deduplicateLogs(listDirectorLogs(workspaceName, 'output'), listDirectorLogs(closedLabel, 'output'))
     : listDirectorLogs(closedLabel, 'output');
   return { label: closedLabel, inputLogs, outputLogs };
 }
@@ -557,7 +557,7 @@ export function startConsole(
 
     const runtimePool = sessionManager ? sessionManager.getRuntimeStatus().map((entry) => ({
       routingKey: entry.routingKey,
-      groupName: entry.groupName,
+      workspaceName: entry.workspaceName,
       label: entry.label,
       lastActiveAt: entry.lastActiveAt,
       queueLength: entry.queueLength,
@@ -574,7 +574,7 @@ export function startConsole(
       liveSessionArchived: entry.directorStatus?.sessionId
         ? getSessionRecord(entry.directorStatus.sessionId)?.archived === 1
         : false,
-      directorAgentName: entry.directorAgentName ?? entry.directorStatus?.agentName ?? null,
+      agentName: entry.agentName ?? entry.directorStatus?.agentName ?? null,
       directorAgentType: entry.directorStatus?.agentType ?? null,
       directorAgentModel: entry.directorStatus?.agentModel ?? null,
       personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
@@ -621,7 +621,7 @@ export function startConsole(
           // —— 否则归档"当前活跃 session"后,DB SQL 过滤+后端 live 合并都跳过了,
           // 但前端 hook 又 unshift 回来,UI 永远看不到归档生效。
           liveSessionArchived: ds.sessionId ? getSessionRecord(ds.sessionId)?.archived === 1 : false,
-          directorAgentName: ds.agentName,
+          agentName: ds.agentName,
           directorAgentType: ds.agentType,
           directorAgentModel: ds.agentModel,
           personaRole: ds.personaRole,
@@ -1853,7 +1853,7 @@ export function startConsole(
       return {
         ok: true,
         director_label: 'main',
-        agent: director.getDirectorAgentName(),
+        agent: director.getAgentName(),
         agent_type: director.getDirectorAgentType(),
       };
     }
@@ -1866,7 +1866,7 @@ export function startConsole(
     return {
       ok: true,
       director_label: entry.bridge.label,
-      agent: entry.bridge.getDirectorAgentName(),
+      agent: entry.bridge.getAgentName(),
       agent_type: entry.bridge.getDirectorAgentType(),
     };
   }
@@ -1970,7 +1970,7 @@ export function startConsole(
           result = {
             ok: true,
             message: 'Director 已 Detach，底层进程未主动关闭',
-            detail: { routingKey: entry.routingKey, groupName: entry.groupName },
+            detail: { routingKey: entry.routingKey, workspaceName: entry.workspaceName },
           };
           break;
         }
@@ -2480,7 +2480,7 @@ export function startConsole(
               text?: string;
               chat_type?: 'p2p' | 'group';
               chat_id?: string;
-              group_name?: string;
+              workspace_name?: string;
               sender_name?: string;
               thread_id?: string;
               quoted_text?: string;
@@ -2496,7 +2496,7 @@ export function startConsole(
               messageId,
               chatId,
               chatType,
-              groupName: chatType === 'group' ? (body.group_name || 'Debug Group') : undefined,
+              workspaceName: chatType === 'group' ? (body.workspace_name || 'Debug Group') : undefined,
               memberCount: chatType === 'group' ? 3 : undefined,
               threadId: body.thread_id?.trim() || undefined,
               quotedText: body.quoted_text?.trim() || undefined,
@@ -2510,7 +2510,7 @@ export function startConsole(
               target: chatId,
               messageId,
               chatType,
-              groupName: incoming.groupName ?? null,
+              workspaceName: incoming.workspaceName ?? null,
               textPreview: text.slice(0, 160),
             });
             return Response.json({ ok: true, message_id: messageId, chat_id: chatId, chat_type: chatType, handlers: chatHandlers.length });
@@ -2878,7 +2878,7 @@ export function startConsole(
                   const workspaceAgent = getWorkspace(dbRecord.workspace)?.agent ?? undefined;
                   const revived = await sessionManager.reviveSession(sessionId, {
                     feishuChatId: 'web-console',
-                    directorAgentName: dbRecord.agent_name ?? workspaceAgent,
+                    agentName: dbRecord.agent_name ?? workspaceAgent,
                   });
                   if (revived?.sessionId) {
                     await sessionManager.send(revived.sessionId, text, messageId, { webOnly: true });
@@ -2946,7 +2946,7 @@ export function startConsole(
             // MCP send_attachment calls do not pass target_channel. Queue them on the
             // active turn so attachments are sent after the text reply completes.
             if (!body.target_channel) {
-              const attachment = { path: resolved, sourceSessionId: sourceSessionId ?? undefined, workspace: sourceWorkspace ?? undefined, sourceDirector: legacySourceDirector ?? undefined };
+              const attachment = { path: resolved, sourceSessionId: sourceSessionId ?? undefined, workspace: sourceWorkspace ?? undefined };
               const item = sourceSessionId && sessionManager
                 ? sessionManager.enqueueAttachmentForHeadBySessionId(sourceSessionId, attachment)
                 : workspaceDefaultSessionId && sessionManager
@@ -3145,7 +3145,7 @@ export function startConsole(
               ok: true,
               item: {
                 director_label: cancelled.label,
-                groupName: cancelled.groupName,
+                workspaceName: cancelled.workspaceName,
                 correlationId,
                 messageId: cancelled.item.messageId,
                 interrupted: cancelled.interrupted,
@@ -3274,7 +3274,7 @@ export function startConsole(
             }));
 
             // Merge live status by stable sessionId. Do not infer workspace sessions
-            // from AgentRuntimePool groupName/routingKey; SessionManager is the domain boundary.
+            // from AgentRuntimePool workspaceName/routingKey; SessionManager is the domain boundary.
             for (const s of sessions) {
               const liveEntry = sessionManager?.getSession(s.sessionId);
               const ds = liveEntry?.bridge.getStatus();
@@ -3573,7 +3573,7 @@ export function startConsole(
                 throw err;
               }
               await sessionManager.getRuntime().shutdown(target.routingKey);
-              writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, groupName: target.groupName ?? null });
+              writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, workspaceName: target.workspaceName ?? null });
               return Response.json({ ok: true, director_label: targetLabel, routing_key: target.routingKey });
             } catch (err) {
               const error = err as Error & { status?: number };
@@ -3831,7 +3831,7 @@ export function startConsole(
               if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
               const entry = await sessionManager.createNewSession(wsName, {
                 feishuChatId: 'web-console',
-                directorAgentName: body.agent,
+                agentName: body.agent,
               });
               writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
               return Response.json({

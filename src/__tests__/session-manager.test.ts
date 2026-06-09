@@ -68,7 +68,7 @@ class FakeAdapter implements DirectorSessionAdapter {
   completeTurn(result: DirectorTurnResult) { this.hooks.onTurnComplete(result); }
 }
 
-function createTestBridge(label: string, groupName: string): SessionBridge {
+function createTestBridge(label: string, workspaceName: string): SessionBridge {
   return new SessionBridge({
     agents: {
       defaults: { director: 'fake', default: 'fake' },
@@ -88,7 +88,7 @@ function createTestBridge(label: string, groupName: string): SessionBridge {
     },
     label,
     isMain: false,
-    groupName,
+    workspaceName,
     directorFactory: (options, hooks) => new FakeAdapter(options, hooks),
   });
 }
@@ -148,7 +148,7 @@ function createRestoredEntry(sessionId: string, workspace: string, routingKey: s
     queue: new MessageQueue('/dev/null'),
     routingKey,
     feishuChatId: routingKey,
-    groupName: workspace,
+    workspaceName: workspace,
     lastActiveAt: Date.now(),
     messagesSinceFlush: 0,
   };
@@ -187,7 +187,7 @@ describe('SessionManager', () => {
 
     registry.getOrCreate('test-ws');
     createSessionRecord({ sessionId: 'sess-1', workspace: 'test-ws', role: 'director' });
-    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', groupName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
+    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', workspaceName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
 
     expect(getSessionRecord('sess-1')).not.toBeNull();
   });
@@ -199,7 +199,7 @@ describe('SessionManager', () => {
 
     registry.getOrCreate('test-ws');
     createSessionRecord({ sessionId: 'sess-1', workspace: 'test-ws' });
-    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', groupName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
+    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', workspaceName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
 
     expect(getWorkspace('test-ws')!.default_session_id).toBe('sess-1');
   });
@@ -212,7 +212,7 @@ describe('SessionManager', () => {
     registry.getOrCreate('test-ws');
     setDefaultSession('test-ws', 'existing-session');
     createSessionRecord({ sessionId: 'sess-2', workspace: 'test-ws' });
-    manager.registerSession('sess-2', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', groupName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
+    manager.registerSession('sess-2', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', workspaceName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
 
     expect(getWorkspace('test-ws')!.default_session_id).toBe('existing-session');
   });

@@ -536,14 +536,14 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       // Sets accept both chat_id (oc_xxx) and group name for matching.
       if (chatType === 'group') {
         const chatInfo = await getChatInfo(chat_id);
-        const groupName = chatInfo?.name ?? '';
-        const inMentionOnly = mentionOnlySet.has(chat_id) || (groupName && mentionOnlySet.has(groupName));
-        const inSkipMention = skipMentionSet.has(chat_id) || (groupName && skipMentionSet.has(groupName));
+        const workspaceName = chatInfo?.name ?? '';
+        const inMentionOnly = mentionOnlySet.has(chat_id) || (workspaceName && mentionOnlySet.has(workspaceName));
+        const inSkipMention = skipMentionSet.has(chat_id) || (workspaceName && skipMentionSet.has(workspaceName));
 
         if (inMentionOnly) {
           const hasBotMention = mentions?.some((m) => isBotMention(m)) ?? false;
           if (!hasBotMention) {
-            log.debug(`[feishu] mention_only group without @bot, skipped (chat_id=${chat_id}, name=${groupName})`);
+            log.debug(`[feishu] mention_only group without @bot, skipped (chat_id=${chat_id}, name=${workspaceName})`);
             return;
           }
         } else if (!inSkipMention) {
@@ -564,7 +564,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
         const info = await getChatInfo(chat_id);
         if (info) {
           msg.memberCount = info.memberCount;
-          msg.groupName = info.name;
+          msg.workspaceName = info.name;
         }
         if (senderOpenId) {
           msg.senderName = await getUserName(senderOpenId);

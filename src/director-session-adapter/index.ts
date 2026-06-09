@@ -98,7 +98,6 @@ export interface DirectorSessionAdapter {
 export interface DirectorSessionAdapterOptions {
   label: string;
   isMain: boolean;
-  groupName?: string;
   personaRole?: string;
   workspaceName: string;
   workspaceContextPath: string;

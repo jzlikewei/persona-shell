@@ -79,28 +79,28 @@ export class SessionManager extends EventEmitter {
   /** Get or create a session for a workspace */
   async getOrCreateForWorkspace(workspaceName: string, opts: {
     feishuChatId: string;
-    directorAgentName?: string;
-    groupName?: string;
+    agentName?: string;
+    workspaceName?: string;
   }): Promise<SessionEntry> {
     const workspace = this.workspaceRegistry.getOrCreate(workspaceName);
-    const directorAgentName = opts.directorAgentName ?? workspace.agent ?? undefined;
+    const agentName = opts.agentName ?? workspace.agent ?? undefined;
     const routingKey = opts.feishuChatId === 'web-console'
       ? `web-workspace:${workspaceName}`
       : opts.feishuChatId;
 
     let entry = await this.pool.getOrCreate(routingKey, {
-      groupName: opts.groupName ?? workspaceName,
+      workspaceName: opts.workspaceName ?? workspaceName,
       feishuChatId: opts.feishuChatId,
-      directorAgentName,
+      agentName,
     });
 
     let sessionId = entry.bridge.getStatus().sessionId;
     if (sessionId && getSessionRecord(sessionId)?.archived) {
       this.sessionToRoutingKey.delete(sessionId);
       entry = await this.pool.resetSession(routingKey, {
-        groupName: opts.groupName ?? workspaceName,
+        workspaceName: opts.workspaceName ?? workspaceName,
         feishuChatId: opts.feishuChatId,
-        directorAgentName,
+        agentName,
       });
       sessionId = entry.bridge.getStatus().sessionId;
     }
@@ -119,7 +119,7 @@ export class SessionManager extends EventEmitter {
   /** Revive a concrete session by its sessionId without falling back to another workspace session. */
   async reviveSession(sessionId: string, opts: {
     feishuChatId: string;
-    directorAgentName?: string;
+    agentName?: string;
   }): Promise<SessionEntry | null> {
     const record = getSessionRecord(sessionId);
     if (!record || record.archived === 1) return null;
@@ -128,14 +128,14 @@ export class SessionManager extends EventEmitter {
     if (!routingKey) return null;
 
     const workspace = this.workspaceRegistry.getOrCreate(record.workspace);
-    const directorAgentName = opts.directorAgentName
+    const agentName = opts.agentName
       ?? record.agent_name
       ?? workspace.agent
       ?? undefined;
     const entry = await this.pool.getOrCreate(routingKey, {
-      groupName: record.workspace,
+      workspaceName: record.workspace,
       feishuChatId: opts.feishuChatId,
-      directorAgentName,
+      agentName,
       initialSessionId: sessionId,
     });
     const revivedSessionId = entry.bridge.getStatus().sessionId;
@@ -162,8 +162,8 @@ export class SessionManager extends EventEmitter {
 
   async sendToWorkspaceDefaultSession(workspaceName: string, opts: {
     feishuChatId: string;
-    directorAgentName?: string;
-    groupName?: string;
+    agentName?: string;
+    workspaceName?: string;
     text: string;
     messageId: string;
     sendOptions?: { webOnly?: boolean };
@@ -184,15 +184,15 @@ export class SessionManager extends EventEmitter {
   /** Create a brand-new session for a workspace (always spawns a new Agent) */
   async createNewSession(workspaceName: string, opts: {
     feishuChatId: string;
-    directorAgentName?: string;
+    agentName?: string;
   }): Promise<SessionEntry> {
     const workspace = this.workspaceRegistry.getOrCreate(workspaceName);
-    const directorAgentName = opts.directorAgentName ?? workspace.agent ?? undefined;
+    const agentName = opts.agentName ?? workspace.agent ?? undefined;
     const sessionKey = `web-session:${randomUUID().slice(0, 12)}`;
     const entry = await this.pool.getOrCreate(sessionKey, {
-      groupName: workspaceName,
+      workspaceName: workspaceName,
       feishuChatId: opts.feishuChatId,
-      directorAgentName,
+      agentName,
     });
     const sessionId = entry.bridge.getStatus().sessionId;
     if (sessionId) {
@@ -220,7 +220,7 @@ export class SessionManager extends EventEmitter {
         workspace,
         role: entry.bridge.getPersonaRole(),
         cwd: entry.bridge.getWorkspaceCwd(),
-        agentName: entry.bridge.getDirectorAgentName(),
+        agentName: entry.bridge.getAgentName(),
         agentType: entry.bridge.getDirectorAgentType(),
         model: entry.bridge.getDirectorAgentModel(),
       });
@@ -306,7 +306,7 @@ export class SessionManager extends EventEmitter {
     for (const entry of this.pool.listActiveEntries()) {
       const sessionId = entry.bridge.getStatus().sessionId;
       if (!sessionId) continue;
-      this.registerSession(sessionId, entry.routingKey, entry.groupName, entry);
+      this.registerSession(sessionId, entry.routingKey, entry.workspaceName, entry);
       registered++;
     }
     if (registered > 0) {
@@ -342,12 +342,12 @@ export class SessionManager extends EventEmitter {
     return this.pool.shutdownAll();
   }
 
-  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<RuntimeEntry> {
+  async resetSession(routingKey: string, opts: { workspaceName?: string; feishuChatId: string; agentName?: string }): Promise<RuntimeEntry> {
     return this.pool.resetSession(routingKey, opts);
   }
 
-  async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<RuntimeEntry> {
-    return this.pool.setDirectorAgent(routingKey, opts);
+  async setAgent(routingKey: string, opts: { workspaceName?: string; feishuChatId: string; agentName: string }): Promise<RuntimeEntry> {
+    return this.pool.setAgent(routingKey, opts);
   }
 
   async switchAgentByLabel(label: string, agentName: string): Promise<RuntimeEntry> {
@@ -392,8 +392,8 @@ export class SessionManager extends EventEmitter {
     return this.pool.getChatIdByLabel(label);
   }
 
-  getDirectorAgentName(routingKey: string): string | undefined {
-    return this.pool.getDirectorAgentName(routingKey);
+  getAgentName(routingKey: string): string | undefined {
+    return this.pool.getAgentName(routingKey);
   }
 
   getProcessingMessageIdByLabel(label: string): string | null {
@@ -421,7 +421,7 @@ export class SessionManager extends EventEmitter {
     const status = poolEntry.bridge.getStatus();
     return {
       sessionId: status.sessionId ?? '',
-      workspace: poolEntry.groupName,
+      workspace: poolEntry.workspaceName,
       bridge: poolEntry.bridge,
       queue: poolEntry.queue,
       role: status.personaRole,

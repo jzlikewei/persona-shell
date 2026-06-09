@@ -480,7 +480,7 @@ async function main() {
     };
   }
 
-  function poolTarget(entry: { bridge: SessionBridge; feishuChatId: string; routingKey: string; groupName: string }): {
+  function poolTarget(entry: { bridge: SessionBridge; feishuChatId: string; routingKey: string; workspaceName: string }): {
     chatId: string | null;
     isWeb: boolean;
     webLabel: string | null;
@@ -490,14 +490,14 @@ async function main() {
     return {
       chatId: isWeb ? null : entry.feishuChatId,
       isWeb,
-      webLabel: isWeb ? entry.groupName : null,
+      webLabel: isWeb ? entry.workspaceName : null,
       notifyDirector: async (taskId, success, msgId) => {
         await entry.bridge.notifyTaskDone(taskId, success, msgId);
       },
     };
   }
 
-  async function tryReviveWorkspace(workspace: string): Promise<{ bridge: SessionBridge; feishuChatId: string; routingKey: string; groupName: string } | null> {
+  async function tryReviveWorkspace(workspace: string): Promise<{ bridge: SessionBridge; feishuChatId: string; routingKey: string; workspaceName: string } | null> {
     try {
       const session = await sessionManager.getOrCreateForWorkspace(workspace, { feishuChatId: 'web-console' });
       if (session?.bridge) {
@@ -505,7 +505,7 @@ async function main() {
           bridge: session.bridge,
           feishuChatId: 'web-console',
           routingKey: `web-workspace:${workspace}`,
-          groupName: workspace,
+          workspaceName: workspace,
         };
       }
     } catch (err) {
@@ -1053,7 +1053,7 @@ async function main() {
     const { text, messageId, chatId, chatType } = msg;
     // Log chat metadata
     const metaLog = chatType === 'group'
-      ? `chatType=${chatType} groupName="${msg.groupName ?? ''}" members=${msg.memberCount ?? '?'} threadId=${msg.threadId ?? 'N/A'}`
+      ? `chatType=${chatType} workspaceName="${msg.workspaceName ?? ''}" members=${msg.memberCount ?? '?'} threadId=${msg.threadId ?? 'N/A'}`
       : `chatType=${chatType}`;
     log.debug(`[shell] Message meta: ${metaLog}`);
 
@@ -1075,7 +1075,7 @@ async function main() {
       if (poolEntry) {
         const cancelled = poolEntry.queue.cancelOldest();
         if (cancelled) {
-          console.log(`[shell] /esc (group ${poolEntry.groupName}): cancelling ${cancelled.messageId}`);
+          console.log(`[shell] /esc (group ${poolEntry.workspaceName}): cancelling ${cancelled.messageId}`);
           await sessionManager.abortStreamingReply(cancelled.correlationId, '已取消');
           await poolEntry.bridge.interrupt();
           await messaging.reply(messageId, `已取消: "${cancelled.text.slice(0, 50)}..."`).catch(() => {});
@@ -1103,14 +1103,14 @@ async function main() {
       let poolEntry = getTargetEntry();
       if (routingKey && !poolEntry) {
         // Director not active — spin it up first so we can flush
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
+        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const agentName = sessionManager.getAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
-        const session = await sessionManager.getOrCreateForWorkspace(groupName, { groupName, feishuChatId: chatId, directorAgentName });
+        const session = await sessionManager.getOrCreateForWorkspace(workspaceName, { workspaceName, feishuChatId: chatId, agentName });
         poolEntry = session.sessionId ? sessionManager.getRuntimeEntryBySessionId(session.sessionId) ?? undefined : getTargetEntry();
       }
       const targetDirector = poolEntry?.bridge ?? director;
-      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
+      const label = poolEntry ? `group "${poolEntry.workspaceName}"` : 'main';
       const success = await targetDirector.flush();
       const flushMsg = success
         ? `FLUSH 完成，${label} 上下文已刷新`
@@ -1134,7 +1134,7 @@ async function main() {
         return;
       }
       const targetDirector = poolEntry?.bridge ?? director;
-      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
+      const label = poolEntry ? `group "${poolEntry.workspaceName}"` : 'main';
       const success = await targetDirector.clearContext();
       if (success) {
         await messaging.reply(messageId, `CLEAR 完成，${label} 上下文已清空（未保存）`).catch(() => {});
@@ -1171,26 +1171,26 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
 
       if (routingKey && chatType === 'group') {
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const currentAgent = sessionManager.getDirectorAgentName(routingKey)
-          ?? sessionManager.get(routingKey)?.bridge.getDirectorAgentName()
+        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const currentAgent = sessionManager.getAgentName(routingKey)
+          ?? sessionManager.get(routingKey)?.bridge.getAgentName()
           ?? config.agents.defaults.director
           ?? 'claude';
         if (currentAgent === targetAgent) {
-          await messaging.reply(messageId, `群「${groupName}」已经是 ${targetAgent} 模式`).catch(() => {});
+          await messaging.reply(messageId, `群「${workspaceName}」已经是 ${targetAgent} 模式`).catch(() => {});
           return;
         }
         try {
-          await sessionManager.setDirectorAgent(routingKey, { groupName, feishuChatId: chatId, directorAgentName: targetAgent });
-          await messaging.reply(messageId, `群「${groupName}」已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`).catch(() => {});
+          await sessionManager.setAgent(routingKey, { workspaceName, feishuChatId: chatId, agentName: targetAgent });
+          await messaging.reply(messageId, `群「${workspaceName}」已切换为 ${targetAgent} 模式，已先 flush 保存上下文，并在新 agent 中恢复`).catch(() => {});
         } catch (err) {
           console.error('[shell] group switch-agent failed:', err);
-          await messaging.reply(messageId, `群「${groupName}」切换到 ${targetAgent} 失败，请稍后重试`).catch(() => {});
+          await messaging.reply(messageId, `群「${workspaceName}」切换到 ${targetAgent} 失败，请稍后重试`).catch(() => {});
         }
         return;
       }
 
-      const currentAgent = director.getDirectorAgentName();
+      const currentAgent = director.getAgentName();
       if (currentAgent === targetAgent) {
         await messaging.reply(messageId, `主会话已经是 ${targetAgent} 模式`).catch(() => {});
         return;
@@ -1228,7 +1228,7 @@ async function main() {
         }
         const currentRole = poolEntry.bridge.getPersonaRole();
         if (currentRole === personaName) {
-          await messaging.reply(messageId, `群「${poolEntry.groupName}」已经是「${personaName}」人格`).catch(() => {});
+          await messaging.reply(messageId, `群「${poolEntry.workspaceName}」已经是「${personaName}」人格`).catch(() => {});
           return;
         }
         const success = await poolEntry.bridge.switchPersona(personaName);
@@ -1261,7 +1261,7 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       const poolEntry = getTargetEntry();
       const targetDirector = poolEntry?.bridge ?? director;
-      const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
+      const label = poolEntry ? `group "${poolEntry.workspaceName}"` : 'main';
       await messaging.reply(messageId, `正在重启 ${label} Director...`).catch(() => {});
       console.log(`[shell] /session-restart: restarting ${label} Director`);
       await targetDirector.restartProcess();
@@ -1275,11 +1275,11 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       let label = 'main';
       if (routingKey && chatType === 'group') {
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
+        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const agentName = sessionManager.getAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
-        const poolEntry = await sessionManager.resetSession(routingKey, { groupName, feishuChatId: chatId, directorAgentName });
-        label = `group "${poolEntry.groupName}"`;
+        const poolEntry = await sessionManager.resetSession(routingKey, { workspaceName, feishuChatId: chatId, agentName });
+        label = `group "${poolEntry.workspaceName}"`;
       } else {
         await director.resetSession();
         const newMainSessionId = director.getStatus().sessionId;
@@ -1348,12 +1348,12 @@ async function main() {
 
     // 并行群（配置的特定 chat_id 或群名）→ 始终走 AgentRuntimePool，不受人数限制
     const isParallelChat = config.pool.parallel_chat_ids.includes(chatId)
-      || config.pool.parallel_chat_ids.includes(msg.groupName ?? '');
+      || config.pool.parallel_chat_ids.includes(msg.workspaceName ?? '');
     // 大群(>threshold 人，非并行群) → one-shot 响应，不走 Director
     if (chatType === 'group' && !isParallelChat && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
       // One-shot 无上下文，引用需要保留全文
       const quotePrefix = msg.quotedText ? formatQuote(msg.quotedText, 0) : '';
-      const oneShotPrompt = `你在群聊「${msg.groupName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${quotePrefix}${text}`;
+      const oneShotPrompt = `你在群聊「${msg.workspaceName || '未知群'}」中被 @ 提问。请简洁回复。\n\n${quotePrefix}${text}`;
 
       console.log(`[shell] Large group one-shot: ${text.slice(0, 50)}... (members=${msg.memberCount})`);
       metrics.addMessage({ direction: 'in', preview: text.slice(0, 80), timestamp: Date.now() });
@@ -1372,7 +1372,7 @@ async function main() {
     let directorText: string;
     if (chatType === 'group') {
       const senderTag = msg.senderName ? ` | ${msg.senderName}` : '';
-      directorText = `[群聊: ${msg.groupName || '未知群'}${senderTag}] ${quotePrefix}${text}`;
+      directorText = `[群聊: ${msg.workspaceName || '未知群'}${senderTag}] ${quotePrefix}${text}`;
     } else {
       directorText = `${quotePrefix}${text}`;
     }
@@ -1389,16 +1389,16 @@ async function main() {
     if (routingKey) {
       // 小群/话题群 → workspace default session
       try {
-        const groupName = (msg.groupName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const directorAgentName = sessionManager.getDirectorAgentName(routingKey);
-        const session = await sessionManager.sendToWorkspaceDefaultSession(groupName, {
-          groupName,
+        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const agentName = sessionManager.getAgentName(routingKey);
+        const session = await sessionManager.sendToWorkspaceDefaultSession(workspaceName, {
+          workspaceName,
           feishuChatId: chatId,
-          directorAgentName,
+          agentName,
           text: directorText,
           messageId,
         });
-        console.log(`[shell] Sent to workspace "${groupName}" default session ${session.sessionId || '(pending)'}`);
+        console.log(`[shell] Sent to workspace "${workspaceName}" default session ${session.sessionId || '(pending)'}`);
       } catch (err) {
         if (String(err).includes('flushing')) {
           await messaging.reply(messageId, '正在刷新上下文，请稍后重试').catch(() => {});
