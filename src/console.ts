@@ -11,7 +11,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, buildTaskParentMetadata } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
@@ -1748,7 +1748,11 @@ export function startConsole(
   function runCreatedTask(task: ReturnType<typeof createTask>): void {
     if (!taskRunner) return;
     const extra = (task.extra ?? {}) as Record<string, unknown>;
-    const parentMeta = taskParentMetadata(task.source_director ?? 'main');
+    const sourceLabel = task.source_director ?? 'main';
+    const source = sourceLabel || 'main';
+    const poolEntry = source === 'main' || !sessionManager ? undefined : sessionManager.findByLabel(source);
+    const ds = source === 'main' || !sessionManager ? director.getStatus() : poolEntry?.bridge.getStatus();
+    const parentMeta = buildTaskParentMetadata(source, ds ?? null, poolEntry ?? null);
     if (Object.keys(parentMeta).length > 0) {
       updateTask(task.id, { extra: { ...extra, ...parentMeta } });
     }
@@ -1762,36 +1766,6 @@ export function startConsole(
       projectDir: extra.project_dir as string | undefined,
       timeoutMs: task.timeout_ms ?? undefined,
     });
-  }
-
-  function taskParentMetadata(sourceDirector: string): Record<string, unknown> {
-    const source = sourceDirector || 'main';
-    const ds = source === 'main' || !sessionManager ? director.getStatus() : sessionManager.findByLabel(source)?.bridge.getStatus();
-    const poolEntry = source === 'main' || !sessionManager ? undefined : sessionManager.findByLabel(source);
-    if (!ds) {
-      return {
-        parent_director_label: source,
-        parent_director_status: 'not-found',
-      };
-    }
-    const meta: Record<string, unknown> = {
-      parent_director_label: source,
-      parent_director_status: ds.alive ? 'alive' : 'offline',
-      parent_session_id: ds.sessionId,
-      parent_session_name: ds.sessionName,
-      parent_agent: ds.agentName,
-      parent_agent_type: ds.agentType,
-      parent_persona_role: ds.personaRole,
-      parent_pid: ds.pid,
-    };
-    if (ds.agentType === 'codex-app-server') {
-      meta.parent_codex_thread_id = ds.sessionId;
-    }
-    if (poolEntry) {
-      meta.parent_group_name = poolEntry.groupName;
-      meta.parent_routing_key = poolEntry.routingKey;
-    }
-    return meta;
   }
 
   async function runCronJobNow(job: CronJob): Promise<Record<string, unknown>> {

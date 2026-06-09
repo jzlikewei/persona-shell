@@ -888,3 +888,58 @@ export function listSessionRecords(workspace: string, opts?: { includeArchived?:
     'SELECT * FROM sessions WHERE workspace = ? AND archived = 0 ORDER BY created_at DESC',
   ).all(workspace) as SessionRow[];
 }
+
+// ---------------------------------------------------------------------------
+// Shared helper: build parent-director metadata for task records
+// ---------------------------------------------------------------------------
+
+export interface TaskParentStatusInput {
+  alive: boolean;
+  sessionId: string | null;
+  sessionName: string | null;
+  agentName?: string;
+  agentType?: string;
+  personaRole?: string;
+  pid?: number | null;
+}
+
+export interface TaskParentPoolInput {
+  groupName?: string;
+  routingKey?: string;
+}
+
+/**
+ * Build parent-director metadata to attach to a task's `extra` field.
+ * Pure function — callers resolve the director status and pool entry before calling.
+ */
+export function buildTaskParentMetadata(
+  sourceLabel: string,
+  status: TaskParentStatusInput | null | undefined,
+  poolEntry?: TaskParentPoolInput | null,
+): Record<string, unknown> {
+  const source = sourceLabel || 'main';
+  if (!status) {
+    return {
+      parent_director_label: source,
+      parent_director_status: 'not-found',
+    };
+  }
+  const meta: Record<string, unknown> = {
+    parent_director_label: source,
+    parent_director_status: status.alive ? 'alive' : 'offline',
+    parent_session_id: status.sessionId,
+    parent_session_name: status.sessionName,
+    parent_agent: status.agentName,
+    parent_agent_type: status.agentType,
+    parent_persona_role: status.personaRole,
+    parent_pid: status.pid,
+  };
+  if (status.agentType === 'codex-app-server') {
+    meta.parent_codex_thread_id = status.sessionId;
+  }
+  if (poolEntry) {
+    meta.parent_group_name = poolEntry.groupName;
+    meta.parent_routing_key = poolEntry.routingKey;
+  }
+  return meta;
+}

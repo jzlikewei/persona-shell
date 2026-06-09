@@ -400,36 +400,6 @@ async function main() {
     });
   }
 
-  function taskParentMetadata(sourceDirector?: string | null): Record<string, unknown> {
-    const source = sourceDirector || 'main';
-    const poolEntry = source === 'main' ? undefined : sessionManager.findByLabel(source);
-    const ds = source === 'main' ? director.getStatus() : poolEntry?.bridge.getStatus();
-    if (!ds) {
-      return {
-        parent_director_label: source,
-        parent_director_status: 'not-found',
-      };
-    }
-    const meta: Record<string, unknown> = {
-      parent_director_label: source,
-      parent_director_status: ds.alive ? 'alive' : 'offline',
-      parent_session_id: ds.sessionId,
-      parent_session_name: ds.sessionName,
-      parent_agent: ds.agentName,
-      parent_agent_type: ds.agentType,
-      parent_persona_role: ds.personaRole,
-      parent_pid: ds.pid,
-    };
-    if (ds.agentType === 'codex-app-server') {
-      meta.parent_codex_thread_id = ds.sessionId;
-    }
-    if (poolEntry) {
-      meta.parent_group_name = poolEntry.groupName;
-      meta.parent_routing_key = poolEntry.routingKey;
-    }
-    return meta;
-  }
-
   function resolveWorkspaceDefaultEntry(workspace: string) {
     const sessionId = sessionManager.resolveDefaultSession(workspace);
     if (!sessionId) return null;
