@@ -15,6 +15,9 @@ export interface QueueItem {
 
 export interface PendingAttachment {
   path: string;
+  sourceSessionId?: string;
+  workspace?: string;
+  /** @deprecated legacy runtime label; do not use for new routing. */
   sourceDirector?: string;
   targetChannel?: 'web' | 'messaging';
 }

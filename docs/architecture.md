@@ -346,137 +346,11 @@ kimi --print \
 
 完整的 CLI 参数链和会话恢复机制见 [agent-backends.md](agent-backends.md)。
 
-## 领域模型
-
-```
-Workspace（持久容器，name 唯一 key）
-  ├─ defaultSessionId
-  └─ 1:N Session（路由单元，sessionId 是路由标识）
-                ├─ archived: boolean
-                └─ 1:1 Agent（运行时实例）
-                      ├─ role: string
-                      ├─ context
-                      └─ cwd: string
-
-────────────────────── 领域层 / 基础设施层 ──────────────────────
-
-MessageChannel（基础设施层）
-  ├─ WebUI      — 总是接收所有回复
-  └─ IM（飞书）  — 按需转发
-       ↕ MessagingRouter（转发决策）
-```
-
-### Workspace（工作空间）
-
-一个具体的项目或长期追踪的事项。`name` 是唯一 key。
-
-| 属性 | 类型 | 说明 |
-|------|------|------|
-| name | `string` | 唯一标识。如 `"main"`、`"p.sh维修"`、`"日报助手"` |
-| contextFile | `string` | 持久化上下文：`workspaces/{name}/context.md` |
-| config | `{ cwd?, agent? }` | 工作目录、默认 agent |
-| sessions | `Session[]` | 该 workspace 下的所有 session（含归档） |
-| defaultSessionId | `string` | 默认路由的 session |
-
-Workspace 是 Session 的聚合根，Session 的创建、归档、查询都通过 Workspace 操作。
-
-**来源**：
-- `main`：系统内置
-- 飞书群聊：群名作为 workspace name，首条消息时自动创建
-- Web Console：用户手动创建，或发消息时自动创建
-
-### Session（对话实例）
-
-Workspace 下的一次具体会话。Session 和 Agent 同生同灭。**sessionId 是消息路由标识**。
-
-| 属性 | 类型 | 说明 |
-|------|------|------|
-| sessionId | `string` | 路由标识，由 Claude/Codex 分配 |
-| workspace | `string` | 所属 workspace name |
-| archived | `boolean` | 归档后 UI 不可见，数据不删除 |
-| agent | `Agent` | 绑定的运行时实例 |
-
-同一 Workspace 可以有多个活跃 Session（不同 agent 同时处理不同任务）。
-
-**生命周期事件**：
-
-| 操作 | 结果 |
-|------|------|
-| 首条消息到达 workspace | 创建 Session + Agent，设为 default |
-| FLUSH | 旧 Session 保留，新建 Session + Agent，更新 default |
-| 切换 Agent | 旧 Session 保留，新建 Session + 新 Agent，更新 default |
-| 切换 Role | 旧 Session 保留，新建 Session + 新 Agent（新 role），更新 default |
-| 归档 | 停止 Agent，Session 标记 archived |
-
-### Agent（运行时实例）
-
-> 代码中现命名为 Director / SessionBridge，领域概念上是 Agent。
-
-Session 绑定的 AI 运行时。不是持久实体——Session 创建时 Agent 启动，Session 结束时 Agent 销毁。Agent 不感知消息来源。
-
-| 属性 | 类型 | 说明 |
-|------|------|------|
-| role | `string` | 当前角色（director / philosopher 等） |
-| context | | 对话上下文（历史、system prompt 等） |
-| cwd | `string` | 工作目录 |
-
-### 消息路由
-
-```
-消息到达
-  │
-  ├─ 携带 sessionId → 直接路由到 Session → Agent 处理
-  │
-  └─ 携带 workspace name（飞书群名映射 / Web 未选 session）
-        → workspace.defaultSessionId → Session → Agent 处理
-```
-
-### 回复路由
-
-Agent 和 Session 不感知消息来源。回复路由由基础设施层处理：
-
-- 总是推送到 WebUI
-- 如果上次消息来源是 IM → 同时转发到 IM
-
-### MessageChannel（消息通道）
-
-消息的 UI 展示层，属于基础设施层，不属于领域模型。
-
-| Channel | 说明 |
-|---------|------|
-| WebUI | Web Console，总是接收所有回复 |
-| IM（飞书） | 飞书私聊/群聊，按需转发 |
-
-**MessagingRouter**：负责把 Agent 的回复转发到正确的 Channel。
-
-### 标识符归属
-
-| 标识符 | 归属实体 | 说明 |
-|--------|---------|------|
-| workspace name | Workspace | 唯一 key，对外 |
-| sessionId | Session | 消息路由标识，对外 |
-
 ## SessionManager / DirectorPool
 
-SessionManager 是 workspace/session 的业务边界,管理活跃 Session/Agent 实例的生命周期:
+SessionManager 是 workspace/session 的业务边界，维护 `sessionId → routingKey` 映射，并对外暴露 SessionEntry 视图。运行时 entries 保存在 DirectorPool 中；业务代码不能直接用 DirectorPool 推导 workspace/session 事实。
 
-```
-SessionManager
-  ├── entries: Map<sessionId, SessionEntry>   # 活跃实例
-  ├── creating: Map<sessionId, Promise>       # 竞态锁
-  │
-  ├── send(sessionId, text)                   # 消息发送
-  ├── createSession(workspace, opts)          # 创建 Session + Agent
-  ├── archiveSession(sessionId)               # 归档 Session + 停止 Agent
-  ├── flush(sessionId)                        # FLUSH → 新 Session
-  ├── restoreEntries()                        # 重启后从 SQLite 恢复
-  ├── reapIdle()                              # 空闲回收
-  └── evictLRU()                              # 容量淘汰
-```
-
-entries 持久化到 SQLite，Shell 重启后恢复。
-
-DirectorPool 位于 SessionManager 下方,只保存 runtime entry、queue、streaming handle 和进程恢复信息。它的 `routingKey` 是内部 Map key,不是 API/UI/Task/Cron 的路由标识。
+DirectorPool 位于 SessionManager 下方，只保存 runtime entry、queue、streaming handle 和进程恢复信息。它的 `routingKey` 是内部 Map key，不是 API/UI/Task/Cron 的路由标识。
 
 ## FLUSH 机制
 
@@ -565,7 +439,7 @@ Web 历史展示不在 pShell 内部维护一份完整 messages 表。pShell 的
 |-------|---------------|
 | Codex | Codex 原生 session / thread JSONL（如 `~/.codex/sessions/**/rollout-*{sessionId}*.jsonl`） |
 | Claude Code | Claude Code 原生 transcript / session 历史；必要时 fallback 到 pShell 捕获日志 |
-| Kimi | Kimi 原生 session 历史；必要时 fallback 到 pShell 捕获日志 |
+| Kimi | 不支持 Web 历史展示；`GET /api/messages` 应返回 unsupported，不新增 Kimi reader |
 
 pShell 日志只作为审计和 fallback，不能作为 Web 历史展示的主数据源。尤其不能用“tail 全局 output log”重建某个 session 的历史；日志文件增大后会截断早期 assistant 输出，导致 UI 只看到用户消息或历史不完整。
 

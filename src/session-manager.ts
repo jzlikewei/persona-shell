@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import type { DirectorPool, PoolEntry } from './director-pool.js';
 import type { SessionBridge } from './session-bridge.js';
-import type { MessageQueue, QueueItem } from './queue.js';
+import type { MessageQueue, QueueItem, PendingAttachment } from './queue.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import type { CardAction } from './messaging/messaging.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
@@ -63,6 +63,17 @@ export class SessionManager extends EventEmitter {
 
   getChatIdBySessionId(sessionId: string): string | null {
     return this.getPoolEntryBySessionId(sessionId)?.feishuChatId ?? null;
+  }
+
+  getProcessingMessageIdBySessionId(sessionId: string): string | null {
+    const entry = this.getPoolEntryBySessionId(sessionId);
+    const item = entry?.queue.peek();
+    return item?.messageId ?? null;
+  }
+
+  enqueueAttachmentForHeadBySessionId(sessionId: string, attachment: PendingAttachment): QueueItem | null {
+    const entry = this.getPoolEntryBySessionId(sessionId);
+    return entry?.queue.addPendingAttachmentToOldest(attachment) ?? null;
   }
 
   /** Get or create a session for a workspace */

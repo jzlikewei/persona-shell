@@ -137,7 +137,7 @@ pool:
 
 **Model 解析优先级**：`roles[role].model` → `providers[agent].model` → 不传（用 CLI 默认）
 
-**热加载**：修改 `roles` / `providers` 后，新派发的子角色任务和新创建的群聊 Director 会自动使用新配置，无需重启 Shell。主 Director 需要 `/session-restart` 才会生效。
+**热加载**：修改 `roles` / `providers` 后，新派发的子角色任务和新创建的群聊 workspace/session 绑定的 Agent runtime 会自动使用新配置，无需重启 Shell。main workspace 当前 session 的 Agent runtime 需要 `/session-restart` 才会生效。
 
 `~/.persona/im_secret.yaml`（飞书凭据放在一起维护）：
 

@@ -5,8 +5,8 @@
 | 能力 | Claude Code | Codex | Kimi | 说明 |
 |------|:-----------:|:-----:|:----:|------|
 | **IM 接入** | | | | |
-| 飞书私聊 | ✅ | — | ✅ | 主 Director 长驻 daemon |
-| 飞书群聊（小群） | ✅ | ✅ | ✅ | DirectorPool 按群分配，`/start-with-*` 切换 |
+| 飞书私聊 | ✅ | — | ✅ | main workspace 的 default session |
+| 飞书群聊（小群） | ✅ | ✅ | ✅ | 群名映射为 workspace，default session 接收消息 |
 | 飞书群聊（大群） | ✅ | — | ✅ | One-shot 无状态响应 |
 | Web 控制台 | ✅ | — | ✅ | localhost:3000，浏览器直接对话 |
 | **会话管理** | | | | |
@@ -15,13 +15,13 @@
 | FLUSH（上下文刷新） | ✅ | ✅ | ✅ | checkpoint → kill → bootstrap |
 | /esc（取消请求） | ✅ | ✅ | ✅ | SIGINT 中断当前处理 |
 | **多角色系统** | | | | |
-| 后台任务（create_task） | ✅ | ✅ | ✅ | Director 派发，子角色独立执行；Claude/Kimi 走 MCP，Codex 默认走 App Server dynamic tools |
+| 后台任务（create_task） | ✅ | ✅ | ✅ | Agent 派发，子角色独立执行；Claude 走 MCP，Codex 默认走 App Server dynamic tools |
 | Cron 定时任务 | ✅ | ✅ | ✅ | spawn_role / director_msg / shell_action |
 | 人格定义（personas/） | ✅ | ✅ | ✅ | Claude Code agent frontmatter 格式 |
 | 技能插件（skills/） | ✅ | ✅ | ✅ | Claude `.claude/skills`；Codex `.agents/skills`；Kimi `--skills-dir` |
 | **记忆与持久化** | | | | |
 | 身份仓库（~/.persona） | ✅ | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
-| 日报自动生成 | ✅ | — | — | 主 Director 写入 daily/YYYY-MM-DD.md |
+| 日报自动生成 | ✅ | — | — | main workspace 当前 session 的 Agent runtime 写入 daily/YYYY-MM-DD.md |
 | 工作记忆（state.md） | ✅ | ✅ | ✅ | FLUSH checkpoint + bootstrap 恢复 |
 | Pool 状态持久化 | ✅ | ✅ | ✅ | SQLite，重启后自动恢复 |
 | **附件** | | | | |
@@ -48,7 +48,7 @@
 
 ### 小群（成员 ≤ 5）
 
-需要 @mention Bot 才会响应。每个小群会分配一个独立的 Director 实例（独立上下文），通过 DirectorPool 管理。
+需要 @mention Bot 才会响应。每个小群映射为一个 workspace，workspace 的 default session 接收消息；session 绑定一个 Agent runtime。DirectorPool 只作为底层 runtime 池。
 
 ### 大群（成员 > 5）
 
@@ -60,7 +60,7 @@
 
 ### 容量与回收
 
-- Pool 最多同时运行 5 个群 Director（`pool.max_directors`）
+- DirectorPool runtime 最多同时承载 5 个活跃 Agent/runtime entry（`pool.max_directors`）
 - 满时 LRU 淘汰最久未活跃的
 - 空闲超 30 分钟自动回收（≤ 3 个时不回收）
 
@@ -68,7 +68,7 @@
 
 Director 作为长驻 daemon 运行，上下文窗口会随对话持续膨胀。FLUSH 机制解决这个问题——定期"重启认知"，进程不死：
 
-1. **Drain** — 等待当前处理中的消息完成（Pool Director 跳过此阶段，直接进入 Checkpoint）
+1. **Drain** — 等待当前处理中的消息完成（pool runtime entry 跳过此阶段，直接进入 Checkpoint）
 2. **Checkpoint** — Director 把工作状态写到 `daily/state.md`（"我正在做什么"）
 3. **Kill** — 终止进程、清空 session
 4. **Bootstrap** — 启动新 Director，读取 state.md 恢复上下文
@@ -167,7 +167,7 @@ Persona Shell 支持 Claude Code、Codex 和 Kimi 三个 agent 后端。
 ```yaml
 agents:
   defaults:
-    director: "claude"      # 主 Director 用 Claude
+    director: "claude"      # main workspace 当前 session 的 Agent runtime 用 Claude
     explorer: "codex"       # 调研任务用 Codex
     executor: "claude"      # 执行任务用 Claude
 ```
@@ -186,7 +186,7 @@ agents:
 | 流式响应 | ✅ 实时推送 chunk | ✅ interactive 卡片原地更新 | ⚠️ 整段 JSON 行返回 |
 | 身份注入 | `--append-system-prompt-file` `--plugin-dir` | App Server instructions / Codex 原生 instructions + `.agents/skills` | `--agent-file` `--skills-dir` |
 | 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |
-| 适合场景 | 主 Director、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 | 需要 Kimi 模型能力的场景 |
+| 适合场景 | main workspace 当前 session 的 Agent runtime、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 | 需要 Kimi 模型能力的场景 |
 
 ## 命令行快捷启动
 
@@ -291,13 +291,13 @@ cd ~/.persona && claude /soul-crafting
 
 | 文件 | 用途 |
 |------|------|
-| `bootstrap-main.md` | 主 Director 首次启动指令 |
+| `bootstrap-main.md` | main workspace 当前 session 的 Agent runtime 首次启动指令 |
 | `bootstrap-pool-fresh.md` | 群 Director 首次启动（无历史） |
 | `bootstrap-pool-with-state.md` | 群 Director 启动（有 state 恢复） |
-| `flush-checkpoint-main.md` | 主 Director FLUSH checkpoint 指令 |
+| `flush-checkpoint-main.md` | main workspace 当前 session 的 Agent runtime FLUSH checkpoint 指令 |
 | `flush-checkpoint-pool.md` | 群 Director FLUSH checkpoint 指令 |
-| `flush-bootstrap-main.md` | 主 Director FLUSH 后重启指令 |
-| `agent-switch-checkpoint-main.md` | 主 Director 切换 agent 时的 checkpoint |
+| `flush-bootstrap-main.md` | main workspace 当前 session 的 Agent runtime FLUSH 后重启指令 |
+| `agent-switch-checkpoint-main.md` | main workspace 当前 session 的 Agent runtime 切换 agent 时的 checkpoint |
 | `agent-switch-checkpoint-pool.md` | 群 Director 切换 agent 时的 checkpoint |
 | `task-output-instruction.md` | 子角色任务产出格式指令 |
 | `codex.md` | Codex agent 的 system prompt |
@@ -416,5 +416,5 @@ curl 'localhost:3000/api/sessions?workspace=main'
 | Director PID | `/tmp/persona/director.pid` |
 | Session ID | `/tmp/persona/director-session` |
 | FIFO 管道 | `/tmp/persona/director-in`, `director-out` |
-| Pool Director（Claude） | `/tmp/persona/{label}/` |
-| Pool Director（Codex） | `logs/{label}/` + `/tmp/persona/{label}/session` |
+| Pool runtime entry（Claude） | `/tmp/persona/{label}/` |
+| Pool runtime entry（Codex） | `logs/{label}/` + `/tmp/persona/{label}/session` |

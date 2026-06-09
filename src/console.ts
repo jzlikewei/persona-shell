@@ -721,6 +721,9 @@ export function startConsole(
     taskStatus?: string;
     taskRole?: string;
     taskAgent?: string | null;
+    sourceSessionId?: string | null;
+    workspace?: string | null;
+    /** @deprecated legacy task source field. */
     sourceDirector?: string | null;
     taskCreatedAt?: string;
     taskCompletedAt?: string | null;
@@ -870,14 +873,16 @@ export function startConsole(
     file.taskStatus = task.status;
     file.taskRole = task.role;
     file.taskAgent = task.agent;
+    file.sourceSessionId = task.source_session_id;
+    file.workspace = task.workspace;
     file.sourceDirector = task.source_director;
     file.taskCreatedAt = task.created_at;
     file.taskCompletedAt = task.completed_at;
     file.taskParentSessionId = taskExtraString(task, 'parent_session_id') ?? taskExtraString(task, 'parent_codex_thread_id');
     file.taskParentSessionName = taskExtraString(task, 'parent_session_name');
-    file.taskParentDirector = taskExtraString(task, 'parent_director_label') ?? task.source_director ?? undefined;
-    file.taskParentGroup = taskExtraString(task, 'parent_group_name');
-    file.taskParentStatus = taskExtraString(task, 'parent_director_status');
+    file.taskParentDirector = taskExtraString(task, 'parent_runtime_label') ?? undefined;
+    file.taskParentGroup = taskExtraString(task, 'parent_workspace') ?? task.workspace ?? undefined;
+    file.taskParentStatus = taskExtraString(task, 'parent_session_status');
   }
 
   function listWorkbenchFiles(scope?: string): WorkbenchFile[] {
@@ -1027,6 +1032,7 @@ export function startConsole(
     preview: string;
     timestamp?: number;
     director?: string;
+    workspace?: string;
     sessionId?: string;
     taskId?: string;
     logSourceId?: string;
@@ -1104,6 +1110,8 @@ export function startConsole(
         task.status,
         task.error ?? '',
         task.result_file ?? '',
+        task.workspace ?? '',
+        task.source_session_id ?? '',
         task.source_director ?? '',
       ].join('\n');
       const score = searchScore(fields, q);
@@ -1113,7 +1121,9 @@ export function startConsole(
         title: `${task.id} · ${task.role}`,
         preview: searchPreview(task.description || task.prompt || task.error || task.result_file || task.id, q),
         timestamp: Date.parse(task.completed_at || task.started_at || task.created_at),
-        director: task.source_director ?? 'main',
+        workspace: task.workspace ?? undefined,
+        sessionId: task.source_session_id ?? undefined,
+        director: task.source_director ?? undefined,
         taskId: task.id,
         status: task.status,
         score: score + 3,
@@ -1343,7 +1353,9 @@ export function startConsole(
         role: task.role,
         status: task.status,
         description: task.description,
-        sourceDirector: task.source_director,
+        workspace: task.workspace,
+        sourceSessionId: task.source_session_id,
+        legacySourceDirector: task.source_director,
         agent: task.agent,
         createdAt: task.created_at,
         startedAt: task.started_at,
@@ -1360,7 +1372,8 @@ export function startConsole(
         schedule: job.schedule,
         actionType: job.action_type,
         actionName: job.action_name,
-        sourceDirector: job.source_director,
+        workspace: job.workspace,
+        legacySourceDirector: job.source_director,
         lastRunAt: job.last_run_at,
         createdAt: job.created_at,
         updatedAt: job.updated_at,
@@ -1745,14 +1758,30 @@ export function startConsole(
     });
   }
 
+
+  function serializeTaskForApi<T extends { source_director?: string | null }>(task: T, includeDeprecated = false): Omit<T, 'source_director'> & { legacy?: { source_director: string | null } } {
+    const { source_director, ...rest } = task;
+    return includeDeprecated ? { ...rest, legacy: { source_director: source_director ?? null } } : rest;
+  }
+
+  function serializeCronJobForApi<T extends { source_director?: string | null }>(job: T, includeDeprecated = false): Omit<T, 'source_director'> & { legacy?: { source_director: string | null } } {
+    const { source_director, ...rest } = job;
+    return includeDeprecated ? { ...rest, legacy: { source_director: source_director ?? null } } : rest;
+  }
+
   function runCreatedTask(task: ReturnType<typeof createTask>): void {
     if (!taskRunner) return;
     const extra = (task.extra ?? {}) as Record<string, unknown>;
-    const sourceLabel = task.source_director ?? 'main';
-    const source = sourceLabel || 'main';
-    const poolEntry = source === 'main' || !sessionManager ? undefined : sessionManager.findByLabel(source);
-    const ds = source === 'main' || !sessionManager ? director.getStatus() : poolEntry?.bridge.getStatus();
-    const parentMeta = buildTaskParentMetadata(source, ds ?? null, poolEntry ?? null);
+    const sourceSessionId = task.source_session_id ?? null;
+    const workspace = task.workspace ?? null;
+    const liveEntry = sourceSessionId && sessionManager ? sessionManager.getSession(sourceSessionId) : null;
+    const ds = liveEntry?.bridge.getStatus()
+      ?? (sourceSessionId === director.getStatus().sessionId ? director.getStatus() : null);
+    const parentMeta = buildTaskParentMetadata({
+      workspace,
+      sourceSessionId,
+      runtimeLabel: liveEntry?.bridge.label ?? (sourceSessionId === director.getStatus().sessionId ? 'main' : null),
+    }, ds ?? null);
     if (Object.keys(parentMeta).length > 0) {
       updateTask(task.id, { extra: { ...extra, ...parentMeta } });
     }
@@ -2918,41 +2947,60 @@ export function startConsole(
 
           // POST /api/send-attachment — send image/file to user via messaging
           if (url.pathname === '/api/send-attachment' && req.method === 'POST') {
-            const body = await req.json() as { path: string; source_director?: string; target_channel?: 'web' | 'messaging' };
-            const sourceDirector = body.source_director ?? 'main';
+            const body = await req.json() as {
+              path: string;
+              source_session_id?: string;
+              workspace?: string;
+              /** @deprecated legacy runtime label; session/workspace take precedence. */
+              source_director?: string;
+              target_channel?: 'web' | 'messaging';
+            };
+            const sourceSessionId = body.source_session_id?.trim() || null;
+            const sourceWorkspace = body.workspace?.trim() || null;
+            const legacySourceDirector = body.source_director?.trim() || null;
+            const targetForAudit = sourceSessionId ?? sourceWorkspace ?? legacySourceDirector ?? 'main';
+            const workspaceDefaultSessionId = sourceWorkspace ? getWorkspace(sourceWorkspace)?.default_session_id ?? null : null;
+
             if (!body.path) {
-              writeAuditEntry('attachment.send', false, { target: sourceDirector, path: null, targetChannel: body.target_channel ?? null, error: 'path is required' });
+              writeAuditEntry('attachment.send', false, { target: targetForAudit, path: null, targetChannel: body.target_channel ?? null, error: 'path is required' });
               return Response.json({ ok: false, error: 'path is required' }, { status: 400 });
             }
 
             // Path security: only allow local artifact roots and recorded task results.
             const resolved = resolve(body.path);
             if (!isAllowedAttachmentPath(resolved)) {
-              writeAuditEntry('attachment.send', false, { target: sourceDirector, path: resolved, targetChannel: body.target_channel ?? null, error: 'Path not allowed' });
+              writeAuditEntry('attachment.send', false, { target: targetForAudit, path: resolved, targetChannel: body.target_channel ?? null, error: 'Path not allowed' });
               return Response.json({ ok: false, error: `Path not allowed: ${resolved}` }, { status: 403 });
             }
 
             // File existence and size check
             if (!existsSync(resolved)) {
-              writeAuditEntry('attachment.send', false, { target: sourceDirector, path: resolved, targetChannel: body.target_channel ?? null, error: 'File not found' });
+              writeAuditEntry('attachment.send', false, { target: targetForAudit, path: resolved, targetChannel: body.target_channel ?? null, error: 'File not found' });
               return Response.json({ ok: false, error: `File not found: ${resolved}` }, { status: 404 });
             }
             const stat = statSync(resolved);
             if (stat.size === 0) {
-              writeAuditEntry('attachment.send', false, { target: sourceDirector, path: resolved, size: stat.size, targetChannel: body.target_channel ?? null, error: 'File is empty' });
+              writeAuditEntry('attachment.send', false, { target: targetForAudit, path: resolved, size: stat.size, targetChannel: body.target_channel ?? null, error: 'File is empty' });
               return Response.json({ ok: false, error: 'File is empty' }, { status: 400 });
             }
 
             // MCP send_attachment calls do not pass target_channel. Queue them on the
             // active turn so attachments are sent after the text reply completes.
             if (!body.target_channel) {
-              const attachment = { path: resolved, sourceDirector };
-              const item = sourceDirector !== 'main' && sessionManager
-                ? sessionManager.getPool().enqueueAttachmentForHeadByLabel(sourceDirector, attachment)
-                : queue.addPendingAttachmentToOldest(attachment);
+              const attachment = { path: resolved, sourceSessionId: sourceSessionId ?? undefined, workspace: sourceWorkspace ?? undefined, sourceDirector: legacySourceDirector ?? undefined };
+              const item = sourceSessionId && sessionManager
+                ? sessionManager.enqueueAttachmentForHeadBySessionId(sourceSessionId, attachment)
+                : workspaceDefaultSessionId && sessionManager
+                  ? sessionManager.enqueueAttachmentForHeadBySessionId(workspaceDefaultSessionId, attachment)
+                  : legacySourceDirector && legacySourceDirector !== 'main' && sessionManager
+                    ? sessionManager.getPool().enqueueAttachmentForHeadByLabel(legacySourceDirector, attachment)
+                    : queue.addPendingAttachmentToOldest(attachment);
               if (item) {
                 writeAuditEntry('attachment.queue', true, {
-                  target: sourceDirector,
+                  target: targetForAudit,
+                  sourceSessionId,
+                  workspace: sourceWorkspace,
+                  legacySourceDirector,
                   path: resolved,
                   messageId: item.messageId,
                   correlationId: item.correlationId,
@@ -2963,7 +3011,9 @@ export function startConsole(
                   queued: true,
                   delivery: {
                     path: resolved,
-                    source_director: sourceDirector,
+                    source_session_id: sourceSessionId,
+                    workspace: sourceWorkspace,
+                    legacy_source_director: legacySourceDirector,
                     message_id: item.messageId,
                     correlation_id: item.correlationId,
                   },
@@ -2972,7 +3022,7 @@ export function startConsole(
             }
 
             if (!messaging && body.target_channel !== 'web') {
-              writeAuditEntry('attachment.send', false, { target: sourceDirector, path: resolved, size: stat.size, targetChannel: body.target_channel ?? null, error: 'Messaging client not available' });
+              writeAuditEntry('attachment.send', false, { target: targetForAudit, path: resolved, size: stat.size, targetChannel: body.target_channel ?? null, error: 'Messaging client not available' });
               return Response.json({ ok: false, error: 'Messaging client not available' }, { status: 503 });
             }
 
@@ -2982,27 +3032,37 @@ export function startConsole(
             const isImage = imageExts.has(ext);
 
             try {
-              // Resolve target chatId: workspace Director → its group chat, main → lastChatId
+              // Resolve target chatId by stable session/workspace first. The legacy
+              // director label path is compatibility-only and must not become the
+              // business routing source again.
               let targetChatId: string | null = null;
               if (body.target_channel === 'web') {
                 targetChatId = 'web-console';
-              } else if (sourceDirector && sourceDirector !== 'main' && sessionManager) {
-                targetChatId = sessionManager.getChatIdByLabel(sourceDirector);
+              } else if (sourceSessionId && sessionManager) {
+                targetChatId = sessionManager.getChatIdBySessionId(sourceSessionId);
+              } else if (workspaceDefaultSessionId && sessionManager) {
+                targetChatId = sessionManager.getChatIdBySessionId(workspaceDefaultSessionId);
+              } else if (legacySourceDirector && legacySourceDirector !== 'main' && sessionManager) {
+                targetChatId = sessionManager.getChatIdByLabel(legacySourceDirector);
               }
               if (!targetChatId) {
                 targetChatId = messaging?.getLastChatId() ?? null;
               }
               if (!targetChatId) {
-                writeAuditEntry('attachment.send', false, { target: sourceDirector, path: resolved, size: stat.size, image: isImage, targetChannel: body.target_channel ?? null, error: 'No active chat to send to' });
+                writeAuditEntry('attachment.send', false, { target: targetForAudit, path: resolved, size: stat.size, image: isImage, targetChannel: body.target_channel ?? null, error: 'No active chat to send to' });
                 return Response.json({ ok: false, error: 'No active chat to send to' }, { status: 400 });
               }
 
               // Try to get the messageId of the currently-processing user message for reply threading.
-              // Only fall back to main queue when source IS main — otherwise the reply API
-              // routes by parent-message chat, sending the attachment to the wrong conversation.
+              // Only fall back to main queue when no session/workspace/legacy runtime target exists;
+              // otherwise the reply API can route by the wrong parent-message chat.
               let replyMessageId: string | null = null;
-              if (sourceDirector && sourceDirector !== 'main' && sessionManager) {
-                replyMessageId = sessionManager.getProcessingMessageIdByLabel(sourceDirector);
+              if (sourceSessionId && sessionManager) {
+                replyMessageId = sessionManager.getProcessingMessageIdBySessionId(sourceSessionId);
+              } else if (workspaceDefaultSessionId && sessionManager) {
+                replyMessageId = sessionManager.getProcessingMessageIdBySessionId(workspaceDefaultSessionId);
+              } else if (legacySourceDirector && legacySourceDirector !== 'main' && sessionManager) {
+                replyMessageId = sessionManager.getProcessingMessageIdByLabel(legacySourceDirector);
               } else {
                 const peeked = queue.peek();
                 replyMessageId = peeked?.messageId ?? null;
@@ -3049,7 +3109,9 @@ export function startConsole(
               const targetChannel = targetChatId === 'web-console' ? 'web' : 'messaging';
               const delivery = {
                 path: resolved,
-                source_director: sourceDirector,
+                source_session_id: sourceSessionId,
+                workspace: sourceWorkspace,
+                legacy_source_director: legacySourceDirector,
                 target_channel: targetChannel,
                 target_chat_id: targetChatId,
                 size: stat.size,
@@ -3058,11 +3120,11 @@ export function startConsole(
                 reply_fallback: replyFallback,
                 target_chat_available: !!targetChatId,
               };
-              writeAuditEntry('attachment.send', true, { target: sourceDirector, path: resolved, size: stat.size, image: isImage, reply: !!replyMessageId && !replyFallback, replyFallback, targetChannel, targetChatId });
+              writeAuditEntry('attachment.send', true, { target: targetForAudit, sourceSessionId, workspace: sourceWorkspace, legacySourceDirector, path: resolved, size: stat.size, image: isImage, reply: !!replyMessageId && !replyFallback, replyFallback, targetChannel, targetChatId });
               return Response.json({ success: true, delivery });
             } catch (err) {
               console.error('[console] send-attachment failed:', err);
-              writeAuditEntry('attachment.send', false, { target: sourceDirector, path: resolved, targetChannel: body.target_channel ?? null, error: String(err) });
+              writeAuditEntry('attachment.send', false, { target: targetForAudit, sourceSessionId, workspace: sourceWorkspace, legacySourceDirector, path: resolved, targetChannel: body.target_channel ?? null, error: String(err) });
               return Response.json({ error: String(err) }, { status: 500 });
             }
           }
@@ -3252,50 +3314,39 @@ export function startConsole(
               model: r.model ?? undefined,
             }));
 
-            // Merge live director status for current session
-            const poolEntry = wsName === 'main'
-              ? undefined
-              : sessionManager?.getPoolStatus().find((e) => e.groupName === wsName);
-            const activePoolEntry = poolEntry ? sessionManager?.get(poolEntry.routingKey) : undefined;
-            const ds = wsName === 'main' ? director.getStatus() : activePoolEntry?.bridge.getStatus();
-            if (ds?.sessionId) {
-              // live session 合并时,跳过 DB 里已 archived 的 session。
-              // 否则归档"当前活跃 session"后,虽然 DB SQL 已经过滤了 archived=0,
-              // 这段 live 合并逻辑又把它 unshift 回列表,UI 永远看不到归档生效。
-              // 边界:in-memory session 还没注册到 DB(Director 重启后新 spawn),从 getSessionRecord
-              // 拿到 null,这时按"未归档"处理(原始行为)以避免新建 session 被错误隐藏。
-              const archivedRecord = getSessionRecord(ds.sessionId);
-              const isArchivedInDb = archivedRecord?.archived === 1;
-              if (!isArchivedInDb) {
-                const live = sessions.find(s => s.sessionId === ds.sessionId);
-                if (live) {
-                  if (ds.sessionName) live.sessionName = ds.sessionName;
-                  live.alive = true;
-                  live.role = ds.personaRole;
-                  live.cwd = wsName === 'main'
-                    ? director.getWorkspaceCwd()
-                    : activePoolEntry?.bridge.getWorkspaceCwd();
-                  live.agentName = ds.agentName;
-                  live.agentType = ds.agentType;
-                  live.model = ds.agentModel ?? undefined;
-                } else {
-                  sessions.unshift({
-                    sessionId: ds.sessionId,
-                    workspace: wsName,
-                    sessionName: ds.sessionName ?? undefined,
-                    archived: false,
-                    role: ds.personaRole,
-                    cwd: wsName === 'main'
-                      ? director.getWorkspaceCwd()
-                      : activePoolEntry?.bridge.getWorkspaceCwd(),
-                    alive: true,
-                    firstMessageAt: undefined,
-                    lastMessageAt: new Date().toISOString(),
-                    agentName: ds.agentName,
-                    agentType: ds.agentType,
-                    model: ds.agentModel ?? undefined,
-                  });
-                }
+            // Merge live status by stable sessionId. Do not infer workspace sessions
+            // from DirectorPool groupName/routingKey; SessionManager is the domain boundary.
+            for (const s of sessions) {
+              const liveEntry = sessionManager?.getSession(s.sessionId);
+              const ds = liveEntry?.bridge.getStatus();
+              if (!ds?.sessionId) continue;
+              if (ds.sessionName) s.sessionName = ds.sessionName;
+              s.alive = true;
+              s.role = ds.personaRole;
+              s.cwd = liveEntry?.bridge.getWorkspaceCwd();
+              s.agentName = ds.agentName;
+              s.agentType = ds.agentType;
+              s.model = ds.agentModel ?? undefined;
+            }
+
+            const mainStatus = wsName === 'main' ? director.getStatus() : null;
+            if (mainStatus?.sessionId && !sessions.some(s => s.sessionId === mainStatus.sessionId)) {
+              const archivedRecord = getSessionRecord(mainStatus.sessionId);
+              if (archivedRecord?.archived !== 1) {
+                sessions.unshift({
+                  sessionId: mainStatus.sessionId,
+                  workspace: wsName,
+                  sessionName: mainStatus.sessionName ?? undefined,
+                  archived: false,
+                  role: mainStatus.personaRole,
+                  cwd: director.getWorkspaceCwd(),
+                  alive: true,
+                  firstMessageAt: undefined,
+                  lastMessageAt: new Date().toISOString(),
+                  agentName: mainStatus.agentName,
+                  agentType: mainStatus.agentType,
+                  model: mainStatus.agentModel ?? undefined,
+                });
               }
             }
             return Response.json(sessions);
@@ -3313,17 +3364,10 @@ export function startConsole(
             setState('session:names', nameMap);
             try { setSessionNameInDb(sessionId, rawName || null); } catch { /* best-effort */ }
 
-            const directorLabel = typeof body.director === 'string' && body.director.trim() ? body.director.trim() : 'main';
-            let targetDirector = director;
-            if (directorLabel !== 'main' && sessionManager) {
-              const entry = sessionManager.getPoolStatus().find((e) => e.label === directorLabel);
-              if (entry) {
-                const poolEntry = sessionManager.get(entry.routingKey);
-                if (poolEntry) targetDirector = poolEntry.bridge;
-              }
-            }
-            const liveUpdated = targetDirector.setSessionDisplayName(sessionId, rawName || null);
-            writeAuditEntry('session.rename', true, { target: sessionId, director: directorLabel, sessionName: rawName || null, liveUpdated });
+            const liveBridge = sessionManager?.getSession(sessionId)?.bridge
+              ?? (director.getStatus().sessionId === sessionId ? director : null);
+            const liveUpdated = liveBridge?.setSessionDisplayName(sessionId, rawName || null) ?? false;
+            writeAuditEntry('session.rename', true, { target: sessionId, sessionName: rawName || null, liveUpdated, legacyDirectorProvided: typeof body.director === 'string' && !!body.director.trim() });
             return Response.json({ ok: true, sessionId, sessionName: rawName || null, liveUpdated });
           }
           // Persona orchestration APIs for Codex app / MCP clients
@@ -3621,14 +3665,14 @@ export function startConsole(
             const task = createTask(normalizeTaskSource(body));
             runCreatedTask(task);
             writeAuditEntry('task.create', true, { target: task.id, role: task.role, agent: task.agent, sourceSessionId: task.source_session_id, workspace: task.workspace });
-            return Response.json(task);
+            return Response.json(serializeTaskForApi(task, url.searchParams.get('includeDeprecated') === '1'));
           }
           if (url.pathname === '/api/tasks' && req.method === 'GET') {
             const status = url.searchParams.get('status') ?? undefined;
             const role = url.searchParams.get('role') ?? undefined;
             const workspace = url.searchParams.get('workspace') ?? undefined;
             const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
-            return Response.json(listTasks({ status, role, workspace, limit }));
+            return Response.json(listTasks({ status, role, workspace, limit }).map((task) => serializeTaskForApi(task, url.searchParams.get('includeDeprecated') === '1')));
           }
           if (url.pathname === '/api/tasks/cleanup' && req.method === 'GET') {
             const olderThanDays = Number(url.searchParams.get('older_than_days') ?? 30);
@@ -3706,7 +3750,7 @@ export function startConsole(
             }));
             runCreatedTask(task);
             writeAuditEntry('task.retry', true, { target: task.id, originalTaskId: original.id, role: task.role, agent: task.agent });
-            return Response.json(task);
+            return Response.json(serializeTaskForApi(task, url.searchParams.get('includeDeprecated') === '1'));
           }
           if (url.pathname.startsWith('/api/tasks/') && url.pathname.endsWith('/logs') && req.method === 'GET') {
             const taskId = url.pathname.slice('/api/tasks/'.length, -'/logs'.length);
@@ -3720,11 +3764,11 @@ export function startConsole(
             const taskId = url.pathname.slice('/api/tasks/'.length);
             const task = getTask(taskId);
             if (!task) return Response.json({ error: 'not found' }, { status: 404 });
-            return Response.json(task);
+            return Response.json(serializeTaskForApi(task, url.searchParams.get('includeDeprecated') === '1'));
           }
           // Cron Jobs API routes
           if (url.pathname === '/api/cron-jobs' && req.method === 'GET') {
-            return Response.json(listCronJobs());
+            return Response.json(listCronJobs().map((job) => serializeCronJobForApi(job, url.searchParams.get('includeDeprecated') === '1')));
           }
           if (url.pathname === '/api/cron-jobs' && req.method === 'POST') {
             const body = await req.json() as CreateCronJobInput;
@@ -3739,7 +3783,7 @@ export function startConsole(
             }
             const job = createCronJob(normalizeCronSource(body));
             writeAuditEntry('cron.create', true, { target: job.id, name: job.name, actionType: job.action_type, schedule: job.schedule, workspace: job.workspace });
-            return Response.json(job);
+            return Response.json(serializeCronJobForApi(job, url.searchParams.get('includeDeprecated') === '1'));
           }
           if (url.pathname.startsWith('/api/cron-jobs/') && url.pathname.endsWith('/toggle') && req.method === 'POST') {
             const id = url.pathname.slice('/api/cron-jobs/'.length, -'/toggle'.length);
@@ -3749,7 +3793,7 @@ export function startConsole(
               return Response.json({ ok: false, id, error: `cron job not found: ${id}` }, { status: 404 });
             }
             writeAuditEntry('cron.toggle', true, { target: id, enabled: job.enabled });
-            return Response.json(job);
+            return Response.json(serializeCronJobForApi(job, url.searchParams.get('includeDeprecated') === '1'));
           }
           if (url.pathname.startsWith('/api/cron-jobs/') && url.pathname.endsWith('/run') && req.method === 'POST') {
             const id = url.pathname.slice('/api/cron-jobs/'.length, -'/run'.length);
@@ -3772,7 +3816,7 @@ export function startConsole(
             const id = url.pathname.slice('/api/cron-jobs/'.length);
             const job = getCronJob(id);
             if (!job) return Response.json({ error: 'not found' }, { status: 404 });
-            return Response.json(job);
+            return Response.json(serializeCronJobForApi(job, url.searchParams.get('includeDeprecated') === '1'));
           }
           if (url.pathname.startsWith('/api/cron-jobs/') && req.method === 'PUT') {
             const id = url.pathname.slice('/api/cron-jobs/'.length);
@@ -3783,7 +3827,7 @@ export function startConsole(
               return Response.json({ ok: false, id, error: `cron job not found: ${id}` }, { status: 404 });
             }
             writeAuditEntry('cron.update', true, { target: id, name: job.name, schedule: job.schedule, enabled: job.enabled });
-            return Response.json(job);
+            return Response.json(serializeCronJobForApi(job, url.searchParams.get('includeDeprecated') === '1'));
           }
           if (url.pathname.startsWith('/api/cron-jobs/') && req.method === 'DELETE') {
             const id = url.pathname.slice('/api/cron-jobs/'.length);
@@ -3933,22 +3977,28 @@ export function startConsole(
               ...result,
             }));
           } else if (msg.type === 'chat' && msg.text) {
-            // Web chat 消息 — route to specific Director if specified
-            const targetLabel: string | null = msg.director ?? null;
-            if (targetLabel && sessionManager) {
-              // Route to workspace Director via queue (ensures response correlation)
-              const poolStatus = sessionManager.getPoolStatus().find((e) => e.label === targetLabel);
-              if (poolStatus) {
-                const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-                messageWsMap.set(messageId, { ws, createdAt: Date.now() });
-                try {
-                  await sessionManager.getPool().send(poolStatus.routingKey, quotedText ? formatWebQuote(quotedText) + msg.text : msg.text, messageId);
-                } catch (err) {
-                  console.error(`[console] Web chat send to pool "${targetLabel}" failed:`, err);
-                }
-                return;
+            const explicitSessionId = typeof msg.sessionId === 'string' && msg.sessionId.trim()
+              ? msg.sessionId.trim()
+              : typeof msg.session_id === 'string' && msg.session_id.trim()
+                ? msg.session_id.trim()
+                : null;
+            const targetLabel: string | null = typeof msg.director === 'string' && msg.director.trim() ? msg.director.trim() : null;
+            const targetSessionId = explicitSessionId
+              ?? (targetLabel && sessionManager
+                ? sessionManager.getPoolStatus().find((e) => e.label === targetLabel)?.directorStatus?.sessionId ?? null
+                : null);
+            if (targetSessionId && sessionManager) {
+              const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              messageWsMap.set(messageId, { ws, createdAt: Date.now() });
+              try {
+                await sessionManager.send(targetSessionId, quotedText ? formatWebQuote(quotedText) + msg.text : msg.text, messageId, { webOnly: true });
+              } catch (err) {
+                console.error(`[console] Web chat send to session "${targetSessionId}" failed:`, err);
               }
-              console.warn(`[console] Pool Director "${targetLabel}" not found, falling back to main`);
+              return;
+            }
+            if (targetLabel) {
+              console.warn(`[console] legacy director target "${targetLabel}" did not resolve to a sessionId, falling back to main`);
             }
             // Fall back to main Director via MessagingClient handler
             const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;

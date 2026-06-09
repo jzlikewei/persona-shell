@@ -401,7 +401,7 @@ export function updateTask(id: string, update: Partial<Omit<Task, 'id'>>): void 
     'type', 'role', 'agent', 'description', 'prompt', 'status',
     'started_at', 'completed_at', 'result_file', 'error',
     'retry_count', 'max_retry', 'cost_usd', 'duration_ms', 'extra',
-    'source_director', 'timeout_ms', 'source_session_id', 'workspace',
+    'timeout_ms', 'source_session_id', 'workspace',
   ] as const;
 
   const sets: string[] = [];
@@ -626,7 +626,7 @@ export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
 }
 
 export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
-  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'timeout_ms', 'max_retry', 'source_director', 'workspace'] as const;
+  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'timeout_ms', 'max_retry', 'workspace'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 
@@ -903,43 +903,35 @@ export interface TaskParentStatusInput {
   pid?: number | null;
 }
 
-export interface TaskParentPoolInput {
-  groupName?: string;
-  routingKey?: string;
+export interface TaskParentSourceInput {
+  workspace?: string | null;
+  sourceSessionId?: string | null;
+  /** Runtime label is diagnostic-only; do not use it for callback routing. */
+  runtimeLabel?: string | null;
 }
 
 /**
- * Build parent-director metadata to attach to a task's `extra` field.
- * Pure function — callers resolve the director status and pool entry before calling.
+ * Build parent session metadata to attach to a task's `extra` field.
+ * Pure function — callers resolve the session status before calling.
  */
 export function buildTaskParentMetadata(
-  sourceLabel: string,
+  source: TaskParentSourceInput,
   status: TaskParentStatusInput | null | undefined,
-  poolEntry?: TaskParentPoolInput | null,
 ): Record<string, unknown> {
-  const source = sourceLabel || 'main';
-  if (!status) {
-    return {
-      parent_director_label: source,
-      parent_director_status: 'not-found',
-    };
-  }
   const meta: Record<string, unknown> = {
-    parent_director_label: source,
-    parent_director_status: status.alive ? 'alive' : 'offline',
-    parent_session_id: status.sessionId,
-    parent_session_name: status.sessionName,
-    parent_agent: status.agentName,
-    parent_agent_type: status.agentType,
-    parent_persona_role: status.personaRole,
-    parent_pid: status.pid,
+    parent_workspace: source.workspace ?? null,
+    parent_session_id: source.sourceSessionId ?? status?.sessionId ?? null,
+    parent_runtime_label: source.runtimeLabel ?? null,
+    parent_session_status: status ? (status.alive ? 'alive' : 'offline') : 'not-found',
   };
+  if (!status) return meta;
+  meta.parent_session_name = status.sessionName;
+  meta.parent_agent = status.agentName;
+  meta.parent_agent_type = status.agentType;
+  meta.parent_persona_role = status.personaRole;
+  meta.parent_pid = status.pid;
   if (status.agentType === 'codex-app-server') {
     meta.parent_codex_thread_id = status.sessionId;
-  }
-  if (poolEntry) {
-    meta.parent_group_name = poolEntry.groupName;
-    meta.parent_routing_key = poolEntry.routingKey;
   }
   return meta;
 }

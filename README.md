@@ -21,7 +21,7 @@
 - **不重复造轮子** — agent 的推理、工具调用、代码能力已经被 Claude Code / Codex 做好了，Persona Shell 不重新实现这些，只做编排和消息转发
 - **Prompt 是你的核心资产** — soul.md（人格）、personas/（角色）、prompts/（系统行为模板）、memory/（记忆）—— 全部是 Markdown，你用 git 管理、精心迭代，这才是你的 AI 分身区别于别人的地方
 - **持久运行，自动刷新** — daemon 模式 + 自动上下文刷新（FLUSH），你维护的 prompt 和记忆会被持久保存，跨会话生效，不怕 context window 耗尽
-- **多实例，多后端** — 主分身 + 群聊 Director Pool，并行任务、后台任务、定时任务；同一套 prompt 可以被不同 agent 后端使用
+- **多 workspace / session，多后端** — main workspace + 群聊 workspace，可并行会话、后台任务、定时任务；同一套 prompt 可以被不同 agent 后端使用
 
 ## 支持的 Agent 后端
 
@@ -80,16 +80,13 @@ bun run dev
 ## 架构概览
 
 ```
-IM 消息 → TS Shell → MessageQueue → SessionBridge (主 Director)
-              │                         │
-              │                    ┌────┴────┐
-              │                    │ Adapter  │ ← Claude / Codex 协议适配
-              │                    │ Runtime  │ ← 进程生命周期
-              │                    └─────────┘
-              │
-              │  群聊 → DirectorPool ─→ SessionBridge (群1, 群2, ...)
-              │
-              └── Web Console (localhost:3000)
+IM / Web 消息 → TS Shell → WorkspaceRegistry → SessionManager → Session → Agent Runtime
+                                      │              │
+                                      │              └─ SessionBridge / Adapter ← Claude / Codex 协议适配
+                                      │
+                                      └─ workspace.defaultSessionId（飞书群聊 / Cron fallback）
+
+DirectorPool 只在 SessionManager 下方承载 runtime entry、队列、streaming 和进程恢复；不是业务路由实体。
 ```
 
 技术细节见 [架构文档](docs/architecture.md)。

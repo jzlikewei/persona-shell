@@ -66,21 +66,21 @@ Persona Web Console 是 persona-shell 的本地 Web 操作界面。它不是新�
 - Details 视图：查看某轮输入、输出、metadata、错误、耗时，并支持复制 JSON、跳回所属 session
 - 每轮消息元信息：耗时、token、cost、model、后端 provider
 
-### 2. Director 与运行时管理
+### 2. Runtime 与运行时管理
 
-管理 persona-shell 已有的 Director、Pool、子角色任务、后端 provider 和运行队列。
+管理 persona-shell 已有的 Agent runtime、DirectorPool runtime entries、子角色任务、后端 provider 和运行队列。这里是 runtime/debug 视图，不是业务路由模型；Chat / Tasks / Automation 仍以 Workspace / Session 为主。
 
-- Main Director 状态面板
+- main workspace 当前 runtime 状态面板
 - Runtime snapshot / process / queue JSON 复制与导出
-- DirectorPool 状态列表
-- 单个 Director 操作：Flush、Clear、Esc、Restart、Detach / Shutdown
+- DirectorPool runtime 状态列表
+- 单个 runtime entry 操作：Flush、Clear、Esc、Restart、Detach / Shutdown
 - 切换后端 provider：Claude / Codex / Codex app-server / Kimi
 - 切换 persona role
 - 查看 session id / Codex thread id / session name
 - 查看 workspace cwd
 - 查看当前 prompt 注入文件
 - 查看 MCP 配置状态
-- Director 进程监控：PID、alive、重启次数、最近 crash
+- Runtime 进程监控：PID、alive、重启次数、最近 crash
 - 当前运行消息预览
 - 队列查看
 - 取消单条队列消息
@@ -133,7 +133,7 @@ Cron、定时任务、持续运行工作流的管理中心。
 - 运行历史可打开关联 task、打开结果产物、复制/导出单次运行 JSON、导出运行历史
 - 失败重试配置
 - timeout 配置
-- source_director 配置
+- workspace 配置（Cron 调度到 workspace default session；`source_director` 仅作历史迁移字段）
 - Cron 日志
 - Cron 模板：日报、周报、定期巡检、定期 flush、数据同步
 - Automation 健康状态：连续失败次数、最近错误
@@ -301,7 +301,7 @@ Web Console 的一级导航建议保持稳定，不直接暴露过多技术细�
 
 - 主导航、Chat-first Console、独立 Overview 入口，以及跨模块 Workbench Overview（自动补齐 Director/任务/自动化/Persona/文件/审批摘要、可带筛选/选中目标跳转的 operator attention、快速入口、Persona Handoff Task 草稿创建、整体报告复制/导出并可一键生成跨模块巡检/修复 Tasks 创建草稿）。
 - Console 的 Session 分组（Main、Web Chats、Feishu Groups、Closed）、closed Director 按自身日志目录读取完整历史并支持跨日 session 聚合、新建 / 关闭 Web Chat（带本地审批和操作审计）、Session Inspector（session id 复制、内联重命名、live session 跳转、会话统计、会话结构化 JSON 复制 / 导出、当前 Messages / Turns / Timeline 视图报告复制 / 导出，并可基于当前视图/搜索条件一键生成 Tasks 创建草稿）、支持 Messages / Turns / Timeline 的消息搜索与上一条/下一条命中定位、Transcript Markdown 复制 / 导出、Messages / Turns / Timeline 视图、Conversation Timeline（消息、从消息 metadata 提取的 tool call / tool result、任务委派、队列项、附件发送、失败任务、WebSocket 错误和诊断聚合错误）和事件 Details 下钻（结构化 JSON 复制 / 导出并跳回 message/task/file/session/log/search，tool 事件支持 tool payload 复制 / 导出，单条 message / turn / timeline event 可一键生成 follow-up Tasks 创建草稿）、Turn 折叠/展开、Turn 级 provider/model/token/cost/duration 聚合展示并进入会话 JSON bundle、消息/Turn Details、消息元信息展示、Details JSON 复制 / 导出、生成单条会话证据 follow-up Tasks 创建草稿和所属 session 跳转、带可见引用预览和可取消上下文的结构化 Quote/Reply、Resend、Copy Markdown、代码块一键复制、当前响应 Stop 取消，以及聊天栏本地附件选择 / 上传 / 发送确认入口。
-- Runtime 的 Main Director、Runtime snapshot / process / queue JSON 复制与导出，并可基于 Runtime snapshot / Active Work / Context Health / Runtime Context 一键生成运行态排障 Tasks 创建草稿（仍走任务创建审批）、Main Director 命令面和 provider/persona 切换意图可带当前进程、队列、context、runtime context 与目标选择生成操作前检查 Tasks 创建草稿、Director Pool（行级状态、队列、provider/persona、命令面和运行上下文证据可一键生成排障 Tasks 创建草稿）、进程监控（PID、alive、重启次数、最近 crash，整体 process report 和单个 Director JSON 复制/导出、可跳回关联 session，并可基于整体/单 Director 进程证据生成排障 Tasks 创建草稿）、Active Work 面板（Main/Pool 当前运行消息和队列预览、Director/Session 跳转、单项与整体复制/导出、单条 Active Work 一键生成排障 Tasks 创建草稿、对 Main/Pool 排队项执行带审批和审计的取消）、Context Health（live/stale、context window、flush limit、auto flush 状态、最高占用 Director，支持报告复制/导出，并可基于整体或单行 context/cache live 证据生成排障 Tasks 创建草稿）、workspace cwd、当前 prompt 注入文件、MCP 配置状态和 Runtime Context 报告复制/导出，并可基于整体报告、单 Director、单 prompt file 或单 MCP config 生成运行上下文排障 Tasks 创建草稿、主队列查看、整体 JSON 复制/导出、整体或清空队列前检查生成排障 Tasks 创建草稿、单条 JSON 复制/导出、单条生成排障 Tasks 创建草稿、单条取消、清空队列、Pool Director 单个 Flush / Clear / Esc / Restart / Detach / Shutdown，以及 provider / persona role 切换。
+- Runtime 的 main workspace runtime、Runtime snapshot / process / queue JSON 复制与导出，并可基于 Runtime snapshot / Active Work / Context Health / Runtime Context 一键生成运行态排障 Tasks 创建草稿（仍走任务创建审批）、main runtime 命令面和 provider/persona 切换意图可带当前进程、队列、context、runtime context 与目标选择生成操作前检查 Tasks 创建草稿、DirectorPool runtime（行级状态、队列、provider/persona、命令面和运行上下文证据可一键生成排障 Tasks 创建草稿）、进程监控（PID、alive、重启次数、最近 crash，整体 process report 和单个 runtime JSON 复制/导出、可跳回关联 session，并可基于整体/单个 runtime 进程证据生成排障 Tasks 创建草稿）、Active Work 面板（Main/Pool 当前运行消息和队列预览、Director/Session 跳转、单项与整体复制/导出、单条 Active Work 一键生成排障 Tasks 创建草稿、对 Main/Pool 排队项执行带审批和审计的取消）、Context Health（live/stale、context window、flush limit、auto flush 状态、最高占用 runtime，支持报告复制/导出，并可基于整体或单行 context/cache live 证据生成排障 Tasks 创建草稿）、workspace cwd、当前 prompt 注入文件、MCP 配置状态和 Runtime Context 报告复制/导出，并可基于整体报告、单个 runtime、单 prompt file 或单 MCP config 生成运行上下文排障 Tasks 创建草稿、主队列查看、整体 JSON 复制/导出、整体或清空队列前检查生成排障 Tasks 创建草稿、单条 JSON 复制/导出、单条生成排障 Tasks 创建草稿、单条取消、清空队列、Pool runtime entry 单个 Flush / Clear / Esc / Restart / Detach / Shutdown，以及 provider / persona role 切换。
 - Tasks 的筛选、纳入 Safety 审批队列的创建运行、详情、结构化日志（thinking、tool call、tool result、text、error、result）筛选/搜索/导出、单条详情、单条 JSON / 文本复制、单条导出和基于单条日志事件一键生成 follow-up Tasks 创建草稿、结果输出预览/复制/导出并可一键生成结果复盘或交付跟进 Tasks 创建草稿、可复制/导出的运行元信息（spawn args、PID、Codex thread、parent Director / parent session、project / cron / retry 关联）并可一键生成运行链路排查 Tasks 创建草稿、父会话/父 Director 跳转、可复制/导出的完成证据面板并可一键生成 completion follow-up Tasks 创建草稿、包含运行元信息/完成证据/可见日志/结果预览的任务交接包复制与导出并可一键生成 handoff follow-up Tasks 创建草稿、取消、纳入 Safety 审批队列的重试、复制创建、批量选择、批量取消运行中任务、纳入 Safety 审批队列的批量重试失败任务、已选任务 JSON 导出并可一键生成批量任务复盘/收敛 Tasks 创建草稿、按当前筛选展示 14 天吞吐 / 状态 / 耗时 / 成本 / provider / role 成功率并支持复制导出和一键生成排障/优化 Tasks 创建草稿的任务运行趋势报告，以及带预览、报告复制/导出、清理前复盘/安全检查 Tasks 创建草稿和审计的终态任务历史清理。
 - Automations 的纳入 Safety 审批队列的创建 / 编辑 / 启停 / 删除 / 立即运行、下一次运行预览、Cron 搜索和启停/action/source/health 筛选、按当前筛选复制/导出自动化巡检报告（调度器状态、健康摘要、可见 Cron、最近运行和审计摘要）并可一键生成自动化巡检/修复 Tasks 创建草稿、Cron 详情复制/导出 job JSON、source Director 跳转、按 Cron 跳到 Tasks 查看运行记录、基于 Cron 配置/健康/运行历史/审计证据一键生成跟进 Tasks 创建草稿（仍走任务创建审批）、Cron 模板（日报、周报、定期巡检、定期 flush、数据同步）、健康状态、运行历史摘要，以及运行历史到 task/result artifact 的追踪、单次运行 JSON 复制/导出、结果产物发送、运行日志复制/导出、单次运行一键生成跟进 Tasks 创建草稿、历史复制/导出并可一键生成运行历史复盘 Tasks 创建草稿、单个 Cron 的操作审计轨迹（支持单条复制/导出、生成复盘/修复 Tasks 创建草稿并打开关联 task / file / Director / Cron），以及运行证据包复制/导出并可一键生成自动化运行证据跟进 Tasks 创建草稿。
 - Persona 的 roles、角色切换前预览（role 详情、prompt 文件/大小摘要、复制/导出预览、生成切换前检查 Tasks 创建草稿、切换当前 Director）、prompt bundle 预览与完整 JSON 复制/导出并可一键生成 prompt/context 审核 Tasks 创建草稿、skills / MCP 总览、skill 详情查看与证据包复制/导出并可一键生成 skill 使用/修复 Tasks 创建草稿、MCP 配置与单 server 证据包复制/导出并可一键生成 MCP 排查/修复 Tasks 创建草稿、资产文档浏览/搜索/分类和新鲜度筛选、可见资产 manifest 复制/导出并可一键生成上下文资产复盘 Tasks 创建草稿、单文档预览/交接包复制导出并可一键生成文档复盘/修复 Tasks 创建草稿、纳入 Safety 审批队列的 Markdown 编辑保存、本地文件位置打开、workspace/session memory 分类提示、persona 文件变更提示、Memory Snapshot 高频入口（自动定位 memory 文档、打开预览、Markdown 复制和包含 state/TODO 摘要的交接包复制/导出，并可一键生成记忆复盘/整理 Tasks 创建草稿）、Context Graph 复制/导出并可一键生成上下文图复盘 Tasks 创建草稿、Context Handoff 就绪检查、运行上下文交接包复制/导出以及一键生成 Tasks 创建草稿（仍走任务创建审批）、纳入 Safety 审批队列的 state/TODO 轻量编辑保存、文档交接包复制/导出并可一键生成 state/TODO 整理 Tasks 创建草稿，以及支持整体/单条 JSON 复制导出、带 open target 的 session links 查看、创建、编辑、打开关联上下文、从审计日志回跳定位和删除（删除纳入 Safety 审批队列），并可基于整体或单条 session link 生成映射复盘/修复 Tasks 创建草稿。
@@ -321,10 +321,10 @@ Web Console 的一级导航建议保持稳定，不直接暴露过多技术细�
 | 会话列表 | `GET /api/sessions?workspace={name}` |
 | 会话创建 | `POST /api/sessions { workspace }` |
 | 会话重命名 | `PUT /api/sessions/name` |
-| Director provider 切换 | `POST /api/directors/switch-agent` |
-| Director persona 切换 | `POST /api/directors/switch-persona` |
-| Director 运行时操作 | `POST /api/directors/command` |
-| Pool Director 关闭 | `POST /api/directors/shutdown` |
+| Runtime provider 切换 | `POST /api/directors/switch-agent`（runtime-only） |
+| Runtime persona 切换 | `POST /api/directors/switch-persona`（runtime-only） |
+| Runtime 运行时操作 | `POST /api/directors/command`（runtime-only） |
+| Pool runtime entry 关闭 | `POST /api/directors/shutdown`（runtime-only） |
 | 任务列表 / 创建 | `GET/POST /api/tasks` |
 | 任务详情 | `GET /api/tasks/{id}` |
 | 任务日志 | `GET /api/tasks/{id}/logs` |
