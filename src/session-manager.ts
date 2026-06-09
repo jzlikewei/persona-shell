@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
-import type { DirectorPool, PoolEntry } from './director-pool.js';
+import type { AgentRuntimePool, RuntimeEntry } from './agent-runtime-pool.js';
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue, QueueItem, PendingAttachment } from './queue.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
@@ -22,15 +22,15 @@ export interface SessionEntry {
  * SessionManager is the domain boundary for workspace/session routing.
  *
  * Business code should enter through workspace + sessionId methods here. The
- * underlying DirectorPool remains a runtime implementation detail for process,
+ * underlying AgentRuntimePool remains a runtime implementation detail for process,
  * queue, and streaming transport control.
  */
 export class SessionManager extends EventEmitter {
-  private pool: DirectorPool;
+  private pool: AgentRuntimePool;
   private workspaceRegistry: WorkspaceRegistry;
   private sessionToRoutingKey = new Map<string, string>();
 
-  constructor(pool: DirectorPool, workspaceRegistry: WorkspaceRegistry) {
+  constructor(pool: AgentRuntimePool, workspaceRegistry: WorkspaceRegistry) {
     super();
     this.pool = pool;
     this.workspaceRegistry = workspaceRegistry;
@@ -55,24 +55,24 @@ export class SessionManager extends EventEmitter {
     return this.toSessionEntry(poolEntry);
   }
 
-  getPoolEntryBySessionId(sessionId: string): PoolEntry | null {
+  getRuntimeEntryBySessionId(sessionId: string): RuntimeEntry | null {
     const routingKey = this.sessionToRoutingKey.get(sessionId);
     if (!routingKey) return null;
     return this.pool.get(routingKey) ?? null;
   }
 
   getChatIdBySessionId(sessionId: string): string | null {
-    return this.getPoolEntryBySessionId(sessionId)?.feishuChatId ?? null;
+    return this.getRuntimeEntryBySessionId(sessionId)?.feishuChatId ?? null;
   }
 
   getProcessingMessageIdBySessionId(sessionId: string): string | null {
-    const entry = this.getPoolEntryBySessionId(sessionId);
+    const entry = this.getRuntimeEntryBySessionId(sessionId);
     const item = entry?.queue.peek();
     return item?.messageId ?? null;
   }
 
   enqueueAttachmentForHeadBySessionId(sessionId: string, attachment: PendingAttachment): QueueItem | null {
-    const entry = this.getPoolEntryBySessionId(sessionId);
+    const entry = this.getRuntimeEntryBySessionId(sessionId);
     return entry?.queue.addPendingAttachmentToOldest(attachment) ?? null;
   }
 
@@ -208,7 +208,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Register a session mapping (sessionId → routingKey) */
-  registerSession(sessionId: string, routingKey: string, workspace: string, entry: PoolEntry): void {
+  registerSession(sessionId: string, routingKey: string, workspace: string, entry: RuntimeEntry): void {
     this.sessionToRoutingKey.set(sessionId, routingKey);
     const existing = getSessionRecord(sessionId);
     if (existing?.archived) {
@@ -342,19 +342,19 @@ export class SessionManager extends EventEmitter {
     return this.pool.shutdownAll();
   }
 
-  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<RuntimeEntry> {
     return this.pool.resetSession(routingKey, opts);
   }
 
-  async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<PoolEntry> {
+  async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<RuntimeEntry> {
     return this.pool.setDirectorAgent(routingKey, opts);
   }
 
-  async switchAgentByLabel(label: string, agentName: string): Promise<PoolEntry> {
+  async switchAgentByLabel(label: string, agentName: string): Promise<RuntimeEntry> {
     return this.pool.switchAgentByLabel(label, agentName);
   }
 
-  async switchPersonaByLabel(label: string, roleName: string): Promise<PoolEntry> {
+  async switchPersonaByLabel(label: string, roleName: string): Promise<RuntimeEntry> {
     return this.pool.switchPersonaByLabel(label, roleName);
   }
 
@@ -374,17 +374,17 @@ export class SessionManager extends EventEmitter {
     return this.pool.interruptOldestByLabel(label);
   }
 
-  async detachByLabel(label: string): Promise<PoolEntry> {
+  async detachByLabel(label: string): Promise<RuntimeEntry> {
     return this.pool.detachByLabel(label);
   }
 
   // --- Runtime lookup helpers ---
 
-  findByLabel(label: string): PoolEntry | undefined {
+  findByLabel(label: string): RuntimeEntry | undefined {
     return this.pool.findByLabel(label);
   }
 
-  get(routingKey: string): PoolEntry | undefined {
+  get(routingKey: string): RuntimeEntry | undefined {
     return this.pool.get(routingKey);
   }
 
@@ -404,8 +404,8 @@ export class SessionManager extends EventEmitter {
     return this.pool.cancelQueuedByLabel(label, correlationId);
   }
 
-  getPoolStatus() {
-    return this.pool.getPoolStatus();
+  getRuntimeStatus() {
+    return this.pool.getRuntimeStatus();
   }
 
   get size(): number {
@@ -413,11 +413,11 @@ export class SessionManager extends EventEmitter {
   }
 
   /** Access the underlying pool (transition period) */
-  getPool(): DirectorPool {
+  getRuntime(): AgentRuntimePool {
     return this.pool;
   }
 
-  private toSessionEntry(poolEntry: PoolEntry): SessionEntry {
+  private toSessionEntry(poolEntry: RuntimeEntry): SessionEntry {
     const status = poolEntry.bridge.getStatus();
     return {
       sessionId: status.sessionId ?? '',

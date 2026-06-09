@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
-import { DirectorPool } from '../director-pool.js';
-import type { PoolEntry } from '../director-pool.js';
+import { AgentRuntimePool } from '../agent-runtime-pool.js';
+import type { RuntimeEntry } from '../agent-runtime-pool.js';
 import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
@@ -127,10 +127,10 @@ function createMessaging(): MessagingClient {
   };
 }
 
-class SmokePool extends DirectorPool {
-  private smokeEntries = new Map<string, PoolEntry>();
+class SmokePool extends AgentRuntimePool {
+  private smokeEntries = new Map<string, RuntimeEntry>();
 
-  private async createEntry(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
+  private async createEntry(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<RuntimeEntry> {
     const groupName = opts.groupName ?? routingKey;
     const bridge = createBridge(`smoke-${routingKey}`, groupName, false, opts.directorAgentName, opts.initialSessionId);
     await bridge.start();
@@ -146,7 +146,7 @@ class SmokePool extends DirectorPool {
     };
   }
 
-  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
+  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<RuntimeEntry> {
     const existing = this.smokeEntries.get(routingKey);
     if (existing) return existing;
 
@@ -155,7 +155,7 @@ class SmokePool extends DirectorPool {
     return entry;
   }
 
-  get(routingKey: string): PoolEntry | undefined {
+  get(routingKey: string): RuntimeEntry | undefined {
     return this.smokeEntries.get(routingKey);
   }
 
@@ -165,7 +165,7 @@ class SmokePool extends DirectorPool {
     await entry.bridge.send(text);
   }
 
-  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
+  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<RuntimeEntry> {
     const groupName = opts.groupName ?? routingKey;
     const bridge = createBridge(`smoke-${routingKey}-reset-${SmokeAdapter.nextId}`, groupName, false, opts.directorAgentName, opts.initialSessionId);
     await bridge.start();
@@ -183,7 +183,7 @@ class SmokePool extends DirectorPool {
     return entry;
   }
 
-  async detachByLabel(label: string): Promise<PoolEntry> {
+  async detachByLabel(label: string): Promise<RuntimeEntry> {
     for (const [routingKey, entry] of this.smokeEntries.entries()) {
       if (entry.bridge.label === label) {
         this.smokeEntries.delete(routingKey);
@@ -290,7 +290,7 @@ describe('smoke:workspace-routing', () => {
     createWorkspaceRecord('revive-smoke', { agent: 'codex' });
     const manager = createManager();
     const session = await manager.createNewSession('revive-smoke', { feishuChatId: 'web-console' });
-    const entry = manager.getPoolEntryBySessionId(session.sessionId);
+    const entry = manager.getRuntimeEntryBySessionId(session.sessionId);
     expect(entry).not.toBeNull();
 
     await manager.detachByLabel(entry!.bridge.label);

@@ -116,7 +116,7 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
   }
 
   // Try matching as workspace director label
-  const entry = sessionMgr?.getPoolStatus().find((item) => item.label === requested);
+  const entry = sessionMgr?.getRuntimeStatus().find((item) => item.label === requested);
   const active = entry ? sessionMgr?.get(entry.routingKey) : undefined;
 
   if (active) {
@@ -555,7 +555,7 @@ export function startConsole(
       costUsd: t.cost_usd ?? undefined,
     }));
 
-    const runtimePool = sessionManager ? sessionManager.getPoolStatus().map((entry) => ({
+    const runtimePool = sessionManager ? sessionManager.getRuntimeStatus().map((entry) => ({
       routingKey: entry.routingKey,
       groupName: entry.groupName,
       label: entry.label,
@@ -1035,7 +1035,7 @@ export function startConsole(
 
     const directors: Array<{ label: string; bridge: SessionBridge }> = [{ label: 'main', bridge: director }];
     if (sessionManager) {
-      for (const entry of sessionManager.getPoolStatus()) {
+      for (const entry of sessionManager.getRuntimeStatus()) {
         const poolEntry = sessionManager.get(entry.routingKey);
         if (poolEntry) directors.push({ label: entry.label, bridge: poolEntry.bridge });
       }
@@ -1647,7 +1647,7 @@ export function startConsole(
 
   function resolveSessionId(label: string): string | null {
     if (label === director.label || label === 'main') return director.getStatus().sessionId;
-    const entry = sessionManager?.getPoolStatus().find((item) => item.label === label);
+    const entry = sessionManager?.getRuntimeStatus().find((item) => item.label === label);
     if (!entry) return null;
     return sessionManager?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
   }
@@ -1800,7 +1800,7 @@ export function startConsole(
       const workspace = job.workspace || 'main';
       const sessionId = workspace === 'main' ? director.getStatus().sessionId : sessionManager?.resolveDefaultSession(workspace);
       if (sessionId && sessionId !== director.getStatus().sessionId && sessionManager) {
-        const entry = sessionManager.getPoolEntryBySessionId(sessionId);
+        const entry = sessionManager.getRuntimeEntryBySessionId(sessionId);
         if (entry) {
           await entry.bridge.sendCronMessage(msg);
           updateCronJob(job.id, { last_run_at: localNow() });
@@ -2531,7 +2531,7 @@ export function startConsole(
               await director.notifyTaskDone(taskId, success, replyToMessageId);
             } else {
               if (!sessionManager) return Response.json({ ok: false, error: 'Session manager is unavailable' }, { status: 503 });
-              const entry = sessionManager.getPoolEntryBySessionId(sourceSessionId);
+              const entry = sessionManager.getRuntimeEntryBySessionId(sourceSessionId);
               if (!entry) return Response.json({ ok: false, error: `Session not found: ${sourceSessionId}` }, { status: 404 });
               await entry.bridge.notifyTaskDone(taskId, success, replyToMessageId);
             }
@@ -2952,7 +2952,7 @@ export function startConsole(
                 : workspaceDefaultSessionId && sessionManager
                   ? sessionManager.enqueueAttachmentForHeadBySessionId(workspaceDefaultSessionId, attachment)
                   : legacySourceDirector && legacySourceDirector !== 'main' && sessionManager
-                    ? sessionManager.getPool().enqueueAttachmentForHeadByLabel(legacySourceDirector, attachment)
+                    ? sessionManager.getRuntime().enqueueAttachmentForHeadByLabel(legacySourceDirector, attachment)
                     : queue.addPendingAttachmentToOldest(attachment);
               if (item) {
                 writeAuditEntry('attachment.queue', true, {
@@ -3274,7 +3274,7 @@ export function startConsole(
             }));
 
             // Merge live status by stable sessionId. Do not infer workspace sessions
-            // from DirectorPool groupName/routingKey; SessionManager is the domain boundary.
+            // from AgentRuntimePool groupName/routingKey; SessionManager is the domain boundary.
             for (const s of sessions) {
               const liveEntry = sessionManager?.getSession(s.sessionId);
               const ds = liveEntry?.bridge.getStatus();
@@ -3566,13 +3566,13 @@ export function startConsole(
                 err.status = 503;
                 throw err;
               }
-              const target = sessionManager.getPoolStatus().find((entry) => entry.label === targetLabel && !entry.closed);
+              const target = sessionManager.getRuntimeStatus().find((entry) => entry.label === targetLabel && !entry.closed);
               if (!target) {
                 const err = new Error(`Director "${targetLabel}" is not active`) as Error & { status?: number };
                 err.status = 404;
                 throw err;
               }
-              await sessionManager.getPool().shutdown(target.routingKey);
+              await sessionManager.getRuntime().shutdown(target.routingKey);
               writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, groupName: target.groupName ?? null });
               return Response.json({ ok: true, director_label: targetLabel, routing_key: target.routingKey });
             } catch (err) {
@@ -3951,7 +3951,7 @@ export function startConsole(
             const targetLabel: string | null = typeof msg.director === 'string' && msg.director.trim() ? msg.director.trim() : null;
             const targetSessionId = explicitSessionId
               ?? (targetLabel && sessionManager
-                ? sessionManager.getPoolStatus().find((e) => e.label === targetLabel)?.directorStatus?.sessionId ?? null
+                ? sessionManager.getRuntimeStatus().find((e) => e.label === targetLabel)?.directorStatus?.sessionId ?? null
                 : null);
             if (targetSessionId && sessionManager) {
               const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;

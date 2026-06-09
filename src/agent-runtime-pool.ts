@@ -12,7 +12,7 @@ import { getState, setState, getWorkspace } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
 
 /** Pool entry data persisted to SQLite for crash recovery */
-interface PersistedPoolEntry {
+interface PersistedRuntimeEntry {
   routingKey: string;
   feishuChatId: string;
   groupName: string;
@@ -27,7 +27,7 @@ export interface PoolConfig {
   small_group_threshold: number;
 }
 
-export interface PoolEntry {
+export interface RuntimeEntry {
   bridge: SessionBridge;
   queue: MessageQueue;
   routingKey: string;       // Map key（chatId 或 threadId）
@@ -38,7 +38,7 @@ export interface PoolEntry {
   messagesSinceFlush: number;
 }
 
-interface PoolCreateOptions {
+interface RuntimeCreateOptions {
   groupName?: string;
   feishuChatId: string;
   directorAgentName?: string;
@@ -46,7 +46,7 @@ interface PoolCreateOptions {
 }
 
 /** Metadata for closed pool sessions (kept for UI display) */
-interface ClosedPoolEntry {
+interface ClosedRuntimeEntry {
   routingKey: string;
   feishuChatId: string;
   groupName: string;
@@ -62,14 +62,14 @@ const MIN_MESSAGES_FOR_FLUSH = 5;
 /**
  * Runtime pool for non-main Agent processes.
  *
- * DirectorPool owns process lifecycle, queues, streaming transports, recovery,
+ * AgentRuntimePool owns process lifecycle, queues, streaming transports, recovery,
  * and low-level runtime commands. Workspace/session routing belongs to
  * SessionManager; routingKey is only this pool's internal Map key.
  */
-export class DirectorPool extends EventEmitter {
-  private entries: Map<string, PoolEntry> = new Map();
-  private closedEntries: Map<string, ClosedPoolEntry> = new Map();
-  private creating: Map<string, Promise<PoolEntry>> = new Map();
+export class AgentRuntimePool extends EventEmitter {
+  private entries: Map<string, RuntimeEntry> = new Map();
+  private closedEntries: Map<string, ClosedRuntimeEntry> = new Map();
+  private creating: Map<string, Promise<RuntimeEntry>> = new Map();
   private mainBridge: SessionBridge;
   private poolConfig: PoolConfig;
   private agentsConfig: Config['agents'];
@@ -106,7 +106,7 @@ export class DirectorPool extends EventEmitter {
     this.dynamicToolHandler = dynamicToolHandler;
 
     // Restore closed entries from SQLite
-    const savedClosed = getState<ClosedPoolEntry[]>('pool:closed');
+    const savedClosed = getState<ClosedRuntimeEntry[]>('pool:closed');
     if (savedClosed) {
       for (const entry of savedClosed) {
         this.closedEntries.set(entry.routingKey, entry);
@@ -126,19 +126,19 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Get a group Director if it exists (by routingKey) */
-  get(routingKey: string): PoolEntry | undefined {
+  get(routingKey: string): RuntimeEntry | undefined {
     return this.entries.get(routingKey);
   }
 
   /** List active (non-closed) pool entries. Used by SessionManager to backfill
    *  the sessionId→routingKey map after restoreEntries() reconnects orphan Directors;
    *  without this, /api/send by sessionId would 404 on every restored workspace session. */
-  listActiveEntries(): PoolEntry[] {
+  listActiveEntries(): RuntimeEntry[] {
     return [...this.entries.values()];
   }
 
   /** Reset an existing or remembered group Director session. */
-  async resetSession(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
+  async resetSession(routingKey: string, opts: RuntimeCreateOptions): Promise<RuntimeEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       await existing.bridge.resetSession();
@@ -158,7 +158,7 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Find a pool entry by Director label (for task callback routing) */
-  findByLabel(label: string): PoolEntry | undefined {
+  findByLabel(label: string): RuntimeEntry | undefined {
     for (const entry of this.entries.values()) {
       if (entry.bridge.label === label) return entry;
     }
@@ -168,8 +168,8 @@ export class DirectorPool extends EventEmitter {
   /** Resolve a pool Director by workspace name (or label as fallback).
    *  When multiple sessions exist for the same workspace, returns the most recently active.
    *  Priority: groupName match (most recent) → web-workspace derived key → label exact */
-  resolveWorkspace(name: string): PoolEntry | undefined {
-    const candidates: PoolEntry[] = [];
+  resolveWorkspace(name: string): RuntimeEntry | undefined {
+    const candidates: RuntimeEntry[] = [];
     const safe = name.replace(/[\/\\:*?"<>|]/g, '_');
     for (const entry of this.entries.values()) {
       if (entry.groupName === name || entry.groupName.replace(/[\/\\:*?"<>|]/g, '_') === safe) {
@@ -184,7 +184,7 @@ export class DirectorPool extends EventEmitter {
     return this.findByLabel(name);
   }
 
-  private requireByLabel(label: string): PoolEntry {
+  private requireByLabel(label: string): RuntimeEntry {
     const entry = this.findByLabel(label);
     if (!entry) throw new Error(`Director label not found: ${label}`);
     return entry;
@@ -199,7 +199,7 @@ export class DirectorPool extends EventEmitter {
   /** Get or create a Director for a group chat.
    *  @param routingKey — Map key (chatId for regular groups, threadId for topic groups)
    *  @param opts — group metadata for creation */
-  async getOrCreate(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
+  async getOrCreate(routingKey: string, opts: RuntimeCreateOptions): Promise<RuntimeEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       existing.lastActiveAt = Date.now();
@@ -224,7 +224,7 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  private async _doCreate(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
+  private async _doCreate(routingKey: string, opts: RuntimeCreateOptions): Promise<RuntimeEntry> {
     // Evict LRU if at capacity
     if (this.entries.size >= this.poolConfig.max_directors) {
       await this.evictLRU();
@@ -255,7 +255,7 @@ export class DirectorPool extends EventEmitter {
     // Wire events BEFORE bootstrap so response handler is ready
     this.wireEvents(bridge, queue, routingKey, opts.feishuChatId, name);
 
-    const entry: PoolEntry = {
+    const entry: RuntimeEntry = {
       bridge,
       queue,
       routingKey,
@@ -552,7 +552,7 @@ export class DirectorPool extends EventEmitter {
     return this.entries.get(routingKey)?.directorAgentName ?? this.closedEntries.get(routingKey)?.directorAgentName;
   }
 
-  async switchAgentByLabel(label: string, agentName: string): Promise<PoolEntry> {
+  async switchAgentByLabel(label: string, agentName: string): Promise<RuntimeEntry> {
     const entry = this.findByLabel(label);
     if (!entry) throw new Error(`Director label not found: ${label}`);
     const currentAgentName = entry.bridge.getDirectorAgentName();
@@ -567,7 +567,7 @@ export class DirectorPool extends EventEmitter {
     return entry;
   }
 
-  async switchPersonaByLabel(label: string, roleName: string): Promise<PoolEntry> {
+  async switchPersonaByLabel(label: string, roleName: string): Promise<RuntimeEntry> {
     const entry = this.findByLabel(label);
     if (!entry) throw new Error(`Director label not found: ${label}`);
     const switched = await entry.bridge.switchPersona(roleName);
@@ -618,7 +618,7 @@ export class DirectorPool extends EventEmitter {
     return cancelled;
   }
 
-  async detachByLabel(label: string): Promise<PoolEntry> {
+  async detachByLabel(label: string): Promise<RuntimeEntry> {
     const entry = this.requireByLabel(label);
     console.log(`[pool] Detaching Director for group "${entry.groupName}" (label=${label})`);
     entry.queue.clearAll();
@@ -629,7 +629,7 @@ export class DirectorPool extends EventEmitter {
     return entry;
   }
 
-  async setDirectorAgent(routingKey: string, opts: PoolCreateOptions & { directorAgentName: string }): Promise<PoolEntry> {
+  async setDirectorAgent(routingKey: string, opts: RuntimeCreateOptions & { directorAgentName: string }): Promise<RuntimeEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       if (opts.groupName && opts.groupName !== existing.groupName) {
@@ -737,7 +737,7 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Get status of all pool entries (active + closed) for dashboard */
-  getPoolStatus(): Array<{
+  getRuntimeStatus(): Array<{
     routingKey: string;
     groupName: string;
     label: string;
@@ -749,7 +749,7 @@ export class DirectorPool extends EventEmitter {
     queue: ReturnType<MessageQueue['getSnapshot']>;
     closed?: boolean;
     closedAt?: number;
-    closedReason?: ClosedPoolEntry['closedReason'];
+    closedReason?: ClosedRuntimeEntry['closedReason'];
   }> {
     const active = [...this.entries.values()].map((entry) => ({
       routingKey: entry.routingKey,
@@ -780,7 +780,7 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Move an active entry to the closed list (max 50, evict oldest) */
-  private moveToClosedEntries(routingKey: string, entry: PoolEntry, reason: ClosedPoolEntry['closedReason'] = 'shutdown'): void {
+  private moveToClosedEntries(routingKey: string, entry: RuntimeEntry, reason: ClosedRuntimeEntry['closedReason'] = 'shutdown'): void {
     this.closedEntries.set(routingKey, {
       routingKey,
       feishuChatId: entry.feishuChatId,
@@ -810,7 +810,7 @@ export class DirectorPool extends EventEmitter {
 
   /** Persist pool entries to SQLite for crash recovery */
   private persistEntries(): void {
-    const data: PersistedPoolEntry[] = [...this.entries.values()].map(e => ({
+    const data: PersistedRuntimeEntry[] = [...this.entries.values()].map(e => ({
       routingKey: e.routingKey,
       feishuChatId: e.feishuChatId,
       groupName: e.groupName,
@@ -826,7 +826,7 @@ export class DirectorPool extends EventEmitter {
    *  - alive → reconnect (reuse process + session)
    *  - dead → clean up pipe directory */
   async restoreEntries(): Promise<void> {
-    const saved = getState<PersistedPoolEntry[]>('pool:entries');
+    const saved = getState<PersistedRuntimeEntry[]>('pool:entries');
     if (!saved || saved.length === 0) return;
 
     const pipeBaseDir = this.directorConfig.pipe_dir;
@@ -884,7 +884,7 @@ export class DirectorPool extends EventEmitter {
 
       this.wireEvents(bridge, queue, item.routingKey, item.feishuChatId, item.groupName);
 
-      const entry: PoolEntry = {
+      const entry: RuntimeEntry = {
         bridge,
         queue,
         routingKey: item.routingKey,

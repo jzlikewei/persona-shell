@@ -522,7 +522,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
       const chatType = ((message as Record<string, unknown>).chat_type as string) === 'group' ? 'group' : 'p2p';
 
       // Persist p2p chat_id for main Director notifications.
-      // Group chats have their own chatId in DirectorPool entries — no need to track globally.
+      // Group chats have their own chatId in AgentRuntimePool entries — no need to track globally.
       if (chatType === 'p2p') {
         setState('lastChatId', chat_id);
       }

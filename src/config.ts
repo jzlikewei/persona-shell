@@ -91,7 +91,7 @@ export interface Config {
     max_directors: number;
     idle_timeout_minutes: number;
     small_group_threshold: number;
-    parallel_chat_ids: string[];  // 配置为"并行模式"的群 chat_id，始终走 DirectorPool
+    parallel_chat_ids: string[];  // 配置为"并行模式"的群 chat_id，始终走 AgentRuntimePool
     mention_only_chat_ids: string[];  // 这些群必须 @bot 才响应，无论群人数
   };
   logging: {

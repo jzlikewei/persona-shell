@@ -1,6 +1,6 @@
 import { loadConfig, resolveAgentProvider, defaultConfigPath, type Config } from './config.js';
 import { SessionBridge } from './session-bridge.js';
-import { DirectorPool } from './director-pool.js';
+import { AgentRuntimePool } from './agent-runtime-pool.js';
 import { SessionManager } from './session-manager.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
 import { createFeishuClient } from './messaging/feishu.js';
@@ -368,10 +368,10 @@ async function main() {
     await director.bootstrap();
   }
 
-  // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, configPath, handleDirectorDynamicToolCall);
+  // AgentRuntimePool for multi-group chat support
+  const pool = new AgentRuntimePool(director, config.pool, config.agents, config.director, messaging, configPath, handleDirectorDynamicToolCall);
 
-  // New domain components (transition: wrapping DirectorPool)
+  // New domain components (transition: wrapping AgentRuntimePool)
   const workspaceRegistry = new WorkspaceRegistry();
   const sessionManager = new SessionManager(pool, workspaceRegistry);
 
@@ -437,7 +437,7 @@ async function main() {
       if (sourceSessionId === mainSessionId) {
         return mainTarget();
       }
-      const entry = sessionManager.getPoolEntryBySessionId(sourceSessionId);
+      const entry = sessionManager.getRuntimeEntryBySessionId(sourceSessionId);
       if (entry) return poolTarget(entry);
       // Pool entry dead — try revive via workspace
       const revived = await tryReviveWorkspace(workspace);
@@ -451,7 +451,7 @@ async function main() {
         return mainTarget();
       }
       if (defaultSessionId) {
-        const entry = sessionManager.getPoolEntryBySessionId(defaultSessionId);
+        const entry = sessionManager.getRuntimeEntryBySessionId(defaultSessionId);
         if (entry) return poolTarget(entry);
       }
       // No live default — try revive workspace
@@ -531,7 +531,7 @@ async function main() {
     const sessionId = sessionManager.resolveDefaultSession(workspace);
     if (!sessionId) return null;
     if (sessionId === director.getStatus().sessionId) return { kind: 'main' as const, sessionId };
-    const entry = sessionManager.getPoolEntryBySessionId(sessionId);
+    const entry = sessionManager.getRuntimeEntryBySessionId(sessionId);
     return entry ? { kind: 'pool' as const, sessionId, entry } : null;
   }
 
@@ -1107,7 +1107,7 @@ async function main() {
         const directorAgentName = sessionManager.getDirectorAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
         const session = await sessionManager.getOrCreateForWorkspace(groupName, { groupName, feishuChatId: chatId, directorAgentName });
-        poolEntry = session.sessionId ? sessionManager.getPoolEntryBySessionId(session.sessionId) ?? undefined : getTargetEntry();
+        poolEntry = session.sessionId ? sessionManager.getRuntimeEntryBySessionId(session.sessionId) ?? undefined : getTargetEntry();
       }
       const targetDirector = poolEntry?.bridge ?? director;
       const label = poolEntry ? `group "${poolEntry.groupName}"` : 'main';
@@ -1346,7 +1346,7 @@ async function main() {
       return `[引用上文]\n${block}\n\n`;
     };
 
-    // 并行群（配置的特定 chat_id 或群名）→ 始终走 DirectorPool，不受人数限制
+    // 并行群（配置的特定 chat_id 或群名）→ 始终走 AgentRuntimePool，不受人数限制
     const isParallelChat = config.pool.parallel_chat_ids.includes(chatId)
       || config.pool.parallel_chat_ids.includes(msg.groupName ?? '');
     // 大群(>threshold 人，非并行群) → one-shot 响应，不走 Director

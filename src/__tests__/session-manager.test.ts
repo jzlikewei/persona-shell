@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import { rmSync, mkdirSync } from 'fs';
 import { SessionManager } from '../session-manager.js';
 import { WorkspaceRegistry } from '../workspace-registry.js';
-import { DirectorPool, type PoolEntry } from '../director-pool.js';
+import { AgentRuntimePool, type RuntimeEntry } from '../agent-runtime-pool.js';
 import { SessionBridge } from '../session-bridge.js';
 import { MessageQueue } from '../queue.js';
 import {
@@ -93,8 +93,8 @@ function createTestBridge(label: string, groupName: string): SessionBridge {
   });
 }
 
-function createTestPool(): DirectorPool {
-  return new DirectorPool(
+function createTestPool(): AgentRuntimePool {
+  return new AgentRuntimePool(
     createTestBridge('main', 'main'),
     { max_directors: 10, idle_timeout_minutes: 0, small_group_threshold: 5 },
     {
@@ -129,7 +129,7 @@ function createTestPool(): DirectorPool {
   );
 }
 
-function createRestoredEntry(sessionId: string, workspace: string, routingKey: string): PoolEntry {
+function createRestoredEntry(sessionId: string, workspace: string, routingKey: string): RuntimeEntry {
   const bridge = {
     getStatus: () => ({
       sessionId,
@@ -157,13 +157,13 @@ function createRestoredEntry(sessionId: string, workspace: string, routingKey: s
 class RestoreOnlyPool extends EventEmitter {
   readonly sent: Array<{ routingKey: string; text: string; messageId: string }> = [];
 
-  constructor(private readonly restoredEntries: PoolEntry[]) {
+  constructor(private readonly restoredEntries: RuntimeEntry[]) {
     super();
   }
 
   async restoreEntries(): Promise<void> {}
-  listActiveEntries(): PoolEntry[] { return this.restoredEntries; }
-  get(routingKey: string): PoolEntry | undefined {
+  listActiveEntries(): RuntimeEntry[] { return this.restoredEntries; }
+  get(routingKey: string): RuntimeEntry | undefined {
     return this.restoredEntries.find((entry) => entry.routingKey === routingKey);
   }
   async send(routingKey: string, text: string, messageId: string): Promise<void> {
@@ -348,7 +348,7 @@ describe('SessionManager', () => {
     const pool = new RestoreOnlyPool([
       createRestoredEntry('live-restore', 'restore-ws', 'rk-live'),
       createRestoredEntry('archived-restore', 'restore-ws', 'rk-archived'),
-    ]) as unknown as DirectorPool;
+    ]) as unknown as AgentRuntimePool;
     const manager = new SessionManager(pool, registry);
 
     await manager.restoreEntries();
