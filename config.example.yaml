@@ -60,6 +60,9 @@ pool:
   parallel_chat_ids: []             # 配置为"并行模式"的群 chat_id 列表，始终走 DirectorPool 不受人数限制
   # parallel_chat_ids:
   #   - oc_xxxxxxxxxxxxxxxxxxxx     # 示例：话题群用于并行任务
+  mention_only_chat_ids: []         # 这些群必须 @bot 才响应，无论群人数（默认空数组）
+  # mention_only_chat_ids:
+  #   - oc_xxxxxxxxxxxxxxxxxxxx     # 示例：大群只在被 @ 时回复
 
 logging:
   level: "info"                     # debug | info | warn | error

@@ -115,7 +115,7 @@ director:
   time_sync_interval_hours: 2             # 时间同步注入间隔（小时）
   flush_context_limit: 700000             # 上下文 token 阈值，超过自动 flush
   flush_interval_days: 7                  # 距上次 flush 最大天数
-  quote_max_length: 200                   # 引用消息截断长度
+  quote_max_length: 50                    # 引用消息截断长度
 
 console:
   enabled: true
@@ -126,6 +126,7 @@ pool:
   idle_timeout_minutes: 30      # 空闲超时回收
   small_group_threshold: 5      # 大群/小群人数分界
   parallel_chat_ids: []         # 免 @mention 白名单（chat_id 列表）
+  mention_only_chat_ids: []     # 这些群必须 @bot 才响应，无论群人数
 ```
 
 **Agent 解析优先级**：`roles[role].agent` → `defaults[role]` → `defaults.default` → `"claude"`

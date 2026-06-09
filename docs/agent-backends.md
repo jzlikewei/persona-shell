@@ -139,9 +139,17 @@ agents:
       command: codex
       sandbox: danger-full-access
       approval: never
-      mcp_mode: cli
+      mcp_mode: mcp
       transport: stdio
 ```
+
+`mcp_mode` 支持三种值：
+
+| 值 | 行为 |
+|------|------|
+| `mcp` | （默认）通过 MCP 协议暴露工具给 Codex，Codex 可调用 Persona 注册的 MCP tools |
+| `cli` | 通过 CLI 子命令方式调用工具，不走 MCP 协议 |
+| `off` | 不向 Codex 暴露任何外部工具 |
 
 legacy turn-based `codex exec` provider 已下线，配置层不再接受 `type: codex`。
 

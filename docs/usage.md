@@ -158,7 +158,7 @@ bash 命令使用当前用户的 shell 执行（`$SHELL`，默认 `/bin/bash`）
 
 ## 多后端切换
 
-Persona Shell 支持 Claude Code 和 Codex 两个 agent 后端。
+Persona Shell 支持 Claude Code、Codex 和 Kimi 三个 agent 后端。
 
 ### 全局配置
 
@@ -383,7 +383,6 @@ curl 'localhost:3000/api/sessions?workspace=main'
 | `/start-with-codex` | 当前会话 | 快捷切到 Codex 后端 |
 | `/start-with-claude` | 当前会话 | 快捷切回 Claude 后端 |
 | `/start-with-kimi` | 当前会话 | 快捷切到 Kimi 后端 |
-| `/status` | 当前会话 | 查看状态摘要 |
 | `/help` | 全局 | 显示命令列表 |
 
 🔒 仅限本体（需配置 `feishu.master_id`）。
