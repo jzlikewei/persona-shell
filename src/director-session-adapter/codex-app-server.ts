@@ -35,6 +35,7 @@ export class CodexAppServerSessionAdapter implements DirectorSessionAdapter {
         onTurnComplete: (result) => this.hooks.onTurnComplete(result),
         onTurnFailure: (message) => this.hooks.onTurnFailure(message),
         onRuntimeClosed: () => this.hooks.onRuntimeClosed(),
+        onDynamicToolCall: (call) => this.hooks.onDynamicToolCall?.(call) ?? { success: false, text: `Unsupported dynamic tool: ${call.tool}` },
       },
     );
   }

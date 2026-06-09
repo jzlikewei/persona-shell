@@ -38,6 +38,13 @@ export interface PoolEntry {
   messagesSinceFlush: number;
 }
 
+interface PoolCreateOptions {
+  groupName?: string;
+  feishuChatId: string;
+  directorAgentName?: string;
+  initialSessionId?: string;
+}
+
 /** Metadata for closed pool sessions (kept for UI display) */
 interface ClosedPoolEntry {
   routingKey: string;
@@ -68,6 +75,7 @@ export class DirectorPool extends EventEmitter {
   private agentsConfig: Config['agents'];
   private directorConfig: Config['director'];
   private messaging: MessagingClient;
+  private dynamicToolHandler?: SessionBridgeOptions['dynamicToolHandler'];
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private configPath?: string;
   private streamingReplies = new Map<string, StreamingReplyHandle>();
@@ -86,6 +94,7 @@ export class DirectorPool extends EventEmitter {
     directorConfig: Config['director'],
     messaging: MessagingClient,
     configPath?: string,
+    dynamicToolHandler?: SessionBridgeOptions['dynamicToolHandler'],
   ) {
     super();
     this.mainBridge = mainBridge;
@@ -94,6 +103,7 @@ export class DirectorPool extends EventEmitter {
     this.directorConfig = directorConfig;
     this.messaging = messaging;
     this.configPath = configPath;
+    this.dynamicToolHandler = dynamicToolHandler;
 
     // Restore closed entries from SQLite
     const savedClosed = getState<ClosedPoolEntry[]>('pool:closed');
@@ -128,7 +138,7 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Reset an existing or remembered group Director session. */
-  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+  async resetSession(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       await existing.bridge.resetSession();
@@ -189,7 +199,7 @@ export class DirectorPool extends EventEmitter {
   /** Get or create a Director for a group chat.
    *  @param routingKey — Map key (chatId for regular groups, threadId for topic groups)
    *  @param opts — group metadata for creation */
-  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+  async getOrCreate(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       existing.lastActiveAt = Date.now();
@@ -214,7 +224,7 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  private async _doCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+  private async _doCreate(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
     // Evict LRU if at capacity
     if (this.entries.size >= this.poolConfig.max_directors) {
       await this.evictLRU();
@@ -229,10 +239,12 @@ export class DirectorPool extends EventEmitter {
       agents: this.getFreshAgentsConfig(),
       config: this.directorConfig,
       directorAgentName: opts.directorAgentName,
+      initialSessionId: opts.initialSessionId,
       label,
       isMain: false,
       groupName: name,
       workspaceCwd,
+      dynamicToolHandler: this.dynamicToolHandler,
     } satisfies SessionBridgeOptions);
 
     const queue = new MessageQueue(join(getLogDir(), `queue-${label}.log`));
@@ -617,7 +629,7 @@ export class DirectorPool extends EventEmitter {
     return entry;
   }
 
-  async setDirectorAgent(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName: string }): Promise<PoolEntry> {
+  async setDirectorAgent(routingKey: string, opts: PoolCreateOptions & { directorAgentName: string }): Promise<PoolEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       if (opts.groupName && opts.groupName !== existing.groupName) {
@@ -830,6 +842,7 @@ export class DirectorPool extends EventEmitter {
         isMain: false,
         groupName: item.groupName,
         workspaceCwd,
+        dynamicToolHandler: this.dynamicToolHandler,
       } satisfies SessionBridgeOptions);
 
       const queue = new MessageQueue(`logs/queue-${item.label}.log`);

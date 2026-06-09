@@ -11,7 +11,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, buildTaskParentMetadata } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, buildTaskParentMetadata } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
@@ -2887,15 +2887,21 @@ export function startConsole(
                 // Session was idle-reclaimed — look up workspace from DB and respawn Director
                 const dbRecord = getSessionRecord(sessionId);
                 if (dbRecord?.workspace && !dbRecord.archived) {
-                  const respawned = await sessionManager.sendToWorkspaceDefaultSession(dbRecord.workspace, {
+                  const workspaceAgent = getWorkspace(dbRecord.workspace)?.agent ?? undefined;
+                  const revived = await sessionManager.reviveSession(sessionId, {
                     feishuChatId: 'web-console',
-                    text,
-                    messageId,
-                    sendOptions: { webOnly: true },
+                    directorAgentName: dbRecord.agent_name ?? workspaceAgent,
                   });
-                  const newSessionId = respawned.sessionId ?? sessionId;
-                  writeAuditEntry('director.send', true, { target: newSessionId, respawnedFrom: sessionId, bytes: Buffer.byteLength(text, 'utf-8') });
-                  return Response.json({ ok: true, message: 'respawned director and sent', sessionId: newSessionId, respawned: true });
+                  if (revived?.sessionId) {
+                    await sessionManager.send(revived.sessionId, text, messageId, { webOnly: true });
+                    writeAuditEntry('director.send', true, { target: revived.sessionId, revivedFrom: sessionId, bytes: Buffer.byteLength(text, 'utf-8') });
+                    return Response.json({ ok: true, message: 'revived session and sent', sessionId: revived.sessionId, revived: true });
+                  }
+                  writeAuditEntry('director.send', false, { target: sessionId, reason: 'session runtime missing and routing context lost' });
+                  return Response.json({
+                    ok: false,
+                    message: `Session "${sessionId}" is not live and cannot be revived without its routing context`,
+                  }, { status: 409 });
                 }
                 writeAuditEntry('director.send', false, { target: sessionId, reason: 'session not found' });
                 return Response.json({ ok: false, message: `Session "${sessionId}" not found` }, { status: 404 });

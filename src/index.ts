@@ -21,6 +21,7 @@ import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
 import { parseShellRestartCommand, buildShellRestartBlockedMessage } from './shell-restart.js';
 import { CodexThreadInjector } from './codex-thread-injector.js';
+import type { DirectorDynamicToolCall, DirectorDynamicToolResult } from './director-session-adapter/index.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -42,7 +43,94 @@ async function main() {
   if (cleaned > 0) log.info(`[startup] Cleaned ${cleaned} old log file(s)`);
 
   const queue = new MessageQueue(join(getLogDir(), 'queue.log'), undefined, { restorable: false });
-  const director = new SessionBridge({ agents: config.agents, config: config.director, label: 'main', isMain: true });
+  const taskRunner = new TaskRunner({
+    configPath,
+    agents: config.agents,
+    personaDir: config.director.persona_dir,
+    defaultTimeoutMs: config.task.default_timeout_ms,
+  });
+  function recordToString(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  }
+  function recordToNumber(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  }
+  function dynamicToolArgs(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  }
+  async function handleDirectorDynamicToolCall(
+    call: DirectorDynamicToolCall & { sourceSessionId: string | null; workspace: string },
+  ): Promise<DirectorDynamicToolResult> {
+    const args = dynamicToolArgs(call.arguments);
+    try {
+      if (call.tool === 'create_task') {
+        const role = recordToString(args.role);
+        const description = recordToString(args.description);
+        const prompt = recordToString(args.prompt);
+        if (!role || !description || !prompt) {
+          return { success: false, text: 'role, description, prompt are required' };
+        }
+        const model = recordToString(args.model);
+        const projectDir = recordToString(args.project_dir);
+        const task = createTask({
+          type: 'role',
+          role,
+          agent: recordToString(args.agent),
+          model,
+          description,
+          prompt,
+          project_dir: projectDir,
+          max_retry: recordToNumber(args.max_retry),
+          timeout_ms: recordToNumber(args.timeout_ms),
+          workspace: call.workspace,
+          source_session_id: call.sourceSessionId ?? undefined,
+          extra: {
+            ...(model ? { model } : {}),
+            ...(projectDir ? { project_dir: projectDir } : {}),
+            parent_workspace: call.workspace,
+            parent_session_id: call.sourceSessionId,
+          },
+        });
+        taskRunner.runTask({
+          taskId: task.id,
+          role: task.role,
+          agent: task.agent ?? undefined,
+          model,
+          prompt: task.prompt,
+          description: task.description,
+          projectDir,
+          timeoutMs: task.timeout_ms ?? undefined,
+        });
+        return { success: true, text: JSON.stringify(task, null, 2) };
+      }
+      if (call.tool === 'list_tasks') {
+        const tasks = listTasks({
+          status: recordToString(args.status),
+          role: recordToString(args.role),
+          workspace: call.workspace,
+          limit: recordToNumber(args.limit),
+        });
+        return { success: true, text: JSON.stringify(tasks, null, 2) };
+      }
+      if (call.tool === 'get_task') {
+        const taskId = recordToString(args.task_id);
+        if (!taskId) return { success: false, text: 'task_id is required' };
+        const task = getTask(taskId);
+        if (!task) return { success: false, text: `Task not found: ${taskId}` };
+        return { success: true, text: JSON.stringify(task, null, 2) };
+      }
+      return { success: false, text: `Unsupported dynamic tool: ${call.tool}` };
+    } catch (err) {
+      return { success: false, text: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  const director = new SessionBridge({
+    agents: config.agents,
+    config: config.director,
+    label: 'main',
+    isMain: true,
+    dynamicToolHandler: handleDirectorDynamicToolCall,
+  });
   const isTestMode = process.env.PERSONA_TEST === '1';
   let messaging: MessagingRouter;
   if (isTestMode) {
@@ -281,7 +369,7 @@ async function main() {
   }
 
   // DirectorPool for multi-group chat support
-  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, configPath);
+  const pool = new DirectorPool(director, config.pool, config.agents, config.director, messaging, configPath, handleDirectorDynamicToolCall);
 
   // New domain components (transition: wrapping DirectorPool)
   const workspaceRegistry = new WorkspaceRegistry();
@@ -316,13 +404,6 @@ async function main() {
   // Restore pool entries from previous Shell session + clean up orphans
   await sessionManager.restoreEntries();
   await sessionManager.killUnknownOrphans();
-
-  const taskRunner = new TaskRunner({
-    configPath,
-    agents: config.agents,
-    personaDir: config.director.persona_dir,
-    defaultTimeoutMs: config.task.default_timeout_ms,
-  });
 
   // Startup: clean up orphan tasks from previous crash/restart
   const orphanRecovered = taskRunner.cleanupOrphanTasks(

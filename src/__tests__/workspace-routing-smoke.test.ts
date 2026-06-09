@@ -19,6 +19,7 @@ import {
   archiveSession,
   createCronJob,
   createTask,
+  createWorkspace as createWorkspaceRecord,
   getSessionRecord,
   getWorkspace,
   initTaskStore,
@@ -41,6 +42,12 @@ class SmokeAdapter implements DirectorSessionAdapter {
     readonly options: DirectorSessionAdapterOptions,
     readonly hooks: DirectorSessionAdapterHooks,
   ) {
+    const kind = options.directorAgent.type === 'claude'
+      ? 'claude-daemon'
+      : options.directorAgent.type === 'kimi'
+        ? 'kimi-daemon'
+        : 'codex-app-server';
+    this.status = { kind, alive: true, pid: null };
     SmokeAdapter.instances.push(this);
   }
 
@@ -72,14 +79,20 @@ class SmokeAdapter implements DirectorSessionAdapter {
   completeTurn(result: DirectorTurnResult) { this.hooks.onTurnComplete(result); }
 }
 
-function createBridge(label: string, groupName: string, isMain = false): SessionBridge {
-  return new SessionBridge({
-    agents: {
-      defaults: { director: 'fake', default: 'fake' },
-      providers: {
-        fake: { type: 'codex-app-server', command: 'fake-codex' },
-      },
+function testAgentsConfig() {
+  return {
+    defaults: { director: 'claude', default: 'claude' },
+    providers: {
+      claude: { type: 'claude' as const, command: 'fake-claude' },
+      codex: { type: 'codex-app-server' as const, command: 'fake-codex' },
+      fake: { type: 'codex-app-server' as const, command: 'fake-codex' },
     },
+  };
+}
+
+function createBridge(label: string, groupName: string, isMain = false, directorAgentName?: string, initialSessionId?: string): SessionBridge {
+  return new SessionBridge({
+    agents: testAgentsConfig(),
     config: {
       persona_dir: TEST_DIR,
       pipe_dir: TEST_DIR,
@@ -89,9 +102,11 @@ function createBridge(label: string, groupName: string, isMain = false): Session
       flush_interval_ms: 999999,
       quote_max_length: 32,
     },
+    directorAgentName,
     label,
     isMain,
     groupName,
+    initialSessionId,
     directorFactory: (options, hooks) => new SmokeAdapter(options, hooks),
   });
 }
@@ -115,9 +130,9 @@ function createMessaging(): MessagingClient {
 class SmokePool extends DirectorPool {
   private smokeEntries = new Map<string, PoolEntry>();
 
-  private async createEntry(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+  private async createEntry(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
     const groupName = opts.groupName ?? routingKey;
-    const bridge = createBridge(`smoke-${routingKey}-${SmokeAdapter.nextId}`, groupName);
+    const bridge = createBridge(`smoke-${routingKey}`, groupName, false, opts.directorAgentName, opts.initialSessionId);
     await bridge.start();
     return {
       bridge,
@@ -131,7 +146,7 @@ class SmokePool extends DirectorPool {
     };
   }
 
-  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
+  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
     const existing = this.smokeEntries.get(routingKey);
     if (existing) return existing;
 
@@ -150,11 +165,32 @@ class SmokePool extends DirectorPool {
     await entry.bridge.send(text);
   }
 
-  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string }): Promise<PoolEntry> {
-    const entry = await this.createEntry(routingKey, opts);
-    entry.lastActiveAt = Date.now();
+  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
+    const groupName = opts.groupName ?? routingKey;
+    const bridge = createBridge(`smoke-${routingKey}-reset-${SmokeAdapter.nextId}`, groupName, false, opts.directorAgentName, opts.initialSessionId);
+    await bridge.start();
+    const entry = {
+      bridge,
+      queue: new MessageQueue('/dev/null'),
+      routingKey,
+      feishuChatId: opts.feishuChatId,
+      groupName,
+      lastActiveAt: Date.now(),
+      directorAgentName: opts.directorAgentName,
+      messagesSinceFlush: 0,
+    };
     this.smokeEntries.set(routingKey, entry);
     return entry;
+  }
+
+  async detachByLabel(label: string): Promise<PoolEntry> {
+    for (const [routingKey, entry] of this.smokeEntries.entries()) {
+      if (entry.bridge.label === label) {
+        this.smokeEntries.delete(routingKey);
+        return entry;
+      }
+    }
+    throw new Error(`No smoke entry for label ${label}`);
   }
 }
 
@@ -162,12 +198,7 @@ function createManager(): SessionManager {
   const pool = new SmokePool(
     createBridge('main', 'main', true),
     { max_directors: 10, idle_timeout_minutes: 0, small_group_threshold: 5 },
-    {
-      defaults: { director: 'fake', default: 'fake' },
-      providers: {
-        fake: { type: 'codex-app-server', command: 'fake-codex' },
-      },
-    },
+    testAgentsConfig(),
     {
       persona_dir: TEST_DIR,
       pipe_dir: TEST_DIR,
@@ -253,6 +284,77 @@ describe('smoke:workspace-routing', () => {
     expect(getWorkspace('archive-smoke')?.default_session_id).toBe(second.sessionId);
     expect(getSessionRecord(second.sessionId)?.workspace).toBe('archive-smoke');
     expect(SmokeAdapter.instances.at(-1)?.sent.some((line) => line.includes('second'))).toBe(true);
+  });
+
+  test('missing runtime entry revives the same concrete session instead of switching workspace session', async () => {
+    createWorkspaceRecord('revive-smoke', { agent: 'codex' });
+    const manager = createManager();
+    const session = await manager.createNewSession('revive-smoke', { feishuChatId: 'web-console' });
+    const entry = manager.getPoolEntryBySessionId(session.sessionId);
+    expect(entry).not.toBeNull();
+
+    await manager.detachByLabel(entry!.bridge.label);
+    expect(manager.getSession(session.sessionId)).toBeNull();
+
+    const revived = await manager.reviveSession(session.sessionId, { feishuChatId: 'web-console' });
+
+    expect(revived?.sessionId).toBe(session.sessionId);
+    expect(revived?.bridge.getDirectorAgentName()).toBe('codex');
+    await manager.send(session.sessionId, 'after revive', 'msg-after-revive', { webOnly: true });
+    expect(SmokeAdapter.instances.at(-1)?.sent.some((line) => line.includes('after revive'))).toBe(true);
+  });
+
+  test('codex session revives by sessionId after routing map is lost', async () => {
+    createWorkspaceRecord('restart-revive-smoke', { agent: 'codex' });
+    const beforeRestart = createManager();
+    const session = await beforeRestart.createNewSession('restart-revive-smoke', { feishuChatId: 'web-console' });
+    const sessionId = session.sessionId;
+
+    // Simulate a Shell restart where SessionManager's in-memory
+    // sessionId→routingKey index is gone and pool:entries does not contain this
+    // historical web session. The durable identity is the Codex thread/session id.
+    const afterRestart = createManager();
+    expect(afterRestart.getSession(sessionId)).toBeNull();
+
+    const revived = await afterRestart.reviveSession(sessionId, { feishuChatId: 'web-console' });
+
+    expect(revived?.sessionId).toBe(sessionId);
+    expect(revived?.bridge.getDirectorAgentName()).toBe('codex');
+    expect(revived?.bridge.getDirectorAgentType()).toBe('codex-app-server');
+
+    await afterRestart.send(sessionId, 'after restart revive', 'msg-after-restart-revive', { webOnly: true });
+    expect(SmokeAdapter.instances.at(-1)?.sent.some((line) => line.includes('after restart revive'))).toBe(true);
+  });
+
+  test('workspace agent is inherited when respawning or creating a workspace default session', async () => {
+    createWorkspaceRecord('agent-smoke', { agent: 'codex' });
+    const manager = createManager();
+
+    const session = await manager.sendToWorkspaceDefaultSession('agent-smoke', {
+      feishuChatId: 'web-console',
+      text: 'agent inherited',
+      messageId: 'msg-agent-inherited',
+    });
+
+    expect(session.bridge.getDirectorAgentName()).toBe('codex');
+    expect(session.bridge.getDirectorAgentType()).toBe('codex-app-server');
+    expect(getSessionRecord(session.sessionId)?.agent_name).toBe('codex');
+    expect(getSessionRecord(session.sessionId)?.agent_type).toBe('codex-app-server');
+    expect(SmokeAdapter.instances.at(-1)?.sent.some((line) => line.includes('agent inherited'))).toBe(true);
+  });
+
+  test('explicit directorAgentName wins over workspace agent', async () => {
+    createWorkspaceRecord('explicit-agent-smoke', { agent: 'codex' });
+    const manager = createManager();
+
+    const session = await manager.createNewSession('explicit-agent-smoke', {
+      feishuChatId: 'web-console',
+      directorAgentName: 'claude',
+    });
+
+    expect(session.bridge.getDirectorAgentName()).toBe('claude');
+    expect(session.bridge.getDirectorAgentType()).toBe('claude');
+    expect(getSessionRecord(session.sessionId)?.agent_name).toBe('claude');
   });
 
   test('task and cron records carry workspace/session routing evidence', async () => {

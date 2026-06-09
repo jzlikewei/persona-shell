@@ -7,7 +7,7 @@ export type AgentProviderType = 'claude' | 'codex-app-server' | 'kimi';
 export type ClaudeEffort = 'low' | 'medium' | 'high' | 'max';
 export type CodexSandbox = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApproval = 'untrusted' | 'on-request' | 'never';
-export type CodexMcpMode = 'cli' | 'mcp' | 'off';
+export type CodexMcpMode = 'cli' | 'mcp' | 'dynamic' | 'off';
 export type CodexAppServerTransport = 'stdio';
 
 export function isCodexFamily(type: AgentProviderType): boolean {
@@ -225,7 +225,7 @@ export function loadConfig(path?: string): Config {
           ? { approval: provider.approval }
           : {}),
         ...(typeof provider?.search === 'boolean' ? { search: provider.search } : {}),
-        ...(provider?.mcp_mode === 'cli' || provider?.mcp_mode === 'mcp' || provider?.mcp_mode === 'off'
+        ...(provider?.mcp_mode === 'cli' || provider?.mcp_mode === 'mcp' || provider?.mcp_mode === 'dynamic' || provider?.mcp_mode === 'off'
           ? { mcp_mode: provider.mcp_mode }
           : {}),
         ...(provider?.transport === 'stdio' ? { transport: provider.transport } : {}),
@@ -270,7 +270,7 @@ export function loadConfig(path?: string): Config {
       sandbox: 'danger-full-access',
       approval: 'never',
       search: false,
-      mcp_mode: 'mcp',
+      mcp_mode: 'dynamic',
       transport: 'stdio',
     };
   }

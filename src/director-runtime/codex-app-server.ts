@@ -23,6 +23,14 @@ interface JsonRpcNotification {
   _ts?: string;
 }
 
+interface JsonRpcServerRequest {
+  jsonrpc?: '2.0';
+  id: number | string;
+  method: string;
+  params?: unknown;
+  _ts?: string;
+}
+
 interface PendingRequest {
   method: string;
   resolve(value: unknown): void;
@@ -59,6 +67,14 @@ export interface CodexAppServerRuntimeHooks {
   onTurnComplete(result: { responseText: string; durationMs: number | null }): void;
   onTurnFailure(message: string): void;
   onRuntimeClosed(): Promise<void> | void;
+  onDynamicToolCall?(call: {
+    tool: string;
+    namespace?: string | null;
+    arguments: unknown;
+    threadId: string;
+    turnId: string;
+    callId: string;
+  }): Promise<{ success: boolean; text: string }> | { success: boolean; text: string };
 }
 
 export interface RuntimeToolCall {
@@ -358,7 +374,7 @@ export class CodexAppServerRuntime {
     if (!line.trim()) return;
     this.hooks.logOutput(line);
 
-    let msg: JsonRpcResponse | JsonRpcNotification;
+    let msg: JsonRpcResponse | JsonRpcNotification | JsonRpcServerRequest;
     try {
       msg = JSON.parse(line) as JsonRpcResponse | JsonRpcNotification;
     } catch {
@@ -367,7 +383,7 @@ export class CodexAppServerRuntime {
 
     if ('method' in msg) {
       if ('id' in msg) {
-        this.handleServerRequest(msg);
+        this.handleServerRequest(msg as JsonRpcServerRequest);
       } else {
         this.handleNotification(msg);
       }
@@ -455,17 +471,58 @@ export class CodexAppServerRuntime {
     }
   }
 
-  private handleServerRequest(msg: JsonRpcNotification): void {
+  private handleServerRequest(msg: JsonRpcServerRequest): void {
     const child = this.child;
     if (!child?.stdin || msg.id === undefined) return;
     if (this.isToolLikeMethod(msg.method)) {
       this.hooks.onToolCall(this.extractToolName(this.asRecord(msg.params)) ?? this.extractToolNameFromMethod(msg.method));
     }
 
+    if (msg.method === 'item/tool/call') {
+      void this.handleDynamicToolCall(msg);
+      return;
+    }
+
     const response = {
       jsonrpc: '2.0',
       id: msg.id,
       result: this.defaultServerRequestResult(msg.method),
+    };
+    const line = JSON.stringify(response);
+    this.hooks.logOutput(line);
+    child.stdin.write(line + '\n');
+  }
+
+  private async handleDynamicToolCall(msg: JsonRpcServerRequest): Promise<void> {
+    const child = this.child;
+    if (!child?.stdin || msg.id === undefined) return;
+    const params = this.asRecord(msg.params);
+    const tool = typeof params.tool === 'string' ? params.tool : '';
+    const threadId = typeof params.threadId === 'string' ? params.threadId : '';
+    const turnId = typeof params.turnId === 'string' ? params.turnId : '';
+    const callId = typeof params.callId === 'string' ? params.callId : '';
+    const namespace = typeof params.namespace === 'string' ? params.namespace : null;
+    const args = params.arguments;
+
+    let result: { success: boolean; text: string };
+    try {
+      if (!tool || !threadId || !turnId || !callId) {
+        throw new Error('invalid dynamic tool call params');
+      }
+      const handler = this.hooks.onDynamicToolCall;
+      if (!handler) throw new Error(`Unsupported dynamic tool: ${tool}`);
+      result = await handler({ tool, namespace, arguments: args, threadId, turnId, callId });
+    } catch (err) {
+      result = { success: false, text: err instanceof Error ? err.message : String(err) };
+    }
+
+    const response = {
+      jsonrpc: '2.0',
+      id: msg.id,
+      result: {
+        success: result.success,
+        contentItems: [{ type: 'inputText', text: result.text }],
+      },
     };
     const line = JSON.stringify(response);
     this.hooks.logOutput(line);
@@ -559,7 +616,54 @@ export class CodexAppServerRuntime {
       developerInstructions: this.readDeveloperInstructions(),
       sessionStartSource: 'startup',
       threadSource: 'user',
+      ...(this.options.agent.mcp_mode === 'dynamic' ? { dynamicTools: this.dynamicTools() } : {}),
     };
+  }
+
+  private dynamicTools(): Array<Record<string, unknown>> {
+    return [
+      {
+        name: 'create_task',
+        description: '创建 persona-shell 后台任务。只提供业务参数；Shell 会自动绑定当前 session/workspace 用于完成回调。',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            role: { type: 'string', description: '角色名，如 explorer / executor / introspector' },
+            agent: { type: 'string', description: '可选 agent provider 名称' },
+            model: { type: 'string', description: '可选 model 名称' },
+            description: { type: 'string', description: '简短描述' },
+            prompt: { type: 'string', description: '完整任务 briefing' },
+            project_dir: { type: 'string', description: '可选项目工作目录' },
+            timeout_ms: { type: 'number', description: '可选超时时间，单位毫秒' },
+            max_retry: { type: 'number', description: '最大重试次数' },
+          },
+          required: ['role', 'description', 'prompt'],
+        },
+      },
+      {
+        name: 'list_tasks',
+        description: '列出 persona-shell 最近的后台任务，可按状态/角色过滤。',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', description: '按状态过滤：dispatched/running/completed/failed' },
+            role: { type: 'string', description: '按角色过滤' },
+            limit: { type: 'number', description: '返回数量上限' },
+          },
+        },
+      },
+      {
+        name: 'get_task',
+        description: '查询单条 persona-shell 后台任务详情。',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string', description: 'Task ID' },
+          },
+          required: ['task_id'],
+        },
+      },
+    ];
   }
 
   private runtimeCwd(): string {

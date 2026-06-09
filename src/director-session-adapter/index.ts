@@ -25,6 +25,20 @@ export interface DirectorToolCall {
   status?: 'running' | 'completed' | 'failed';
 }
 
+export interface DirectorDynamicToolCall {
+  tool: string;
+  namespace?: string | null;
+  arguments: unknown;
+  threadId: string;
+  turnId: string;
+  callId: string;
+}
+
+export interface DirectorDynamicToolResult {
+  success: boolean;
+  text: string;
+}
+
 export interface AssistantTurnEvent {
   type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted';
   director: string;
@@ -61,6 +75,7 @@ export interface DirectorSessionAdapterHooks {
   onTurnComplete(result: DirectorTurnResult): void;
   onTurnFailure(message: string): void;
   onRuntimeClosed(): Promise<void> | void;
+  onDynamicToolCall?(call: DirectorDynamicToolCall): Promise<DirectorDynamicToolResult> | DirectorDynamicToolResult;
 }
 
 export interface DirectorSessionAdapter {

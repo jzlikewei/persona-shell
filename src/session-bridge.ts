@@ -18,6 +18,8 @@ import type {
   DirectorSessionAdapterHooks,
   DirectorSessionAdapterOptions,
   DirectorSessionMetricsUpdate,
+  DirectorDynamicToolCall,
+  DirectorDynamicToolResult,
   DirectorToolCall,
   DirectorTurnResult,
   RestoredSessionState,
@@ -57,11 +59,16 @@ export interface SessionBridgeOptions {
   agents: Config['agents'];
   config: Config['director'];
   directorAgentName?: string;
+  /** Seed an existing provider session/thread id before adapter startup.
+   *  Used by sessionId-first revive paths where the user-facing sessionId is
+   *  the durable identity and pool routingKey is only a runtime detail. */
+  initialSessionId?: string;
   label: string;
   isMain?: boolean;
   groupName?: string;
   workspaceCwd?: string;
   directorFactory?: (options: DirectorSessionAdapterOptions, hooks: DirectorSessionAdapterHooks) => DirectorSessionAdapter;
+  dynamicToolHandler?: (call: DirectorDynamicToolCall & { sourceSessionId: string | null; workspace: string }) => Promise<DirectorDynamicToolResult> | DirectorDynamicToolResult;
 }
 
 export class SessionBridge extends EventEmitter {
@@ -75,6 +82,7 @@ export class SessionBridge extends EventEmitter {
   private readonly adapterFactory: (directorAgent: AgentRuntimeConfig) => DirectorSessionAdapter;
   private sessionFile: string;
   private workspaceCwd?: string;
+  private initialSessionId?: string;
   private sessionId: string | null = null;
   private sessionName: string | null = null;
   private interrupted = false;
@@ -111,6 +119,7 @@ export class SessionBridge extends EventEmitter {
   private discardNextResponse = false;
   private personaRole: string = 'director';
   private partialSystemReplyText: string | null = null;
+  private readonly dynamicToolHandler?: SessionBridgeOptions['dynamicToolHandler'];
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
   private static readonly FLUSH_STEP_TIMEOUT = 90_000;
@@ -124,6 +133,8 @@ export class SessionBridge extends EventEmitter {
     this.label = options.label;
     this.isMain = options.isMain ?? true;
     this.groupName = options.groupName;
+    this.initialSessionId = options.initialSessionId;
+    this.dynamicToolHandler = options.dynamicToolHandler;
     this.workspaceCwd = options.workspaceCwd ?? (this.isMain ? undefined : dirname(this.getSessionStateFilePath()));
 
     const pipeDir = this.isMain ? this.config.pipe_dir : join(this.config.pipe_dir, this.label);
@@ -1161,20 +1172,33 @@ export class SessionBridge extends EventEmitter {
       onTurnComplete: (result) => this.handleTurnComplete(result),
       onTurnFailure: (message) => this.handleTurnFailure(message),
       onRuntimeClosed: () => this.handleRuntimeClosed(),
+      onDynamicToolCall: (call) => this.handleDynamicToolCall(call),
     };
+  }
+
+  private async handleDynamicToolCall(call: DirectorDynamicToolCall): Promise<DirectorDynamicToolResult> {
+    if (!this.dynamicToolHandler) {
+      return { success: false, text: `Unsupported dynamic tool: ${call.tool}` };
+    }
+    return this.dynamicToolHandler({
+      ...call,
+      sourceSessionId: call.threadId || this.sessionId,
+      workspace: this.workspaceName,
+    });
   }
 
   private buildRuntimeEnv(): Record<string, string> {
     return {
       DIRECTOR_LABEL: this.label,
       PERSONA_WORKSPACE: this.workspaceName,
+      PERSONA_SESSION_FILE: this.sessionFile,
       ...(this.sessionId ? { PERSONA_SESSION_ID: this.sessionId } : {}),
     };
   }
 
   private restorePersistedSession(): RestoredSessionState {
     this.ensureSessionDir();
-    const sessionId = this.readSession();
+    const sessionId = this.readSession() ?? this.initialSessionId ?? null;
     const sessionName = sessionId
       ? (getState<Record<string, string>>('session:names') ?? {})[sessionId] ?? null
       : null;

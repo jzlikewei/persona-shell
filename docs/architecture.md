@@ -124,8 +124,7 @@ Task 完成后回调投递优先级：
 3. workspace 没有 default session / 无法拉起 → 投递给 main director
 4. main director 始终至少有一个 session，保证回调不会静默丢失
 
-注意：MCP server 的 `PERSONA_WORKSPACE` / `PERSONA_SESSION_ID` 通过 CLI 进程的 env 继承传递。
-如果 env 未正确传递（如 session 创建时机问题），`normalizeTaskSource` 会用 workspace 从 DB 查找 default session 兜底。
+注意：Claude Code 的 MCP server 通过 `PERSONA_WORKSPACE` + `PERSONA_SESSION_FILE` 继承调用上下文；MCP server 在每次 tool call 时 lazy 读取 session 文件，而不是信任启动时的 `PERSONA_SESSION_ID`。Codex App Server 默认不走 MCP，而是在 `mcp_mode: dynamic` 下通过 `item/tool/call.params.threadId` 直接绑定 `source_session_id`。如果来源缺失，`normalizeTaskSource` 会用 workspace 从 DB 查找 default session 兜底。
 
 ### Cron 调度
 
@@ -500,7 +499,7 @@ DirectorPool 位于 SessionManager 下方,只保存 runtime entry、queue、stre
 ## 后台任务
 
 ```
-Agent ──MCP create_task──→ Shell (task-runner)
+Agent ──create_task──→ Shell (task-runner)
                                │
                    spawn agent process (Claude -p / Codex exec)
                                │
@@ -509,7 +508,7 @@ Agent ──MCP create_task──→ Shell (task-runner)
                    回调：先找原 sessionId，已归档则回到 workspace default session
 ```
 
-- 任务通过 MCP Server（`task-mcp-server.ts`）暴露给 Agent
+- 任务对 Claude Code 通过 MCP Server（`task-mcp-server.ts`）暴露；对 Codex App Server 默认通过 dynamic tools 暴露，由 runtime 直接处理 `item/tool/call`
 - `task-runner.ts` 管理进程 spawn、超时（默认 30 分钟）、重试
 - `task-store.ts` 使用 SQLite 持久化任务状态和 Cron 定义
 - `scheduler.ts` 轮询 Cron jobs，使用 workspace 的 default session 执行
@@ -555,6 +554,22 @@ Web 前端通过 WebSocket 推送两类数据：
 - `POST /api/sessions { workspace }` — 创建 session
 - `GET /api/sessions?workspace={name}` — 查询 workspace 下的 session 列表
 - `GET /api/messages?sessionId={id}` — 查询某 session 的消息历史
+
+### 历史消息数据源决策
+
+Web 历史展示不在 pShell 内部维护一份完整 messages 表。pShell 的职责是路由、编排和适配，不复制底层 Agent 已经持久化的完整会话历史。
+
+`GET /api/messages` 应按 session 所属 Agent 读取原生历史源：
+
+| Agent | 历史消息 SSOT |
+|-------|---------------|
+| Codex | Codex 原生 session / thread JSONL（如 `~/.codex/sessions/**/rollout-*{sessionId}*.jsonl`） |
+| Claude Code | Claude Code 原生 transcript / session 历史；必要时 fallback 到 pShell 捕获日志 |
+| Kimi | Kimi 原生 session 历史；必要时 fallback 到 pShell 捕获日志 |
+
+pShell 日志只作为审计和 fallback，不能作为 Web 历史展示的主数据源。尤其不能用“tail 全局 output log”重建某个 session 的历史；日志文件增大后会截断早期 assistant 输出，导致 UI 只看到用户消息或历史不完整。
+
+只有当未来 pShell 要成为跨 Agent 的统一会话系统（统一搜索、分页、审计、迁移、多 Agent 合并时间线）时，才重新评估是否引入 normalized messages 表。当前明确不做。
 
 ## 技术栈
 

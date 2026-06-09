@@ -71,7 +71,8 @@ export class SessionManager extends EventEmitter {
     directorAgentName?: string;
     groupName?: string;
   }): Promise<SessionEntry> {
-    this.workspaceRegistry.getOrCreate(workspaceName);
+    const workspace = this.workspaceRegistry.getOrCreate(workspaceName);
+    const directorAgentName = opts.directorAgentName ?? workspace.agent ?? undefined;
     const routingKey = opts.feishuChatId === 'web-console'
       ? `web-workspace:${workspaceName}`
       : opts.feishuChatId;
@@ -79,7 +80,7 @@ export class SessionManager extends EventEmitter {
     let entry = await this.pool.getOrCreate(routingKey, {
       groupName: opts.groupName ?? workspaceName,
       feishuChatId: opts.feishuChatId,
-      directorAgentName: opts.directorAgentName,
+      directorAgentName,
     });
 
     let sessionId = entry.bridge.getStatus().sessionId;
@@ -88,7 +89,7 @@ export class SessionManager extends EventEmitter {
       entry = await this.pool.resetSession(routingKey, {
         groupName: opts.groupName ?? workspaceName,
         feishuChatId: opts.feishuChatId,
-        directorAgentName: opts.directorAgentName,
+        directorAgentName,
       });
       sessionId = entry.bridge.getStatus().sessionId;
     }
@@ -102,6 +103,50 @@ export class SessionManager extends EventEmitter {
     }
 
     return this.toSessionEntry(entry);
+  }
+
+  /** Revive a concrete session by its sessionId without falling back to another workspace session. */
+  async reviveSession(sessionId: string, opts: {
+    feishuChatId: string;
+    directorAgentName?: string;
+  }): Promise<SessionEntry | null> {
+    const record = getSessionRecord(sessionId);
+    if (!record || record.archived === 1) return null;
+
+    const routingKey = this.sessionToRoutingKey.get(sessionId) ?? this.deriveReviveRoutingKey(sessionId, record);
+    if (!routingKey) return null;
+
+    const workspace = this.workspaceRegistry.getOrCreate(record.workspace);
+    const directorAgentName = opts.directorAgentName
+      ?? record.agent_name
+      ?? workspace.agent
+      ?? undefined;
+    const entry = await this.pool.getOrCreate(routingKey, {
+      groupName: record.workspace,
+      feishuChatId: opts.feishuChatId,
+      directorAgentName,
+      initialSessionId: sessionId,
+    });
+    const revivedSessionId = entry.bridge.getStatus().sessionId;
+    if (revivedSessionId) {
+      this.registerSession(revivedSessionId, routingKey, record.workspace, entry);
+    } else {
+      entry.bridge.once('session-id-ready', (sid: string) => {
+        this.registerSession(sid, routingKey, record.workspace, entry);
+      });
+    }
+    return this.toSessionEntry(entry);
+  }
+
+  private deriveReviveRoutingKey(sessionId: string, record: SessionRow): string | null {
+    // Codex app-server sessions are durable by threadId. Even if Shell restart
+    // lost the runtime sessionId→routingKey map and pool:entries no longer
+    // contains this concrete session, we can create a fresh runtime entry and
+    // let the Codex adapter call thread/resume(sessionId).
+    if (record.agent_type === 'codex-app-server') {
+      return `web-session:${sessionId}`;
+    }
+    return null;
   }
 
   async sendToWorkspaceDefaultSession(workspaceName: string, opts: {
@@ -130,12 +175,13 @@ export class SessionManager extends EventEmitter {
     feishuChatId: string;
     directorAgentName?: string;
   }): Promise<SessionEntry> {
-    this.workspaceRegistry.getOrCreate(workspaceName);
+    const workspace = this.workspaceRegistry.getOrCreate(workspaceName);
+    const directorAgentName = opts.directorAgentName ?? workspace.agent ?? undefined;
     const sessionKey = `web-session:${randomUUID().slice(0, 12)}`;
     const entry = await this.pool.getOrCreate(sessionKey, {
       groupName: workspaceName,
       feishuChatId: opts.feishuChatId,
-      directorAgentName: opts.directorAgentName,
+      directorAgentName,
     });
     const sessionId = entry.bridge.getStatus().sessionId;
     if (sessionId) {

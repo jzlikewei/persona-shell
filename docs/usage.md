@@ -15,7 +15,7 @@
 | FLUSH（上下文刷新） | ✅ | ✅ | ✅ | checkpoint → kill → bootstrap |
 | /esc（取消请求） | ✅ | ✅ | ✅ | SIGINT 中断当前处理 |
 | **多角色系统** | | | | |
-| 后台任务（create_task） | ✅ | ✅ | ✅ | Director 派发，子角色独立执行，MCP 驱动 |
+| 后台任务（create_task） | ✅ | ✅ | ✅ | Director 派发，子角色独立执行；Claude/Kimi 走 MCP，Codex 默认走 App Server dynamic tools |
 | Cron 定时任务 | ✅ | ✅ | ✅ | spawn_role / director_msg / shell_action |
 | 人格定义（personas/） | ✅ | ✅ | ✅ | Claude Code agent frontmatter 格式 |
 | 技能插件（skills/） | ✅ | ✅ | ✅ | Claude `.claude/skills`；Codex `.agents/skills`；Kimi `--skills-dir` |

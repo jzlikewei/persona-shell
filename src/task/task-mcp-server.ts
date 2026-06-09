@@ -13,13 +13,13 @@ import {
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
 const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
-const PERSONA_SESSION_ID = process.env.PERSONA_SESSION_ID?.trim() || undefined;
 const PERSONA_WORKSPACE = process.env.PERSONA_WORKSPACE?.trim() || (DIRECTOR_LABEL === 'main' ? 'main' : DIRECTOR_LABEL);
 const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
-// Debug: log env on startup to diagnose workspace routing
-console.error(`[mcp-server] env: DIRECTOR_LABEL=${DIRECTOR_LABEL} PERSONA_WORKSPACE=${PERSONA_WORKSPACE} PERSONA_SESSION_ID=${PERSONA_SESSION_ID ?? '(none)'} SHELL_PORT=${SHELL_PORT}`);
+function logStartupEnv(): void {
+  console.error(`[mcp-server] env: DIRECTOR_LABEL=${DIRECTOR_LABEL} PERSONA_WORKSPACE=${PERSONA_WORKSPACE} PERSONA_SESSION_FILE=${process.env.PERSONA_SESSION_FILE?.trim() || '(none)'} PERSONA_SESSION_ID=${readPersonaSessionIdFromEnv() ?? '(none)'} SHELL_PORT=${SHELL_PORT}`);
+}
 
 /** Scan personas/ directory and return available role names */
 function getAvailableRoles(): string[] {
@@ -313,6 +313,43 @@ function inferCodexThreadId(args: Record<string, unknown>): string | undefined {
   ) || undefined;
 }
 
+function inferCodexMetadataSessionId(args: Record<string, unknown>): string | undefined {
+  const meta = args._meta;
+  return (
+    stringFromPath(meta, ['x-codex-turn-metadata', 'thread_id']) ??
+    stringFromPath(meta, ['x-codex-turn-metadata', 'session_id']) ??
+    stringFromPath(meta, ['threadId']) ??
+    stringFromPath(meta, ['thread_id']) ??
+    stringFromPath(meta, ['session_id'])
+  );
+}
+
+function readPersonaSessionIdFromEnv(): string | undefined {
+  return process.env.PERSONA_SESSION_ID?.trim() || undefined;
+}
+
+function readPersonaSessionIdFromFile(): string | undefined {
+  const path = process.env.PERSONA_SESSION_FILE?.trim();
+  if (!path) return undefined;
+  try {
+    return readFileSync(path, 'utf-8').trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function inferSourceSessionId(args: Record<string, unknown>): string | undefined {
+  // Prefer per-turn Codex metadata, then Shell's session file SSOT. The env
+  // fallback is kept only for legacy callers because MCP servers can start
+  // before Claude/Codex has produced a session id.
+  return inferCodexMetadataSessionId(args)
+    ?? readPersonaSessionIdFromFile()
+    ?? readPersonaSessionIdFromEnv()
+    ?? process.env.CODEX_THREAD_ID?.trim()
+    ?? process.env.CODEX_SESSION_ID?.trim()
+    ?? undefined;
+}
+
 function inferCodexCwd(args: Record<string, unknown>): string | undefined {
   if (typeof args.callback_cwd === 'string' && args.callback_cwd.trim()) {
     return args.callback_cwd.trim();
@@ -345,6 +382,50 @@ function withCodexCallbackDefaults(args: Record<string, unknown>): Record<string
   };
 }
 
+export function buildPersonaDelegateTaskRequest(args: Record<string, unknown>): Record<string, unknown> {
+  const enrichedArgs = withCodexCallbackDefaults(args);
+  return {
+    type: 'role',
+    role: enrichedArgs.role,
+    agent: enrichedArgs.agent,
+    model: enrichedArgs.model,
+    description: enrichedArgs.description,
+    prompt: enrichedArgs.prompt,
+    project_dir: enrichedArgs.project_dir,
+    timeout_ms: enrichedArgs.timeout_ms,
+    source_session_id: inferSourceSessionId(enrichedArgs),
+    workspace: PERSONA_WORKSPACE,
+    extra: compactRecord({
+      persona_role: enrichedArgs.role,
+      parent_codex_thread_id: enrichedArgs.parent_codex_thread_id,
+      persona_session_id: enrichedArgs.persona_session_id,
+      channel: enrichedArgs.channel,
+      external_id: enrichedArgs.external_id,
+      codex_callback: buildCodexCallback(enrichedArgs),
+    }),
+  };
+}
+
+export function buildCreateTaskRequest(args: Record<string, unknown>): Record<string, unknown> {
+  const enrichedArgs = withCodexCallbackDefaults(args);
+  return {
+    type: 'role',
+    role: enrichedArgs.role,
+    agent: enrichedArgs.agent,
+    model: enrichedArgs.model,
+    description: enrichedArgs.description,
+    prompt: enrichedArgs.prompt,
+    max_retry: enrichedArgs.max_retry,
+    project_dir: enrichedArgs.project_dir,
+    timeout_ms: enrichedArgs.timeout_ms,
+    source_session_id: inferSourceSessionId(enrichedArgs),
+    workspace: PERSONA_WORKSPACE,
+    extra: compactRecord({
+      codex_callback: buildCodexCallback(enrichedArgs),
+    }),
+  };
+}
+
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
   const enrichedArgs = withCodexCallbackDefaults(args);
   switch (name) {
@@ -364,26 +445,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         String(enrichedArgs.content ?? ''),
       );
     case 'persona_delegate':
-      return callShell('POST', '/api/tasks', {
-        type: 'role',
-        role: enrichedArgs.role,
-        agent: enrichedArgs.agent,
-        model: enrichedArgs.model,
-        description: enrichedArgs.description,
-        prompt: enrichedArgs.prompt,
-        project_dir: enrichedArgs.project_dir,
-        timeout_ms: enrichedArgs.timeout_ms,
-        source_session_id: PERSONA_SESSION_ID,
-        workspace: PERSONA_WORKSPACE,
-        extra: compactRecord({
-          persona_role: enrichedArgs.role,
-          parent_codex_thread_id: enrichedArgs.parent_codex_thread_id,
-          persona_session_id: enrichedArgs.persona_session_id,
-          channel: enrichedArgs.channel,
-          external_id: enrichedArgs.external_id,
-          codex_callback: buildCodexCallback(enrichedArgs),
-        }),
-      });
+      return callShell('POST', '/api/tasks', buildPersonaDelegateTaskRequest(enrichedArgs));
     case 'persona_session_link':
       return callShell('POST', '/api/persona/session-links', {
         channel: enrichedArgs.channel,
@@ -394,22 +456,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
         role: enrichedArgs.role,
       });
     case 'create_task':
-      return callShell('POST', '/api/tasks', {
-        type: 'role',
-        role: enrichedArgs.role,
-        agent: enrichedArgs.agent,
-        model: enrichedArgs.model,
-        description: enrichedArgs.description,
-        prompt: enrichedArgs.prompt,
-        max_retry: enrichedArgs.max_retry,
-        project_dir: enrichedArgs.project_dir,
-        timeout_ms: enrichedArgs.timeout_ms,
-        source_session_id: PERSONA_SESSION_ID,
-        workspace: PERSONA_WORKSPACE,
-        extra: compactRecord({
-          codex_callback: buildCodexCallback(enrichedArgs),
-        }),
-      });
+      return callShell('POST', '/api/tasks', buildCreateTaskRequest(enrichedArgs));
     case 'get_task':
       return callShell('GET', `/api/tasks/${enrichedArgs.task_id}`);
     case 'list_tasks': {
@@ -503,10 +550,12 @@ async function runCli(argv: string[]): Promise<void> {
   }
 }
 
-if (process.argv[2] === 'cli') {
-  runCli(process.argv.slice(3));
-} else {
-  runMcpServer();
+if (import.meta.main) {
+  if (process.argv[2] === 'cli') {
+    runCli(process.argv.slice(3));
+  } else {
+    runMcpServer();
+  }
 }
 
 // JSON-RPC over stdio
@@ -565,6 +614,7 @@ function write(obj: unknown) {
 }
 
 function runMcpServer(): void {
+  logStartupEnv();
   // Read stdin line by line
   process.stdin.on('data', (chunk) => {
     buffer += decoder.decode(chunk, { stream: true });

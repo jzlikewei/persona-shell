@@ -88,7 +88,7 @@ agents:
       sandbox: "danger-full-access"
       approval: "never"
       search: false
-      mcp_mode: "mcp"          # mcp: 注入 MCP tools；cli: turn-based Codex 的 task CLI 提示；off: 关闭 task 注入
+      mcp_mode: "dynamic"      # 默认 dynamic: app-server dynamic tools；mcp: 兼容 MCP tools；cli: task CLI 提示；off: 关闭 task 注入
       transport: "stdio"
       # cwd: "~/github/jzlikewei/persona-shell"  # Codex app-server 可选，指定 Codex app 会话所属 workspace
       flush_context_limit: 210000  # 可选：provider 默认上下文刷新阈值

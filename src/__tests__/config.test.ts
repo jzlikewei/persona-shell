@@ -129,7 +129,7 @@ describe('config', () => {
         expect(cfg.agents.providers.codex).toBeDefined();
         expect(cfg.agents.providers.codex.type).toBe('codex-app-server');
         expect(cfg.agents.providers.codex.sandbox).toBe('danger-full-access');
-        expect(cfg.agents.providers.codex.mcp_mode).toBe('mcp');
+        expect(cfg.agents.providers.codex.mcp_mode).toBe('dynamic');
       });
 
       test('fills default agent defaults (director=claude, default=claude)', () => {
@@ -334,6 +334,7 @@ describe('config', () => {
             '      sandbox: danger-full-access',
             '      approval: never',
             '      search: true',
+            '      mcp_mode: dynamic',
             '      transport: stdio',
             '      ephemeral: false',
             '      cwd: "~/codex-live"',
@@ -349,6 +350,7 @@ describe('config', () => {
         expect(p.sandbox).toBe('danger-full-access');
         expect(p.approval).toBe('never');
         expect(p.search).toBe(true);
+        expect(p.mcp_mode).toBe('dynamic');
         expect(p.transport).toBe('stdio');
         expect(p.ephemeral).toBe(false);
         expect(p.cwd).toBe(homedir() + '/codex-live');

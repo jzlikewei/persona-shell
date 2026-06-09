@@ -186,6 +186,126 @@ describe('CodexAppServerRuntime', () => {
     });
   });
 
+  test('registers persona dynamic task tools when mcp_mode is dynamic', () => {
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: 'test',
+        logDir: '/tmp/persona-test/logs',
+        config: {
+          persona_dir: '/tmp/persona-test',
+          pipe_dir: '/tmp/persona-test',
+          pid_file: '/tmp/persona-test/test.pid',
+          time_sync_interval_ms: 999999,
+          flush_context_limit: 999999,
+          flush_interval_ms: 999999,
+          quote_max_length: 32,
+        },
+        agent: { type: 'codex-app-server', command: 'codex', name: 'codex-live', mcp_mode: 'dynamic' },
+        personaRole: 'director',
+      },
+      {
+        getSessionId: () => 'thread-1',
+        getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
+        setSessionName: () => {},
+        buildSessionName: () => 'session-1',
+        persistSession: () => {},
+        clearSession: () => {},
+        logOutput: () => {},
+        onChunk: () => {},
+        onToolCall: () => {},
+        onPartialAgentMessage: () => {},
+        onMetrics: () => {},
+        onTurnComplete: () => {},
+        onTurnFailure: () => {},
+        onRuntimeClosed: () => {},
+      },
+    );
+    const runtimePrivate = runtime as unknown as {
+      threadOptions(): Record<string, unknown>;
+    };
+
+    const dynamicTools = runtimePrivate.threadOptions().dynamicTools as Array<{ name: string }> | undefined;
+    expect(dynamicTools?.map((tool) => tool.name)).toEqual(['create_task', 'list_tasks', 'get_task']);
+  });
+
+  test('handles app-server item/tool/call through dynamic tool hook', async () => {
+    const writes: string[] = [];
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: 'test',
+        logDir: '/tmp/persona-test/logs',
+        config: {
+          persona_dir: '/tmp/persona-test',
+          pipe_dir: '/tmp/persona-test',
+          pid_file: '/tmp/persona-test/test.pid',
+          time_sync_interval_ms: 999999,
+          flush_context_limit: 999999,
+          flush_interval_ms: 999999,
+          quote_max_length: 32,
+        },
+        agent: { type: 'codex-app-server', command: 'codex', name: 'codex-live', mcp_mode: 'dynamic' },
+        personaRole: 'director',
+      },
+      {
+        getSessionId: () => 'thread-1',
+        getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
+        setSessionName: () => {},
+        buildSessionName: () => 'session-1',
+        persistSession: () => {},
+        clearSession: () => {},
+        logOutput: () => {},
+        onChunk: () => {},
+        onToolCall: () => {},
+        onPartialAgentMessage: () => {},
+        onMetrics: () => {},
+        onTurnComplete: () => {},
+        onTurnFailure: () => {},
+        onRuntimeClosed: () => {},
+        onDynamicToolCall: (call) => ({
+          success: true,
+          text: `${call.threadId}:${call.tool}:${(call.arguments as { text?: string }).text}`,
+        }),
+      },
+    );
+    const runtimePrivate = runtime as unknown as {
+      child: { stdin: { destroyed: boolean; write(line: string): boolean } };
+      handleServerRequest(msg: { id: number; method: string; params: Record<string, unknown> }): void;
+    };
+    runtimePrivate.child = {
+      stdin: {
+        destroyed: false,
+        write(line: string) {
+          writes.push(line);
+          return true;
+        },
+      },
+    };
+
+    runtimePrivate.handleServerRequest({
+      id: 7,
+      method: 'item/tool/call',
+      params: {
+        threadId: 'thread-dyn',
+        turnId: 'turn-1',
+        callId: 'call-1',
+        tool: 'persona_echo',
+        arguments: { text: 'hello' },
+      },
+    });
+    await Bun.sleep(0);
+
+    expect(JSON.parse(writes[0])).toEqual({
+      jsonrpc: '2.0',
+      id: 7,
+      result: {
+        success: true,
+        contentItems: [{ type: 'inputText', text: 'thread-dyn:persona_echo:hello' }],
+      },
+    });
+  });
+
   test('injects soul, role persona, and workspace context into app-server thread instructions', () => {
     const personaDir = '/tmp/persona-codex-context-test';
     const contextPath = join(personaDir, 'workspaces', 'demo', 'context.md');
