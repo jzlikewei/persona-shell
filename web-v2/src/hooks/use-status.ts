@@ -5,18 +5,14 @@ export interface StatusData {
   system: {
     status: string
     uptime: number
-    directorAlive: boolean
+    alive: boolean
+    pid?: number | null
     sessionId?: string
     sessionName?: string
-    // 后端在 buildSnapshot 里返回 liveSessionArchived,前端 useSessions
-    // 用它判断"live session 是否已被归档" —— 是的话,unshift 逻辑跳过它,
-    // 否则归档后 UI 永远把已归档的 live session 拉回列表。
     liveSessionArchived?: boolean
-    // 后端 buildSnapshot 已经返回这两个字段,但前端类型没声明。
-    // Switch sheet 用来判断"当前"agent / persona。扩展为可选以保 BC。
-    directorAgentName?: string
-    directorAgentType?: string
-    directorAgentModel?: string | null
+    agentName?: string
+    agentType?: string
+    agentModel?: string | null
     personaRole?: string
   }
   context: {
@@ -34,7 +30,7 @@ export interface StatusData {
     /** @deprecated runtime-only */
     routingKey: string
     /** @deprecated runtime-only */
-    groupName: string
+    workspaceName: string
     /** @deprecated runtime-only */
     label: string
     alive: boolean
@@ -42,13 +38,10 @@ export interface StatusData {
     activity: string | null
     sessionId?: string | null
     sessionName?: string | null
-    // 后端 buildSnapshot 在 pool entry 上加的 archived 标志。
-    // useSessions 据此判断 live pool session 是否已被归档,
-    // 避免归档"当前 pool session"后前端 unshift 又把它拉回列表。
     liveSessionArchived?: boolean
-    directorAgentName?: string | null
-    directorAgentType?: string | null
-    directorAgentModel?: string | null
+    agentName?: string | null
+    agentType?: string | null
+    agentModel?: string | null
   }>
   runtime?: {
     pool: StatusData['pool']

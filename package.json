@@ -10,6 +10,7 @@
     "smoke:workspace-routing": "bun test src/__tests__/workspace-routing-smoke.test.ts",
     "smoke:web": "bun scripts/smoke-web-console.ts",
     "test:api": "bun scripts/test-api-smoke.ts",
+    "test:api-surface": "bun scripts/test-api-surface.ts",
     "test:e2e": "bun scripts/test-e2e-flow.ts",
     "test:shell": "PERSONA_TEST=1 PERSONA_CONSOLE_PORT=3099 bun src/index.ts",
     "start": "bun dist/index.js",

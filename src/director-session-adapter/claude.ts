@@ -152,7 +152,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
       minute: '2-digit',
     }).replace(':', '');
     const nameParts = ['director', this.options.label, `${dateStr}T${timeStr}`];
-    if (this.options.groupName) nameParts.push(this.options.groupName);
+    if (this.options.workspaceName) nameParts.push(this.options.workspaceName);
     return nameParts.join('-');
   }
 

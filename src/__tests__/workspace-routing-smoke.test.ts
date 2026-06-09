@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
-import { DirectorPool } from '../director-pool.js';
-import type { PoolEntry } from '../director-pool.js';
+import { AgentRuntimePool } from '../agent-runtime-pool.js';
+import type { RuntimeEntry } from '../agent-runtime-pool.js';
 import type {
   DirectorSessionAdapter,
   DirectorSessionAdapterHooks,
@@ -90,7 +90,7 @@ function testAgentsConfig() {
   };
 }
 
-function createBridge(label: string, groupName: string, isMain = false, directorAgentName?: string, initialSessionId?: string): SessionBridge {
+function createBridge(label: string, workspaceName: string, isMain = false, agentName?: string, initialSessionId?: string): SessionBridge {
   return new SessionBridge({
     agents: testAgentsConfig(),
     config: {
@@ -102,10 +102,10 @@ function createBridge(label: string, groupName: string, isMain = false, director
       flush_interval_ms: 999999,
       quote_max_length: 32,
     },
-    directorAgentName,
+    agentName,
     label,
     isMain,
-    groupName,
+    workspaceName,
     initialSessionId,
     directorFactory: (options, hooks) => new SmokeAdapter(options, hooks),
   });
@@ -127,26 +127,26 @@ function createMessaging(): MessagingClient {
   };
 }
 
-class SmokePool extends DirectorPool {
-  private smokeEntries = new Map<string, PoolEntry>();
+class SmokePool extends AgentRuntimePool {
+  private smokeEntries = new Map<string, RuntimeEntry>();
 
-  private async createEntry(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
-    const groupName = opts.groupName ?? routingKey;
-    const bridge = createBridge(`smoke-${routingKey}`, groupName, false, opts.directorAgentName, opts.initialSessionId);
+  private async createEntry(routingKey: string, opts: { workspaceName?: string; feishuChatId: string; agentName?: string; initialSessionId?: string }): Promise<RuntimeEntry> {
+    const workspaceName = opts.workspaceName ?? routingKey;
+    const bridge = createBridge(`smoke-${routingKey}`, workspaceName, false, opts.agentName, opts.initialSessionId);
     await bridge.start();
     return {
       bridge,
       queue: new MessageQueue('/dev/null'),
       routingKey,
       feishuChatId: opts.feishuChatId,
-      groupName,
+      workspaceName,
       lastActiveAt: Date.now(),
-      directorAgentName: opts.directorAgentName,
+      agentName: opts.agentName,
       messagesSinceFlush: 0,
     };
   }
 
-  async getOrCreate(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
+  async getOrCreate(routingKey: string, opts: { workspaceName?: string; feishuChatId: string; agentName?: string; initialSessionId?: string }): Promise<RuntimeEntry> {
     const existing = this.smokeEntries.get(routingKey);
     if (existing) return existing;
 
@@ -155,7 +155,7 @@ class SmokePool extends DirectorPool {
     return entry;
   }
 
-  get(routingKey: string): PoolEntry | undefined {
+  get(routingKey: string): RuntimeEntry | undefined {
     return this.smokeEntries.get(routingKey);
   }
 
@@ -165,25 +165,25 @@ class SmokePool extends DirectorPool {
     await entry.bridge.send(text);
   }
 
-  async resetSession(routingKey: string, opts: { groupName?: string; feishuChatId: string; directorAgentName?: string; initialSessionId?: string }): Promise<PoolEntry> {
-    const groupName = opts.groupName ?? routingKey;
-    const bridge = createBridge(`smoke-${routingKey}-reset-${SmokeAdapter.nextId}`, groupName, false, opts.directorAgentName, opts.initialSessionId);
+  async resetSession(routingKey: string, opts: { workspaceName?: string; feishuChatId: string; agentName?: string; initialSessionId?: string }): Promise<RuntimeEntry> {
+    const workspaceName = opts.workspaceName ?? routingKey;
+    const bridge = createBridge(`smoke-${routingKey}-reset-${SmokeAdapter.nextId}`, workspaceName, false, opts.agentName, opts.initialSessionId);
     await bridge.start();
     const entry = {
       bridge,
       queue: new MessageQueue('/dev/null'),
       routingKey,
       feishuChatId: opts.feishuChatId,
-      groupName,
+      workspaceName,
       lastActiveAt: Date.now(),
-      directorAgentName: opts.directorAgentName,
+      agentName: opts.agentName,
       messagesSinceFlush: 0,
     };
     this.smokeEntries.set(routingKey, entry);
     return entry;
   }
 
-  async detachByLabel(label: string): Promise<PoolEntry> {
+  async detachByLabel(label: string): Promise<RuntimeEntry> {
     for (const [routingKey, entry] of this.smokeEntries.entries()) {
       if (entry.bridge.label === label) {
         this.smokeEntries.delete(routingKey);
@@ -225,7 +225,7 @@ describe('smoke:workspace-routing', () => {
 
   test('web workspace creates a session and sends by sessionId', async () => {
     const manager = createManager();
-    const session = await manager.createNewSession('smoke-web', { feishuChatId: 'web-console', directorAgentName: 'fake' });
+    const session = await manager.createNewSession('smoke-web', { feishuChatId: 'web-console', agentName: 'fake' });
 
     await manager.send(session.sessionId, 'web hello', 'msg-web', { webOnly: true });
 
@@ -240,15 +240,15 @@ describe('smoke:workspace-routing', () => {
 
     const session = await manager.sendToWorkspaceDefaultSession('smoke-group', {
       feishuChatId: 'oc_smoke_group',
-      groupName: 'smoke-group',
-      directorAgentName: 'fake',
+      workspaceName: 'smoke-group',
+      agentName: 'fake',
       text: 'group hello',
       messageId: 'msg-group-1',
     });
     await manager.sendToWorkspaceDefaultSession('smoke-group', {
       feishuChatId: 'oc_smoke_group',
-      groupName: 'smoke-group',
-      directorAgentName: 'fake',
+      workspaceName: 'smoke-group',
+      agentName: 'fake',
       text: 'group again',
       messageId: 'msg-group-2',
     });
@@ -263,8 +263,8 @@ describe('smoke:workspace-routing', () => {
     const manager = createManager();
     const first = await manager.sendToWorkspaceDefaultSession('archive-smoke', {
       feishuChatId: 'oc_archive_smoke',
-      groupName: 'archive-smoke',
-      directorAgentName: 'fake',
+      workspaceName: 'archive-smoke',
+      agentName: 'fake',
       text: 'first',
       messageId: 'msg-archive-1',
     });
@@ -273,8 +273,8 @@ describe('smoke:workspace-routing', () => {
 
     const second = await manager.sendToWorkspaceDefaultSession('archive-smoke', {
       feishuChatId: 'oc_archive_smoke',
-      groupName: 'archive-smoke',
-      directorAgentName: 'fake',
+      workspaceName: 'archive-smoke',
+      agentName: 'fake',
       text: 'second',
       messageId: 'msg-archive-2',
     });
@@ -290,16 +290,16 @@ describe('smoke:workspace-routing', () => {
     createWorkspaceRecord('revive-smoke', { agent: 'codex' });
     const manager = createManager();
     const session = await manager.createNewSession('revive-smoke', { feishuChatId: 'web-console' });
-    const entry = manager.getPoolEntryBySessionId(session.sessionId);
+    const entry = manager.getRuntimeEntryBySessionId(session.sessionId);
     expect(entry).not.toBeNull();
 
-    await manager.detachByLabel(entry!.bridge.label);
+    await manager.runtimeDetachByLabel(entry!.bridge.label);
     expect(manager.getSession(session.sessionId)).toBeNull();
 
     const revived = await manager.reviveSession(session.sessionId, { feishuChatId: 'web-console' });
 
     expect(revived?.sessionId).toBe(session.sessionId);
-    expect(revived?.bridge.getDirectorAgentName()).toBe('codex');
+    expect(revived?.bridge.getAgentName()).toBe('codex');
     await manager.send(session.sessionId, 'after revive', 'msg-after-revive', { webOnly: true });
     expect(SmokeAdapter.instances.at(-1)?.sent.some((line) => line.includes('after revive'))).toBe(true);
   });
@@ -319,7 +319,7 @@ describe('smoke:workspace-routing', () => {
     const revived = await afterRestart.reviveSession(sessionId, { feishuChatId: 'web-console' });
 
     expect(revived?.sessionId).toBe(sessionId);
-    expect(revived?.bridge.getDirectorAgentName()).toBe('codex');
+    expect(revived?.bridge.getAgentName()).toBe('codex');
     expect(revived?.bridge.getDirectorAgentType()).toBe('codex-app-server');
 
     await afterRestart.send(sessionId, 'after restart revive', 'msg-after-restart-revive', { webOnly: true });
@@ -336,23 +336,23 @@ describe('smoke:workspace-routing', () => {
       messageId: 'msg-agent-inherited',
     });
 
-    expect(session.bridge.getDirectorAgentName()).toBe('codex');
+    expect(session.bridge.getAgentName()).toBe('codex');
     expect(session.bridge.getDirectorAgentType()).toBe('codex-app-server');
     expect(getSessionRecord(session.sessionId)?.agent_name).toBe('codex');
     expect(getSessionRecord(session.sessionId)?.agent_type).toBe('codex-app-server');
     expect(SmokeAdapter.instances.at(-1)?.sent.some((line) => line.includes('agent inherited'))).toBe(true);
   });
 
-  test('explicit directorAgentName wins over workspace agent', async () => {
+  test('explicit agentName wins over workspace agent', async () => {
     createWorkspaceRecord('explicit-agent-smoke', { agent: 'codex' });
     const manager = createManager();
 
     const session = await manager.createNewSession('explicit-agent-smoke', {
       feishuChatId: 'web-console',
-      directorAgentName: 'claude',
+      agentName: 'claude',
     });
 
-    expect(session.bridge.getDirectorAgentName()).toBe('claude');
+    expect(session.bridge.getAgentName()).toBe('claude');
     expect(session.bridge.getDirectorAgentType()).toBe('claude');
     expect(getSessionRecord(session.sessionId)?.agent_name).toBe('claude');
   });
@@ -361,8 +361,8 @@ describe('smoke:workspace-routing', () => {
     const manager = createManager();
     const session = await manager.sendToWorkspaceDefaultSession('work-routing', {
       feishuChatId: 'oc_work_routing',
-      groupName: 'work-routing',
-      directorAgentName: 'fake',
+      workspaceName: 'work-routing',
+      agentName: 'fake',
       text: 'prepare',
       messageId: 'msg-work-routing',
     });

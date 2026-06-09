@@ -540,7 +540,7 @@ describe('SessionBridge', () => {
   });
 
   test('switchAgent checkpoints, rebuilds adapter, bootstraps, and persists agent state', async () => {
-    const bridge = createBridgeWithOptions({ isMain: false, providerName: 'fake-claude', directorAgentName: 'fake-claude' });
+    const bridge = createBridgeWithOptions({ isMain: false, providerName: 'fake-claude', agentName: 'fake-claude' });
     const initialAdapter = FakeAdapter.instances.at(-1)!;
     await bridge.start();
 
@@ -565,15 +565,15 @@ describe('SessionBridge', () => {
 
     switchedAdapter.completeTurn({ responseText: 'restored', durationMs: 1 });
     await expect(switchPromise).resolves.toBe(true);
-    expect(bridge.getDirectorAgentName()).toBe('fake-codex');
+    expect(bridge.getAgentName()).toBe('fake-codex');
     expect(bridge.isFlushing).toBe(false);
 
-    const restored = createBridgeWithOptions({ isMain: false, providerName: 'fake', directorAgentName: undefined });
-    expect(restored.getDirectorAgentName()).toBe('fake-codex');
+    const restored = createBridgeWithOptions({ isMain: false, providerName: 'fake', agentName: undefined });
+    expect(restored.getAgentName()).toBe('fake-codex');
   });
 
   test('switchAgent on main session restores from daily state and updates legacy agent key', async () => {
-    const bridge = createBridgeWithOptions({ isMain: true, providerName: 'fake-claude', directorAgentName: 'fake-claude', label: 'main' });
+    const bridge = createBridgeWithOptions({ isMain: true, providerName: 'fake-claude', agentName: 'fake-claude', label: 'main' });
     const initialAdapter = FakeAdapter.instances.at(-1)!;
     await bridge.start();
 
@@ -587,8 +587,8 @@ describe('SessionBridge', () => {
     switchedAdapter.completeTurn({ responseText: 'restored', durationMs: 1 });
 
     await expect(switchPromise).resolves.toBe(true);
-    const restored = createBridgeWithOptions({ isMain: true, providerName: 'fake', directorAgentName: undefined, label: 'main' });
-    expect(restored.getDirectorAgentName()).toBe('fake-codex');
+    const restored = createBridgeWithOptions({ isMain: true, providerName: 'fake', agentName: undefined, label: 'main' });
+    expect(restored.getAgentName()).toBe('fake-codex');
   });
 
   // ---- 3. handleStreamChunk ----
@@ -727,13 +727,13 @@ describe('SessionBridge', () => {
   });
 
   test('getStatus uses provider flush context limit override', () => {
-    const bridge = createBridgeWithOptions({ directorAgentName: 'fake', providerFlushContextLimit: 210000 });
+    const bridge = createBridgeWithOptions({ agentName: 'fake', providerFlushContextLimit: 210000 });
     expect(bridge.getStatus().flushContextLimit).toBe(210000);
   });
 
   test('getStatus uses model flush context limit override before provider override', () => {
     const bridge = createBridgeWithOptions({
-      directorAgentName: 'fake',
+      agentName: 'fake',
       providerModel: 'gpt-5.5',
       providerFlushContextLimit: 210000,
       providerFlushContextLimits: { 'gpt-5.5': 200000 },
@@ -743,7 +743,7 @@ describe('SessionBridge', () => {
 
   test('provider can disable automatic context flush', async () => {
     const bridge = createBridgeWithOptions({
-      directorAgentName: 'fake',
+      agentName: 'fake',
       providerFlushContextLimit: 1000,
       providerDisableAutoFlush: true,
     });
@@ -915,15 +915,15 @@ describe('SessionBridge', () => {
 
   // ---- 8. buildSessionName ----
 
-  test('buildSessionName generates name with label, date, and groupName', () => {
-    createBridgeWithOptions({ label: 'my-dir', groupName: 'grp' });
+  test('buildSessionName generates name with label, date, and workspaceName', () => {
+    createBridgeWithOptions({ label: 'my-dir', workspaceName: 'grp' });
     const adapter = FakeAdapter.instances.at(-1)!;
     const name = adapter.hooks.buildSessionName();
     expect(name).toMatch(/^codex-app-server-director-my-dir-\d{8}T\d{4}-grp$/);
   });
 
-  test('buildSessionName omits groupName when not set', () => {
-    createBridgeWithOptions({ label: 'solo', groupName: undefined });
+  test('buildSessionName omits workspaceName when not set', () => {
+    createBridgeWithOptions({ label: 'solo', workspaceName: undefined });
     const adapter = FakeAdapter.instances.at(-1)!;
     const name = adapter.hooks.buildSessionName();
     expect(name).toMatch(/^codex-app-server-director-solo-\d{8}T\d{4}$/);
@@ -932,7 +932,7 @@ describe('SessionBridge', () => {
   test('non-main codex director uses session workspace cwd', () => {
     createBridgeWithOptions({
       label: 'group-1',
-      groupName: 'My Group',
+      workspaceName: 'My Group',
       providerCwd: '/tmp/global-provider-cwd',
     });
     const adapter = FakeAdapter.instances.at(-1)!;
@@ -943,8 +943,8 @@ describe('SessionBridge', () => {
     createBridgeWithOptions({
       isMain: true,
       label: 'main',
-      groupName: undefined,
-      directorAgentName: 'fake',
+      workspaceName: undefined,
+      agentName: 'fake',
       providerCwd: '/tmp/global-provider-cwd',
     });
     const adapter = FakeAdapter.instances.at(-1)!;
@@ -1113,7 +1113,7 @@ describe('SessionBridge', () => {
   });
 
   test('non-codex adapter does not trigger partial system-reply forwarding', async () => {
-    const bridge = createBridgeWithOptions({ providerName: 'fake-claude', directorAgentName: 'fake-claude' });
+    const bridge = createBridgeWithOptions({ providerName: 'fake-claude', agentName: 'fake-claude' });
     const adapter = FakeAdapter.instances.at(-1)!;
     const emitted: Array<{ event: string; args: unknown[] }> = [];
     bridge.on('system-response', (...args: unknown[]) => emitted.push({ event: 'system-response', args }));
@@ -1165,7 +1165,7 @@ function createBridge(): SessionBridge {
     },
     label: 'test-bridge',
     isMain: false,
-    groupName: 'Test Group',
+    workspaceName: 'Test Group',
     directorFactory: (options, hooks) => new FakeAdapter(options, hooks),
   } satisfies ConstructorParameters<typeof SessionBridge>[0] & {
     directorFactory: (options: DirectorSessionAdapterOptions, hooks: DirectorSessionAdapterHooks) => DirectorSessionAdapter;
@@ -1174,18 +1174,18 @@ function createBridge(): SessionBridge {
 
 function createBridgeWithOptions(overrides: {
   isMain?: boolean;
-  groupName?: string;
+  workspaceName?: string;
   label?: string;
   timeSyncIntervalMs?: number;
   providerName?: string;
-  directorAgentName?: string;
+  agentName?: string;
   providerModel?: string;
   providerFlushContextLimit?: number;
   providerFlushContextLimits?: Record<string, number>;
   providerDisableAutoFlush?: boolean;
   providerCwd?: string;
 } = {}): SessionBridge {
-  const hasGroupName = 'groupName' in overrides;
+  const hasGroupName = 'workspaceName' in overrides;
   const fakeProvider: AgentProviderConfig = {
     type: 'codex-app-server',
     command: 'fake-codex',
@@ -1213,10 +1213,10 @@ function createBridgeWithOptions(overrides: {
       flush_interval_ms: 999999,
       quote_max_length: 32,
     },
-    directorAgentName: overrides.directorAgentName,
+    agentName: overrides.agentName,
     label: overrides.label ?? 'test-bridge',
     isMain: overrides.isMain ?? false,
-    groupName: hasGroupName ? overrides.groupName : 'Test Group',
+    workspaceName: hasGroupName ? overrides.workspaceName : 'Test Group',
     directorFactory: (options, hooks) => new FakeAdapter(options, hooks),
   });
 }

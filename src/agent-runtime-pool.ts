@@ -12,13 +12,13 @@ import { getState, setState, getWorkspace } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
 
 /** Pool entry data persisted to SQLite for crash recovery */
-interface PersistedPoolEntry {
+interface PersistedRuntimeEntry {
   routingKey: string;
   feishuChatId: string;
-  groupName: string;
+  workspaceName: string;
   label: string;
   lastActiveAt: number;
-  directorAgentName?: string;
+  agentName?: string;
 }
 
 export interface PoolConfig {
@@ -27,34 +27,34 @@ export interface PoolConfig {
   small_group_threshold: number;
 }
 
-export interface PoolEntry {
+export interface RuntimeEntry {
   bridge: SessionBridge;
   queue: MessageQueue;
   routingKey: string;       // Map key（chatId 或 threadId）
   feishuChatId: string;     // 实际的飞书 chatId（oc_xxx），用于 sendMessage
-  groupName: string;
+  workspaceName: string;
   lastActiveAt: number;
-  directorAgentName?: string;
+  agentName?: string;
   messagesSinceFlush: number;
 }
 
-interface PoolCreateOptions {
-  groupName?: string;
+interface RuntimeCreateOptions {
+  workspaceName?: string;
   feishuChatId: string;
-  directorAgentName?: string;
+  agentName?: string;
   initialSessionId?: string;
 }
 
 /** Metadata for closed pool sessions (kept for UI display) */
-interface ClosedPoolEntry {
+interface ClosedRuntimeEntry {
   routingKey: string;
   feishuChatId: string;
-  groupName: string;
+  workspaceName: string;
   label: string;
   lastActiveAt: number;
   closedAt: number;
   closedReason?: 'shutdown' | 'detached' | 'closed';
-  directorAgentName?: string;
+  agentName?: string;
 }
 
 const MIN_MESSAGES_FOR_FLUSH = 5;
@@ -62,14 +62,14 @@ const MIN_MESSAGES_FOR_FLUSH = 5;
 /**
  * Runtime pool for non-main Agent processes.
  *
- * DirectorPool owns process lifecycle, queues, streaming transports, recovery,
+ * AgentRuntimePool owns process lifecycle, queues, streaming transports, recovery,
  * and low-level runtime commands. Workspace/session routing belongs to
  * SessionManager; routingKey is only this pool's internal Map key.
  */
-export class DirectorPool extends EventEmitter {
-  private entries: Map<string, PoolEntry> = new Map();
-  private closedEntries: Map<string, ClosedPoolEntry> = new Map();
-  private creating: Map<string, Promise<PoolEntry>> = new Map();
+export class AgentRuntimePool extends EventEmitter {
+  private entries: Map<string, RuntimeEntry> = new Map();
+  private closedEntries: Map<string, ClosedRuntimeEntry> = new Map();
+  private creating: Map<string, Promise<RuntimeEntry>> = new Map();
   private mainBridge: SessionBridge;
   private poolConfig: PoolConfig;
   private agentsConfig: Config['agents'];
@@ -106,7 +106,7 @@ export class DirectorPool extends EventEmitter {
     this.dynamicToolHandler = dynamicToolHandler;
 
     // Restore closed entries from SQLite
-    const savedClosed = getState<ClosedPoolEntry[]>('pool:closed');
+    const savedClosed = getState<ClosedRuntimeEntry[]>('pool:closed');
     if (savedClosed) {
       for (const entry of savedClosed) {
         this.closedEntries.set(entry.routingKey, entry);
@@ -126,23 +126,23 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Get a group Director if it exists (by routingKey) */
-  get(routingKey: string): PoolEntry | undefined {
+  get(routingKey: string): RuntimeEntry | undefined {
     return this.entries.get(routingKey);
   }
 
   /** List active (non-closed) pool entries. Used by SessionManager to backfill
    *  the sessionId→routingKey map after restoreEntries() reconnects orphan Directors;
    *  without this, /api/send by sessionId would 404 on every restored workspace session. */
-  listActiveEntries(): PoolEntry[] {
+  listActiveEntries(): RuntimeEntry[] {
     return [...this.entries.values()];
   }
 
   /** Reset an existing or remembered group Director session. */
-  async resetSession(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
+  async resetSession(routingKey: string, opts: RuntimeCreateOptions): Promise<RuntimeEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       await existing.bridge.resetSession();
-      existing.directorAgentName = existing.bridge.getDirectorAgentName();
+      existing.agentName = existing.bridge.getAgentName();
       existing.lastActiveAt = Date.now();
       this.closedEntries.delete(routingKey);
       this.persistEntries();
@@ -151,14 +151,14 @@ export class DirectorPool extends EventEmitter {
 
     const entry = await this.getOrCreate(routingKey, opts);
     await entry.bridge.resetSession();
-    entry.directorAgentName = entry.bridge.getDirectorAgentName();
+    entry.agentName = entry.bridge.getAgentName();
     entry.lastActiveAt = Date.now();
     this.persistEntries();
     return entry;
   }
 
   /** Find a pool entry by Director label (for task callback routing) */
-  findByLabel(label: string): PoolEntry | undefined {
+  findByLabel(label: string): RuntimeEntry | undefined {
     for (const entry of this.entries.values()) {
       if (entry.bridge.label === label) return entry;
     }
@@ -167,12 +167,12 @@ export class DirectorPool extends EventEmitter {
 
   /** Resolve a pool Director by workspace name (or label as fallback).
    *  When multiple sessions exist for the same workspace, returns the most recently active.
-   *  Priority: groupName match (most recent) → web-workspace derived key → label exact */
-  resolveWorkspace(name: string): PoolEntry | undefined {
-    const candidates: PoolEntry[] = [];
+   *  Priority: workspaceName match (most recent) → web-workspace derived key → label exact */
+  resolveWorkspace(name: string): RuntimeEntry | undefined {
+    const candidates: RuntimeEntry[] = [];
     const safe = name.replace(/[\/\\:*?"<>|]/g, '_');
     for (const entry of this.entries.values()) {
-      if (entry.groupName === name || entry.groupName.replace(/[\/\\:*?"<>|]/g, '_') === safe) {
+      if (entry.workspaceName === name || entry.workspaceName.replace(/[\/\\:*?"<>|]/g, '_') === safe) {
         candidates.push(entry);
       }
     }
@@ -184,7 +184,7 @@ export class DirectorPool extends EventEmitter {
     return this.findByLabel(name);
   }
 
-  private requireByLabel(label: string): PoolEntry {
+  private requireByLabel(label: string): RuntimeEntry {
     const entry = this.findByLabel(label);
     if (!entry) throw new Error(`Director label not found: ${label}`);
     return entry;
@@ -199,14 +199,14 @@ export class DirectorPool extends EventEmitter {
   /** Get or create a Director for a group chat.
    *  @param routingKey — Map key (chatId for regular groups, threadId for topic groups)
    *  @param opts — group metadata for creation */
-  async getOrCreate(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
+  async getOrCreate(routingKey: string, opts: RuntimeCreateOptions): Promise<RuntimeEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
       existing.lastActiveAt = Date.now();
-      if (opts.groupName && opts.groupName !== existing.groupName) {
-        existing.groupName = opts.groupName;
+      if (opts.workspaceName && opts.workspaceName !== existing.workspaceName) {
+        existing.workspaceName = opts.workspaceName;
       }
-      existing.directorAgentName = existing.bridge.getDirectorAgentName();
+      existing.agentName = existing.bridge.getAgentName();
       this.persistEntries();
       return existing;
     }
@@ -224,25 +224,25 @@ export class DirectorPool extends EventEmitter {
     }
   }
 
-  private async _doCreate(routingKey: string, opts: PoolCreateOptions): Promise<PoolEntry> {
+  private async _doCreate(routingKey: string, opts: RuntimeCreateOptions): Promise<RuntimeEntry> {
     // Evict LRU if at capacity
     if (this.entries.size >= this.poolConfig.max_directors) {
       await this.evictLRU();
     }
 
     const label = routingKeyToLabel(routingKey);
-    const name = opts.groupName ?? routingKey.slice(0, 8);
+    const name = opts.workspaceName ?? routingKey.slice(0, 8);
     const workspaceCwd = getWorkspace(name)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${name}`)?.cwd;
     console.log(`[pool] Creating session bridge for group "${name}" (label=${label}${workspaceCwd ? `, cwd=${workspaceCwd}` : ''})`);
 
     const bridge = new SessionBridge({
       agents: this.getFreshAgentsConfig(),
       config: this.directorConfig,
-      directorAgentName: opts.directorAgentName,
+      agentName: opts.agentName,
       initialSessionId: opts.initialSessionId,
       label,
       isMain: false,
-      groupName: name,
+      workspaceName: name,
       workspaceCwd,
       dynamicToolHandler: this.dynamicToolHandler,
     } satisfies SessionBridgeOptions);
@@ -250,19 +250,19 @@ export class DirectorPool extends EventEmitter {
     const queue = new MessageQueue(join(getLogDir(), `queue-${label}.log`));
 
     await bridge.start();
-    const activeDirectorAgentName = bridge.getDirectorAgentName();
+    const activeDirectorAgentName = bridge.getAgentName();
 
     // Wire events BEFORE bootstrap so response handler is ready
     this.wireEvents(bridge, queue, routingKey, opts.feishuChatId, name);
 
-    const entry: PoolEntry = {
+    const entry: RuntimeEntry = {
       bridge,
       queue,
       routingKey,
       feishuChatId: opts.feishuChatId,
-      groupName: name,
+      workspaceName: name,
       lastActiveAt: Date.now(),
-      directorAgentName: activeDirectorAgentName,
+      agentName: activeDirectorAgentName,
       messagesSinceFlush: 0,
     };
     this.entries.set(routingKey, entry);
@@ -293,7 +293,7 @@ export class DirectorPool extends EventEmitter {
       entry.bridge.promoteActiveTurnToUser();
       await entry.bridge.send(text, { expectResponse: false });
       entry.queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));
-      console.log(`[pool:${entry.groupName}] Inserted message into active turn: ${messageId}`);
+      console.log(`[pool:${entry.workspaceName}] Inserted message into active turn: ${messageId}`);
       return;
     }
 
@@ -439,7 +439,7 @@ export class DirectorPool extends EventEmitter {
       const cancelled = entry?.queue.cancel(correlationId);
       await this.abortStreamingReply(correlationId, '已取消');
       if (!entry || !cancelled) return false;
-      console.log(`[pool:${entry.groupName}] Feishu card cancel: cancelling ${cancelled.messageId} (cid=${correlationId})`);
+      console.log(`[pool:${entry.workspaceName}] Feishu card cancel: cancelling ${cancelled.messageId} (cid=${correlationId})`);
       await entry.bridge.interrupt();
       return true;
     }
@@ -490,18 +490,18 @@ export class DirectorPool extends EventEmitter {
 
     // Check if Director is alive, revive if dead
     if (!entry.bridge.getStatus().alive) {
-      console.log(`[pool] Reviving dead Director "${entry.groupName}" (label=${label}) for task callback`);
+      console.log(`[pool] Reviving dead Director "${entry.workspaceName}" (label=${label}) for task callback`);
       // Re-create the Director
       const routingKey = entry.routingKey;
-      const groupName = entry.groupName;
+      const workspaceName = entry.workspaceName;
       const feishuChatId = entry.feishuChatId;
       // Remove stale entry
       this.entries.delete(routingKey);
       // Create new one
       const newEntry = await this.getOrCreate(routingKey, {
-        groupName,
+        workspaceName,
         feishuChatId,
-        directorAgentName: entry.directorAgentName,
+        agentName: entry.agentName,
       });
       entry = newEntry;
     }
@@ -529,7 +529,7 @@ export class DirectorPool extends EventEmitter {
     item: QueueItem;
     interrupted: boolean;
     label: string;
-    groupName: string;
+    workspaceName: string;
   } | null> {
     const entry = this.findByLabel(label);
     if (!entry) return null;
@@ -539,7 +539,7 @@ export class DirectorPool extends EventEmitter {
     await this.abortStreamingReply(correlationId, '已取消');
     const interrupted = headId === correlationId;
     if (interrupted) await entry.bridge.interrupt();
-    return { item, interrupted, label: entry.bridge.label, groupName: entry.groupName };
+    return { item, interrupted, label: entry.bridge.label, workspaceName: entry.workspaceName };
   }
 
   /** Get the feishuChatId for a Director by label (for sending notification messages) */
@@ -548,26 +548,26 @@ export class DirectorPool extends EventEmitter {
     return entry?.feishuChatId ?? null;
   }
 
-  getDirectorAgentName(routingKey: string): string | undefined {
-    return this.entries.get(routingKey)?.directorAgentName ?? this.closedEntries.get(routingKey)?.directorAgentName;
+  getAgentName(routingKey: string): string | undefined {
+    return this.entries.get(routingKey)?.agentName ?? this.closedEntries.get(routingKey)?.agentName;
   }
 
-  async switchAgentByLabel(label: string, agentName: string): Promise<PoolEntry> {
+  async switchAgentByLabel(label: string, agentName: string): Promise<RuntimeEntry> {
     const entry = this.findByLabel(label);
     if (!entry) throw new Error(`Director label not found: ${label}`);
-    const currentAgentName = entry.bridge.getDirectorAgentName();
+    const currentAgentName = entry.bridge.getAgentName();
     if (currentAgentName !== agentName) {
       const switched = await entry.bridge.switchAgent(agentName);
       if (!switched) throw new Error(`failed to switch Director ${label} to ${agentName}`);
     }
-    entry.directorAgentName = entry.bridge.getDirectorAgentName();
+    entry.agentName = entry.bridge.getAgentName();
     entry.lastActiveAt = Date.now();
     this.closedEntries.delete(entry.routingKey);
     this.persistEntries();
     return entry;
   }
 
-  async switchPersonaByLabel(label: string, roleName: string): Promise<PoolEntry> {
+  async switchPersonaByLabel(label: string, roleName: string): Promise<RuntimeEntry> {
     const entry = this.findByLabel(label);
     if (!entry) throw new Error(`Director label not found: ${label}`);
     const switched = await entry.bridge.switchPersona(roleName);
@@ -618,9 +618,9 @@ export class DirectorPool extends EventEmitter {
     return cancelled;
   }
 
-  async detachByLabel(label: string): Promise<PoolEntry> {
+  async detachByLabel(label: string): Promise<RuntimeEntry> {
     const entry = this.requireByLabel(label);
-    console.log(`[pool] Detaching Director for group "${entry.groupName}" (label=${label})`);
+    console.log(`[pool] Detaching Director for group "${entry.workspaceName}" (label=${label})`);
     entry.queue.clearAll();
     await entry.bridge.detach();
     this.moveToClosedEntries(entry.routingKey, entry, 'detached');
@@ -629,25 +629,25 @@ export class DirectorPool extends EventEmitter {
     return entry;
   }
 
-  async setDirectorAgent(routingKey: string, opts: PoolCreateOptions & { directorAgentName: string }): Promise<PoolEntry> {
+  async setAgent(routingKey: string, opts: RuntimeCreateOptions & { agentName: string }): Promise<RuntimeEntry> {
     const existing = this.entries.get(routingKey);
     if (existing) {
-      if (opts.groupName && opts.groupName !== existing.groupName) {
-        existing.groupName = opts.groupName;
+      if (opts.workspaceName && opts.workspaceName !== existing.workspaceName) {
+        existing.workspaceName = opts.workspaceName;
       }
       existing.feishuChatId = opts.feishuChatId;
       existing.lastActiveAt = Date.now();
-      const currentAgentName = existing.bridge.getDirectorAgentName();
-      if (currentAgentName === opts.directorAgentName) {
-        existing.directorAgentName = currentAgentName;
+      const currentAgentName = existing.bridge.getAgentName();
+      if (currentAgentName === opts.agentName) {
+        existing.agentName = currentAgentName;
         this.persistEntries();
         return existing;
       }
-      const switched = await existing.bridge.switchAgent(opts.directorAgentName);
+      const switched = await existing.bridge.switchAgent(opts.agentName);
       if (!switched) {
-        throw new Error(`failed to switch Director for ${routingKey} to ${opts.directorAgentName}`);
+        throw new Error(`failed to switch Director for ${routingKey} to ${opts.agentName}`);
       }
-      existing.directorAgentName = existing.bridge.getDirectorAgentName();
+      existing.agentName = existing.bridge.getAgentName();
       existing.lastActiveAt = Date.now();
       this.closedEntries.delete(routingKey);
       this.persistEntries();
@@ -656,10 +656,10 @@ export class DirectorPool extends EventEmitter {
 
     const closed = this.closedEntries.get(routingKey);
     if (closed) {
-      if (opts.groupName) closed.groupName = opts.groupName;
+      if (opts.workspaceName) closed.workspaceName = opts.workspaceName;
       closed.feishuChatId = opts.feishuChatId;
       closed.lastActiveAt = Date.now();
-      closed.directorAgentName = opts.directorAgentName;
+      closed.agentName = opts.agentName;
       setState('pool:closed', [...this.closedEntries.values()]);
     }
 
@@ -671,7 +671,7 @@ export class DirectorPool extends EventEmitter {
     const entry = this.entries.get(routingKey);
     if (!entry) return;
 
-    console.log(`[pool] Shutting down Director for group "${entry.groupName}"`);
+    console.log(`[pool] Shutting down Director for group "${entry.workspaceName}"`);
     this.moveToClosedEntries(routingKey, entry);
     this.entries.delete(routingKey);
     this.persistEntries();
@@ -701,16 +701,16 @@ export class DirectorPool extends EventEmitter {
         const countKey = `pool:${key}:msgCount`;
         const msgCount = getState<number>(countKey) ?? 0;
         if (msgCount < MIN_MESSAGES_FOR_FLUSH) {
-          console.log(`[pool] Skipping flush for "${entry.groupName}" (only ${msgCount} messages since last flush)`);
+          console.log(`[pool] Skipping flush for "${entry.workspaceName}" (only ${msgCount} messages since last flush)`);
           continue;
         }
-        console.log(`[pool] Flushing Director for group "${entry.groupName}" (${msgCount} messages)`);
+        console.log(`[pool] Flushing Director for group "${entry.workspaceName}" (${msgCount} messages)`);
         try {
           await entry.bridge.flush();
           setState(countKey, 0);
           entry.messagesSinceFlush = 0;
         } catch (err) {
-          console.error(`[pool] Failed to flush Director "${entry.groupName}":`, err);
+          console.error(`[pool] Failed to flush Director "${entry.workspaceName}":`, err);
         }
       }
     }
@@ -728,7 +728,7 @@ export class DirectorPool extends EventEmitter {
     for (const key of keys) {
       const entry = this.entries.get(key);
       if (entry) {
-        console.log(`[pool] Detaching Director for group "${entry.groupName}" (keeping alive for reconnect)`);
+        console.log(`[pool] Detaching Director for group "${entry.workspaceName}" (keeping alive for reconnect)`);
         await entry.bridge.detach();
       }
     }
@@ -737,34 +737,34 @@ export class DirectorPool extends EventEmitter {
   }
 
   /** Get status of all pool entries (active + closed) for dashboard */
-  getPoolStatus(): Array<{
+  getRuntimeStatus(): Array<{
     routingKey: string;
-    groupName: string;
+    workspaceName: string;
     label: string;
     lastActiveAt: number;
     directorStatus: ReturnType<SessionBridge['getStatus']> | null;
-    directorAgentName?: string;
+    agentName?: string;
     personaRole?: string | null;
     queueLength: number;
     queue: ReturnType<MessageQueue['getSnapshot']>;
     closed?: boolean;
     closedAt?: number;
-    closedReason?: ClosedPoolEntry['closedReason'];
+    closedReason?: ClosedRuntimeEntry['closedReason'];
   }> {
     const active = [...this.entries.values()].map((entry) => ({
       routingKey: entry.routingKey,
-      groupName: entry.groupName,
+      workspaceName: entry.workspaceName,
       label: entry.bridge.label,
       lastActiveAt: entry.lastActiveAt,
       directorStatus: entry.bridge.getStatus(),
       queueLength: entry.queue.length,
       queue: entry.queue.getSnapshot(),
-      directorAgentName: entry.directorAgentName,
+      agentName: entry.agentName,
       personaRole: entry.bridge.getPersonaRole(),
     }));
     const closed = [...this.closedEntries.values()].map((entry) => ({
       routingKey: entry.routingKey,
-      groupName: entry.groupName,
+      workspaceName: entry.workspaceName,
       label: entry.label,
       lastActiveAt: entry.lastActiveAt,
       directorStatus: null,
@@ -773,23 +773,23 @@ export class DirectorPool extends EventEmitter {
       closed: true as const,
       closedAt: entry.closedAt,
       closedReason: entry.closedReason ?? 'closed',
-      directorAgentName: entry.directorAgentName,
+      agentName: entry.agentName,
       personaRole: null,
     }));
     return [...active, ...closed];
   }
 
   /** Move an active entry to the closed list (max 50, evict oldest) */
-  private moveToClosedEntries(routingKey: string, entry: PoolEntry, reason: ClosedPoolEntry['closedReason'] = 'shutdown'): void {
+  private moveToClosedEntries(routingKey: string, entry: RuntimeEntry, reason: ClosedRuntimeEntry['closedReason'] = 'shutdown'): void {
     this.closedEntries.set(routingKey, {
       routingKey,
       feishuChatId: entry.feishuChatId,
-      groupName: entry.groupName,
+      workspaceName: entry.workspaceName,
       label: entry.bridge.label,
       lastActiveAt: entry.lastActiveAt,
       closedAt: Date.now(),
       closedReason: reason,
-      directorAgentName: entry.directorAgentName,
+      agentName: entry.agentName,
     });
     // Evict oldest if over limit
     while (this.closedEntries.size > 50) {
@@ -810,13 +810,13 @@ export class DirectorPool extends EventEmitter {
 
   /** Persist pool entries to SQLite for crash recovery */
   private persistEntries(): void {
-    const data: PersistedPoolEntry[] = [...this.entries.values()].map(e => ({
+    const data: PersistedRuntimeEntry[] = [...this.entries.values()].map(e => ({
       routingKey: e.routingKey,
       feishuChatId: e.feishuChatId,
-      groupName: e.groupName,
+      workspaceName: e.workspaceName,
       label: e.bridge.label,
       lastActiveAt: e.lastActiveAt,
-      directorAgentName: e.directorAgentName,
+      agentName: e.agentName,
     }));
     setState('pool:entries', data);
   }
@@ -826,21 +826,21 @@ export class DirectorPool extends EventEmitter {
    *  - alive → reconnect (reuse process + session)
    *  - dead → clean up pipe directory */
   async restoreEntries(): Promise<void> {
-    const saved = getState<PersistedPoolEntry[]>('pool:entries');
+    const saved = getState<PersistedRuntimeEntry[]>('pool:entries');
     if (!saved || saved.length === 0) return;
 
     const pipeBaseDir = this.directorConfig.pipe_dir;
     let restored = 0;
 
     for (const item of saved) {
-      const workspaceCwd = getWorkspace(item.groupName)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${item.groupName}`)?.cwd;
+      const workspaceCwd = getWorkspace(item.workspaceName)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${item.workspaceName}`)?.cwd;
       const bridge = new SessionBridge({
         agents: this.getFreshAgentsConfig(),
         config: this.directorConfig,
-        directorAgentName: item.directorAgentName,
+        agentName: item.agentName,
         label: item.label,
         isMain: false,
-        groupName: item.groupName,
+        workspaceName: item.workspaceName,
         workspaceCwd,
         dynamicToolHandler: this.dynamicToolHandler,
       } satisfies SessionBridgeOptions);
@@ -854,17 +854,17 @@ export class DirectorPool extends EventEmitter {
         // Claude-backed Directors are long-lived processes, so we only reconnect if the orphan is still alive.
         const proc = new ClaudeProcess({ pipeDir, pidFile, label: item.label });
         if (!proc.isAlive()) {
-          console.log(`[pool] Orphan "${item.groupName}" (label=${item.label}) is dead, cleaning up`);
+          console.log(`[pool] Orphan "${item.workspaceName}" (label=${item.label}) is dead, cleaning up`);
           proc.cleanPipes();
           continue;
         }
 
-        console.log(`[pool] Reconnecting to orphan "${item.groupName}" (label=${item.label}, pid=${proc.getPid()})`);
+        console.log(`[pool] Reconnecting to orphan "${item.workspaceName}" (label=${item.label}, pid=${proc.getPid()})`);
 
         try {
           await bridge.start(); // start() detects alive process → reconnect path
         } catch (err) {
-          console.error(`[pool] Failed to reconnect "${item.groupName}":`, err);
+          console.error(`[pool] Failed to reconnect "${item.workspaceName}":`, err);
           // Kill the orphan — we can't talk to it
           proc.kill('SIGTERM');
           proc.cleanPipes();
@@ -873,25 +873,25 @@ export class DirectorPool extends EventEmitter {
       } else {
         // Codex-family Directors restore from persisted session metadata.
         // App Server starts a fresh stdio process for the saved thread; turn-based spawns `codex exec` on demand.
-        console.log(`[pool] Restoring Codex Director for "${item.groupName}" (label=${item.label})`);
+        console.log(`[pool] Restoring Codex Director for "${item.workspaceName}" (label=${item.label})`);
         try {
           await bridge.start();
         } catch (err) {
-          console.error(`[pool] Failed to restore Codex Director "${item.groupName}":`, err);
+          console.error(`[pool] Failed to restore Codex Director "${item.workspaceName}":`, err);
           continue;
         }
       }
 
-      this.wireEvents(bridge, queue, item.routingKey, item.feishuChatId, item.groupName);
+      this.wireEvents(bridge, queue, item.routingKey, item.feishuChatId, item.workspaceName);
 
-      const entry: PoolEntry = {
+      const entry: RuntimeEntry = {
         bridge,
         queue,
         routingKey: item.routingKey,
         feishuChatId: item.feishuChatId,
-        groupName: item.groupName,
+        workspaceName: item.workspaceName,
         lastActiveAt: item.lastActiveAt,
-        directorAgentName: bridge.getDirectorAgentName(),
+        agentName: bridge.getAgentName(),
         messagesSinceFlush: getState<number>(`pool:${item.routingKey}:msgCount`) ?? 0,
       };
       this.entries.set(item.routingKey, entry);
@@ -952,23 +952,23 @@ export class DirectorPool extends EventEmitter {
       if (entry.queue.length > 0) continue;
 
       if (now - entry.lastActiveAt > timeoutMs) {
-        console.log(`[pool] Reaping idle Director for group "${entry.groupName}" (idle ${Math.floor((now - entry.lastActiveAt) / 1000)}s)`);
+        console.log(`[pool] Reaping idle Director for group "${entry.workspaceName}" (idle ${Math.floor((now - entry.lastActiveAt) / 1000)}s)`);
         this.shutdown(routingKey).catch((err) => {
-          console.error(`[pool] Failed to reap idle Director "${entry.groupName}":`, err);
+          console.error(`[pool] Failed to reap idle Director "${entry.workspaceName}":`, err);
         });
       }
     }
   }
 
   /** Wire SessionBridge events for a group chat */
-  private wireEvents(bridge: SessionBridge, queue: MessageQueue, routingKey: string, feishuChatId: string, groupName: string): void {
+  private wireEvents(bridge: SessionBridge, queue: MessageQueue, routingKey: string, feishuChatId: string, workspaceName: string): void {
     const isWeb = routingKey.startsWith('web-');
 
     // response → resolve oldest queue item → reply to feishu (or web)
     bridge.on('response', async (reply: string, durationMs?: number) => {
       const item = queue.resolveOldest();
       if (!item) {
-        console.warn(`[pool:${groupName}] Got response but queue is empty`);
+        console.warn(`[pool:${workspaceName}] Got response but queue is empty`);
         return;
       }
 
@@ -982,7 +982,7 @@ export class DirectorPool extends EventEmitter {
       if (webOnly) {
         this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
         queue.logAction('WEB_REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
-        console.log(`[pool:${groupName}] Web replied to ${item.messageId} (${elapsedSec}s)`);
+        console.log(`[pool:${workspaceName}] Web replied to ${item.messageId} (${elapsedSec}s)`);
         return;
       }
 
@@ -992,18 +992,18 @@ export class DirectorPool extends EventEmitter {
           await this.messaging.reply(item.messageId, replyWithTiming);
         }
         queue.logAction('REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
-        console.log(`[pool:${groupName}] Replied to ${item.messageId} (${elapsedSec}s)`);
+        console.log(`[pool:${workspaceName}] Replied to ${item.messageId} (${elapsedSec}s)`);
         this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
       } catch (err) {
         this.streamingReplies.delete(item.correlationId);
         queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
-        console.error(`[pool:${groupName}] reply failed, trying sendMessage as fallback:`, err);
+        console.error(`[pool:${workspaceName}] reply failed, trying sendMessage as fallback:`, err);
         await this.messaging.sendMessage(feishuChatId, replyWithTiming).catch((e) => {
-          console.error(`[pool:${groupName}] sendMessage fallback also failed:`, e);
+          console.error(`[pool:${workspaceName}] sendMessage fallback also failed:`, e);
         });
         this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
       }
-      await this.sendQueuedAttachments(item, queue, feishuChatId, webOnly, groupName);
+      await this.sendQueuedAttachments(item, queue, feishuChatId, webOnly, workspaceName);
       await this.startStreamingReplyForHead(queue, routingKey);
     });
 
@@ -1019,9 +1019,9 @@ export class DirectorPool extends EventEmitter {
         if (!streamed) {
           await this.messaging.reply(replyToMessageId, reply);
         }
-        log.debug(`[pool:${groupName}] System response replied to ${replyToMessageId}`);
+        log.debug(`[pool:${workspaceName}] System response replied to ${replyToMessageId}`);
       } catch (err) {
-        console.warn(`[pool:${groupName}] Failed to reply system response:`, err);
+        console.warn(`[pool:${workspaceName}] Failed to reply system response:`, err);
       }
     });
 
@@ -1049,7 +1049,7 @@ export class DirectorPool extends EventEmitter {
 
     // close → remove from pool
     bridge.on('close', () => {
-      console.log(`[pool] Session bridge for group "${groupName}" closed, removing from pool`);
+      console.log(`[pool] Session bridge for group "${workspaceName}" closed, removing from pool`);
       const orphaned = queue.clearAll();
       if (orphaned.length > 0) {
         this.abortStreamingReplies(orphaned, 'Director 已关闭，本轮回复已中断');
@@ -1067,7 +1067,7 @@ export class DirectorPool extends EventEmitter {
         return;
       }
       this.messaging.sendMessage(feishuChatId, message).catch((err) => {
-        console.warn(`[pool:${groupName}] Failed to send alert:`, err);
+        console.warn(`[pool:${workspaceName}] Failed to send alert:`, err);
       });
     });
 
@@ -1078,7 +1078,7 @@ export class DirectorPool extends EventEmitter {
         return;
       }
       this.messaging.sendMessage(feishuChatId, reply).catch((err) => {
-        console.warn(`[pool:${groupName}] Failed to forward cron response:`, err);
+        console.warn(`[pool:${workspaceName}] Failed to forward cron response:`, err);
       });
     });
 
@@ -1089,7 +1089,7 @@ export class DirectorPool extends EventEmitter {
         return;
       }
       this.messaging.sendMessage(feishuChatId, '🔄 上下文已自动刷新').catch((err) => {
-        console.warn(`[pool:${groupName}] Failed to send flush notification:`, err);
+        console.warn(`[pool:${workspaceName}] Failed to send flush notification:`, err);
       });
     });
 
@@ -1098,7 +1098,7 @@ export class DirectorPool extends EventEmitter {
       const orphaned = queue.clearAll();
       if (orphaned.length > 0) {
         this.abortStreamingReplies(orphaned, '上下文刷新中断了本轮回复');
-        console.log(`[pool:${groupName}] Cleared ${orphaned.length} orphaned queue items after flush drain`);
+        console.log(`[pool:${workspaceName}] Cleared ${orphaned.length} orphaned queue items after flush drain`);
       }
     });
 
@@ -1115,7 +1115,7 @@ export class DirectorPool extends EventEmitter {
       const orphans = queue.clearAll();
       if (orphans.length > 0) {
         this.abortStreamingReplies(orphans, 'Director 已重启，本轮回复已中断');
-        console.warn(`[pool:${groupName}] Cleared ${orphans.length} orphaned queue items after crash`);
+        console.warn(`[pool:${workspaceName}] Cleared ${orphans.length} orphaned queue items after crash`);
       }
     });
 
@@ -1135,11 +1135,11 @@ export class DirectorPool extends EventEmitter {
     });
   }
 
-  private async sendQueuedAttachments(item: QueueItem, queue: MessageQueue, chatId: string, webOnly: boolean, groupName: string): Promise<void> {
+  private async sendQueuedAttachments(item: QueueItem, queue: MessageQueue, chatId: string, webOnly: boolean, workspaceName: string): Promise<void> {
     const attachments = item.pendingAttachments ?? [];
     if (attachments.length === 0) return;
     if (webOnly) {
-      console.warn(`[pool:${groupName}] Skipping ${attachments.length} queued attachment(s) for web-only chat`);
+      console.warn(`[pool:${workspaceName}] Skipping ${attachments.length} queued attachment(s) for web-only chat`);
       return;
     }
 
@@ -1151,14 +1151,14 @@ export class DirectorPool extends EventEmitter {
           if (isImage) await this.messaging.uploadAndReplyImage(item.messageId, attachment.path);
           else await this.messaging.uploadAndReplyFile(item.messageId, attachment.path);
         } catch (err) {
-          console.warn(`[pool:${groupName}] queued attachment reply failed, sending as new message instead: ${String(err)}`);
+          console.warn(`[pool:${workspaceName}] queued attachment reply failed, sending as new message instead: ${String(err)}`);
           if (isImage) await this.messaging.uploadAndSendImage(chatId, attachment.path);
           else await this.messaging.uploadAndSendFile(chatId, attachment.path);
         }
         queue.logAction('ATTACHMENT_SENT', item.messageId, `cid=${item.correlationId} path=${attachment.path}`);
       } catch (err) {
         queue.logAction('ATTACHMENT_ERROR', item.messageId, `cid=${item.correlationId} path=${attachment.path} ${String(err)}`);
-        console.error(`[pool:${groupName}] queued attachment send failed:`, err);
+        console.error(`[pool:${workspaceName}] queued attachment send failed:`, err);
       }
     }
   }
@@ -1179,7 +1179,7 @@ export class DirectorPool extends EventEmitter {
 
     if (lruKey) {
       const entry = this.entries.get(lruKey)!;
-      console.log(`[pool] Evicting LRU Director for group "${entry.groupName}" (idle ${Math.floor((Date.now() - lruTime) / 1000)}s)`);
+      console.log(`[pool] Evicting LRU Director for group "${entry.workspaceName}" (idle ${Math.floor((Date.now() - lruTime) / 1000)}s)`);
       await this.shutdown(lruKey);
     } else {
       // All Directors have pending messages — cannot evict safely

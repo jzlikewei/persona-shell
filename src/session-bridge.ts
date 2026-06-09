@@ -58,14 +58,14 @@ type PendingType =
 export interface SessionBridgeOptions {
   agents: Config['agents'];
   config: Config['director'];
-  directorAgentName?: string;
+  agentName?: string;
   /** Seed an existing provider session/thread id before adapter startup.
    *  Used by sessionId-first revive paths where the user-facing sessionId is
    *  the durable identity and pool routingKey is only a runtime detail. */
   initialSessionId?: string;
   label: string;
   isMain?: boolean;
-  groupName?: string;
+  workspaceName?: string;
   workspaceCwd?: string;
   directorFactory?: (options: DirectorSessionAdapterOptions, hooks: DirectorSessionAdapterHooks) => DirectorSessionAdapter;
   dynamicToolHandler?: (call: DirectorDynamicToolCall & { sourceSessionId: string | null; workspace: string }) => Promise<DirectorDynamicToolResult> | DirectorDynamicToolResult;
@@ -76,7 +76,7 @@ export class SessionBridge extends EventEmitter {
   private agents: Config['agents'];
   readonly label: string;
   readonly isMain: boolean;
-  private groupName?: string;
+  private _workspaceName?: string;
   private directorAgent: AgentRuntimeConfig;
   private adapter: DirectorSessionAdapter;
   private readonly adapterFactory: (directorAgent: AgentRuntimeConfig) => DirectorSessionAdapter;
@@ -132,7 +132,7 @@ export class SessionBridge extends EventEmitter {
     this.agents = options.agents;
     this.label = options.label;
     this.isMain = options.isMain ?? true;
-    this.groupName = options.groupName;
+    this._workspaceName = options.workspaceName;
     this.initialSessionId = options.initialSessionId;
     this.dynamicToolHandler = options.dynamicToolHandler;
     this.workspaceCwd = options.workspaceCwd ?? (this.isMain ? undefined : dirname(this.getSessionStateFilePath()));
@@ -144,12 +144,11 @@ export class SessionBridge extends EventEmitter {
     const adapterOptions: DirectorSessionAdapterOptions = {
       label: this.label,
       isMain: this.isMain,
-      groupName: this.groupName,
-      workspaceName: this.workspaceName,
+      workspaceName: this.workspaceName ?? this.label,
       workspaceContextPath: this.getWorkspaceContextFilePath(),
       config: this.config,
       agents: this.agents,
-      directorAgent: this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.directorAgentName)),
+      directorAgent: this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.agentName)),
       logDir: this.logDir,
     };
 
@@ -176,7 +175,7 @@ export class SessionBridge extends EventEmitter {
     };
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
-    this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.directorAgentName ?? persistedAgentName));
+    this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.agentName ?? persistedAgentName));
     this.personaRole = this.readPersistedPersonaRole() ?? 'director';
     this.adapter = this.adapterFactory(this.directorAgent);
   }
@@ -200,7 +199,7 @@ export class SessionBridge extends EventEmitter {
 
   get workspaceName(): string {
     if (this.isMain) return 'main';
-    return this.groupName ?? this.label;
+    return this._workspaceName ?? this.label;
   }
 
   private get logDir(): string {
@@ -329,9 +328,9 @@ export class SessionBridge extends EventEmitter {
         });
         this.enqueuePendingTurn({ type: 'flush-checkpoint' });
         const poolCheckpointMsg = loadPrompt(this.config.persona_dir, 'flush-checkpoint-pool', {
-          group_name: this.groupName ?? this.label,
+          workspace_name: this.workspaceName ?? this.label,
           state_path: statePath,
-        }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${statePath}，按 Context（背景目标约束）/ Knowledge（决策发现里程碑）/ State（当前任务待办）三层结构组织，只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
+        }) ?? `[FLUSH] 系统即将进行上下文刷新。请将群「${this.workspaceName ?? this.label}」的 workspace 更新到 ${statePath}，按 Context（背景目标约束）/ Knowledge（决策发现里程碑）/ State（当前任务待办）三层结构组织，只保留仍有效的信息，控制在 5KB 以内。保存完成后回复"已保存"。`;
         await this.writeRaw(poolCheckpointMsg);
 
         const checkpointOk = await Promise.race([
@@ -515,7 +514,7 @@ export class SessionBridge extends EventEmitter {
     return this.flushing;
   }
 
-  getDirectorAgentName(): string {
+  getAgentName(): string {
     return this.directorAgent.name;
   }
 
@@ -918,7 +917,7 @@ export class SessionBridge extends EventEmitter {
         type: 'user',
         message: { role: 'user', content },
         timestamp: new Date().toISOString(),
-        director: this.label,
+        agentLabel: this.label,
         session_id: this.sessionId ?? undefined,
       }) + '\n';
       appendFileSync(this.inputLogPath, logPayload);
@@ -1065,12 +1064,12 @@ export class SessionBridge extends EventEmitter {
 
   private emitTurnEvent(
     turn: PendingType | undefined,
-    patch: Omit<AssistantTurnEvent, 'director' | 'sessionId' | 'turnId' | 'timestamp'> & { timestamp?: string },
+    patch: Omit<AssistantTurnEvent, 'agentLabel' | 'sessionId' | 'turnId' | 'timestamp'> & { timestamp?: string },
   ): void {
     if (!this.isVisibleTurn(turn)) return;
     const event: AssistantTurnEvent = {
       ...patch,
-      director: this.label,
+      agentLabel: this.label,
       sessionId: this.sessionId,
       turnId: turn.turnId,
       messageId: turn.type === 'system-reply' ? turn.replyToMessageId : turn.type === 'user' ? turn.correlationId : undefined,
@@ -1258,13 +1257,13 @@ export class SessionBridge extends EventEmitter {
   private getSessionStateFilePath(): string {
     const root = join(this.config.persona_dir, 'workspaces');
     if (!existsSync(root)) mkdirSync(root, { recursive: true });
-    const safeName = this.groupName
-      ? this.groupName.replace(/[\/\\:*?"<>|]/g, '_')
+    const safeName = this.workspaceName
+      ? this.workspaceName.replace(/[\/\\:*?"<>|]/g, '_')
       : this.label;
     const wsDir = join(root, safeName);
     if (!existsSync(wsDir)) {
-      // Migrate from legacy {hash}-{groupName} directory format
-      if (this.groupName) {
+      // Migrate from legacy {hash}-{workspaceName} directory format
+      if (this.workspaceName) {
         try {
           const existing = readdirSync(root, { withFileTypes: true })
             .filter(d => d.isDirectory() && d.name.endsWith(`-${safeName}`))
@@ -1326,7 +1325,7 @@ export class SessionBridge extends EventEmitter {
       current_agent: this.directorAgent.name,
       target_agent: targetAgentName,
       state_path: sessionStatePath,
-      group_name: this.groupName ?? this.label,
+      workspace_name: this.workspaceName ?? this.label,
     };
 
     if (this.isMain) {
@@ -1335,7 +1334,7 @@ export class SessionBridge extends EventEmitter {
     }
 
     return loadPrompt(this.config.persona_dir, 'agent-switch-checkpoint-pool', vars)
-      ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请将群「${this.groupName ?? this.label}」的 workspace 更新到 ${sessionStatePath}，按 Context / Knowledge / State 三层结构组织。保存完成后回复"已保存"。`;
+      ?? `[FLUSH] 当前会话即将从 ${this.directorAgent.name} 切换到 ${targetAgentName}。请将群「${this.workspaceName ?? this.label}」的 workspace 更新到 ${sessionStatePath}，按 Context / Knowledge / State 三层结构组织。保存完成后回复"已保存"。`;
   }
 
   private buildPersonaSwitchCheckpointPrompt(targetRole: string): string {
@@ -1344,7 +1343,7 @@ export class SessionBridge extends EventEmitter {
       current_role: this.personaRole,
       target_role: targetRole,
       state_path: sessionStatePath,
-      group_name: this.groupName ?? this.label,
+      workspace_name: this.workspaceName ?? this.label,
     };
 
     return loadPrompt(this.config.persona_dir, 'persona-switch-checkpoint', vars)
@@ -1359,7 +1358,7 @@ export class SessionBridge extends EventEmitter {
   private buildBootstrapMessage(sourcePath?: string): string {
     const hostname = getLocalHostName();
     const sharedNote = `当前机器: ${hostname}。state 文件请使用 daily/state-${hostname}.md（按机器隔离，不要用 daily/state.md）。注意：不要用 curl localhost:3000、launchctl 等宿主机探针判断后台任务能力；你所在运行环境可能与宿主机隔离。需要判断任务系统是否可用时，直接调用 MCP 工具 create_task / list_tasks，以工具调用结果为准。`;
-    const groupName = this.groupName ?? this.label;
+    const workspaceName = this.workspaceName ?? this.label;
 
     let msg: string;
 
@@ -1371,15 +1370,15 @@ export class SessionBridge extends EventEmitter {
       }) ?? `[系统] 新 session 已启动。请读取 ${statePath} 恢复工作上下文，了解当前待处理事项。${sharedNote}`;
     } else if (sourcePath) {
       msg = loadPrompt(this.config.persona_dir, 'bootstrap-pool-with-state', {
-        group_name: groupName,
+        workspace_name: workspaceName,
         state_path: sourcePath,
         shared_note: sharedNote,
-      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote} 该 workspace 文件是你的工作记忆，重要状态变更时主动更新，不要只等 flush。`;
+      }) ?? `[系统] 新 session 已启动。你正在为群「${workspaceName}」服务。请先读取 ${sourcePath} 恢复这个会话的上下文；如需全局状态，再参考 daily/state.md（只读）。${sharedNote} 该 workspace 文件是你的工作记忆，重要状态变更时主动更新，不要只等 flush。`;
     } else {
       msg = loadPrompt(this.config.persona_dir, 'bootstrap-pool-fresh', {
-        group_name: groupName,
+        workspace_name: workspaceName,
         shared_note: sharedNote,
-      }) ?? `[系统] 新 session 已启动。你正在为群「${groupName}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
+      }) ?? `[系统] 新 session 已启动。你正在为群「${workspaceName}」服务。请读取 daily/state.md 了解全局状态（只读）。${sharedNote}`;
     }
 
     if (this.personaRole !== 'director') {
@@ -1719,7 +1718,7 @@ export class SessionBridge extends EventEmitter {
           ? 'kimi-director'
           : 'director';
     const nameParts = [prefix, this.label, `${dateStr}T${timeStr}`];
-    if (this.groupName) nameParts.push(this.groupName);
+    if (this._workspaceName) nameParts.push(this._workspaceName);
     return nameParts.join('-');
   }
 

@@ -116,8 +116,8 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
   }
 
   // Try matching as workspace director label
-  const entry = sessionMgr?.getPoolStatus().find((item) => item.label === requested);
-  const active = entry ? sessionMgr?.get(entry.routingKey) : undefined;
+  const entry = sessionMgr?.getRuntimeStatus().find((item) => item.label === requested);
+  const active = entry ? sessionMgr?.runtimeGet(entry.routingKey) : undefined;
 
   if (active) {
     // Use workspace name path (new), plus old label path for compat
@@ -133,12 +133,12 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
 
   // Closed/unknown director: try workspace name path + old label path
   const closedLabel = entry?.label ?? requested;
-  const groupName = entry?.groupName;
-  const inputLogs = groupName
-    ? deduplicateLogs(listDirectorLogs(groupName, 'input'), listDirectorLogs(closedLabel, 'input'))
+  const workspaceName = entry?.workspaceName;
+  const inputLogs = workspaceName
+    ? deduplicateLogs(listDirectorLogs(workspaceName, 'input'), listDirectorLogs(closedLabel, 'input'))
     : listDirectorLogs(closedLabel, 'input');
-  const outputLogs = groupName
-    ? deduplicateLogs(listDirectorLogs(groupName, 'output'), listDirectorLogs(closedLabel, 'output'))
+  const outputLogs = workspaceName
+    ? deduplicateLogs(listDirectorLogs(workspaceName, 'output'), listDirectorLogs(closedLabel, 'output'))
     : listDirectorLogs(closedLabel, 'output');
   return { label: closedLabel, inputLogs, outputLogs };
 }
@@ -555,9 +555,9 @@ export function startConsole(
       costUsd: t.cost_usd ?? undefined,
     }));
 
-    const runtimePool = sessionManager ? sessionManager.getPoolStatus().map((entry) => ({
+    const runtimePool = sessionManager ? sessionManager.getRuntimeStatus().map((entry) => ({
       routingKey: entry.routingKey,
-      groupName: entry.groupName,
+      workspaceName: entry.workspaceName,
       label: entry.label,
       lastActiveAt: entry.lastActiveAt,
       queueLength: entry.queueLength,
@@ -574,9 +574,9 @@ export function startConsole(
       liveSessionArchived: entry.directorStatus?.sessionId
         ? getSessionRecord(entry.directorStatus.sessionId)?.archived === 1
         : false,
-      directorAgentName: entry.directorAgentName ?? entry.directorStatus?.agentName ?? null,
-      directorAgentType: entry.directorStatus?.agentType ?? null,
-      directorAgentModel: entry.directorStatus?.agentModel ?? null,
+      agentName: entry.agentName ?? entry.directorStatus?.agentName ?? null,
+      agentType: entry.directorStatus?.agentType ?? null,
+      agentModel: entry.directorStatus?.agentModel ?? null,
       personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
       restartCount: entry.directorStatus?.restartCount ?? 0,
       recentRestartCount: entry.directorStatus?.recentRestartCount ?? 0,
@@ -612,8 +612,8 @@ export function startConsole(
           status: systemStatus,
           uptime: now - startedAt,
           messaging: messagingStatus,
-          directorAlive: ds.alive,
-          directorPid: ds.pid,
+          alive: ds.alive,
+          pid: ds.pid,
           sessionId: ds.sessionId,
           sessionName: ds.sessionName,
           // 把"当前 live session 是否已 archived"暴露给前端。
@@ -621,9 +621,9 @@ export function startConsole(
           // —— 否则归档"当前活跃 session"后,DB SQL 过滤+后端 live 合并都跳过了,
           // 但前端 hook 又 unshift 回来,UI 永远看不到归档生效。
           liveSessionArchived: ds.sessionId ? getSessionRecord(ds.sessionId)?.archived === 1 : false,
-          directorAgentName: ds.agentName,
-          directorAgentType: ds.agentType,
-          directorAgentModel: ds.agentModel,
+          agentName: ds.agentName,
+          agentType: ds.agentType,
+          agentModel: ds.agentModel,
           personaRole: ds.personaRole,
           restartCount: ds.restartCount,
           recentRestartCount: ds.recentRestartCount,
@@ -1035,8 +1035,8 @@ export function startConsole(
 
     const directors: Array<{ label: string; bridge: SessionBridge }> = [{ label: 'main', bridge: director }];
     if (sessionManager) {
-      for (const entry of sessionManager.getPoolStatus()) {
-        const poolEntry = sessionManager.get(entry.routingKey);
+      for (const entry of sessionManager.getRuntimeStatus()) {
+        const poolEntry = sessionManager.runtimeGet(entry.routingKey);
         if (poolEntry) directors.push({ label: entry.label, bridge: poolEntry.bridge });
       }
     }
@@ -1647,9 +1647,9 @@ export function startConsole(
 
   function resolveSessionId(label: string): string | null {
     if (label === director.label || label === 'main') return director.getStatus().sessionId;
-    const entry = sessionManager?.getPoolStatus().find((item) => item.label === label);
+    const entry = sessionManager?.getRuntimeStatus().find((item) => item.label === label);
     if (!entry) return null;
-    return sessionManager?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
+    return sessionManager?.runtimeGet(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
   }
 
   director.on('chunk', (text: string) => {
@@ -1800,7 +1800,7 @@ export function startConsole(
       const workspace = job.workspace || 'main';
       const sessionId = workspace === 'main' ? director.getStatus().sessionId : sessionManager?.resolveDefaultSession(workspace);
       if (sessionId && sessionId !== director.getStatus().sessionId && sessionManager) {
-        const entry = sessionManager.getPoolEntryBySessionId(sessionId);
+        const entry = sessionManager.getRuntimeEntryBySessionId(sessionId);
         if (entry) {
           await entry.bridge.sendCronMessage(msg);
           updateCronJob(job.id, { last_run_at: localNow() });
@@ -1852,8 +1852,8 @@ export function startConsole(
       if (!ok) throw new Error(`failed to switch main Director to ${agentName}`);
       return {
         ok: true,
-        director_label: 'main',
-        agent: director.getDirectorAgentName(),
+        runtime_label: 'main',
+        agent: director.getAgentName(),
         agent_type: director.getDirectorAgentType(),
       };
     }
@@ -1862,11 +1862,11 @@ export function startConsole(
       err.status = 503;
       throw err;
     }
-    const entry = await sessionManager.switchAgentByLabel(targetLabel, agentName.trim());
+    const entry = await sessionManager.runtimeSwitchAgentByLabel(targetLabel, agentName.trim());
     return {
       ok: true,
-      director_label: entry.bridge.label,
-      agent: entry.bridge.getDirectorAgentName(),
+      runtime_label: entry.bridge.label,
+      agent: entry.bridge.getAgentName(),
       agent_type: entry.bridge.getDirectorAgentType(),
     };
   }
@@ -1884,15 +1884,15 @@ export function startConsole(
     if (targetLabel === 'main') {
       const ok = await director.switchPersona(role);
       if (!ok) throw new Error(`failed to switch main Director persona to ${role}`);
-      return { ok: true, director_label: 'main', role: director.getPersonaRole() };
+      return { ok: true, runtime_label: 'main', role: director.getPersonaRole() };
     }
     if (!sessionManager) {
       const err = new Error('Director session manager is not available') as Error & { status?: number };
       err.status = 503;
       throw err;
     }
-    const entry = await sessionManager.switchPersonaByLabel(targetLabel, role);
-    return { ok: true, director_label: entry.bridge.label, role: entry.bridge.getPersonaRole() };
+    const entry = await sessionManager.runtimeSwitchPersonaByLabel(targetLabel, role);
+    return { ok: true, runtime_label: entry.bridge.label, role: entry.bridge.getPersonaRole() };
   }
 
   type RuntimeDirectorCommand = 'flush' | 'clear' | 'esc' | 'session-restart' | 'detach';
@@ -1923,7 +1923,7 @@ export function startConsole(
         throw err;
       }
       const result = await handleCommand(normalized);
-      return { ...result, director_label: 'main', command: normalized };
+      return { ...result, runtime_label: 'main', command: normalized };
     }
     if (!sessionManager) {
       const err = new Error('Director session manager is not available') as Error & { status?: number };
@@ -1935,7 +1935,7 @@ export function startConsole(
     try {
       switch (normalized) {
         case 'flush': {
-          const success = await sessionManager.flushByLabel(targetLabel);
+          const success = await sessionManager.runtimeFlushByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）',
@@ -1943,7 +1943,7 @@ export function startConsole(
           break;
         }
         case 'clear': {
-          const success = await sessionManager.clearContextByLabel(targetLabel);
+          const success = await sessionManager.runtimeClearContextByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）',
@@ -1951,7 +1951,7 @@ export function startConsole(
           break;
         }
         case 'esc': {
-          const cancelled = await sessionManager.interruptOldestByLabel(targetLabel);
+          const cancelled = await sessionManager.runtimeInterruptOldestByLabel(targetLabel);
           result = cancelled
             ? {
               ok: true,
@@ -1962,15 +1962,15 @@ export function startConsole(
           break;
         }
         case 'session-restart':
-          await sessionManager.restartByLabel(targetLabel);
+          await sessionManager.runtimeRestartByLabel(targetLabel);
           result = { ok: true, message: 'Director 已重启' };
           break;
         case 'detach': {
-          const entry = await sessionManager.detachByLabel(targetLabel);
+          const entry = await sessionManager.runtimeDetachByLabel(targetLabel);
           result = {
             ok: true,
             message: 'Director 已 Detach，底层进程未主动关闭',
-            detail: { routingKey: entry.routingKey, groupName: entry.groupName },
+            detail: { routingKey: entry.routingKey, workspaceName: entry.workspaceName },
           };
           break;
         }
@@ -1990,7 +1990,7 @@ export function startConsole(
       message: result.message,
       ...(result.detail ?? {}),
     });
-    return { ok: result.ok, director_label: targetLabel, command: normalized, message: result.message, ...(result.detail ?? {}) };
+    return { ok: result.ok, runtime_label: targetLabel, command: normalized, message: result.message, ...(result.detail ?? {}) };
   }
 
   function stateFilePath(kind: 'state' | 'todo'): string {
@@ -2480,7 +2480,7 @@ export function startConsole(
               text?: string;
               chat_type?: 'p2p' | 'group';
               chat_id?: string;
-              group_name?: string;
+              workspace_name?: string;
               sender_name?: string;
               thread_id?: string;
               quoted_text?: string;
@@ -2496,7 +2496,7 @@ export function startConsole(
               messageId,
               chatId,
               chatType,
-              groupName: chatType === 'group' ? (body.group_name || 'Debug Group') : undefined,
+              workspaceName: chatType === 'group' ? (body.workspace_name || 'Debug Group') : undefined,
               memberCount: chatType === 'group' ? 3 : undefined,
               threadId: body.thread_id?.trim() || undefined,
               quotedText: body.quoted_text?.trim() || undefined,
@@ -2510,7 +2510,7 @@ export function startConsole(
               target: chatId,
               messageId,
               chatType,
-              groupName: incoming.groupName ?? null,
+              workspaceName: incoming.workspaceName ?? null,
               textPreview: text.slice(0, 160),
             });
             return Response.json({ ok: true, message_id: messageId, chat_id: chatId, chat_type: chatType, handlers: chatHandlers.length });
@@ -2531,7 +2531,7 @@ export function startConsole(
               await director.notifyTaskDone(taskId, success, replyToMessageId);
             } else {
               if (!sessionManager) return Response.json({ ok: false, error: 'Session manager is unavailable' }, { status: 503 });
-              const entry = sessionManager.getPoolEntryBySessionId(sourceSessionId);
+              const entry = sessionManager.getRuntimeEntryBySessionId(sourceSessionId);
               if (!entry) return Response.json({ ok: false, error: `Session not found: ${sourceSessionId}` }, { status: 404 });
               await entry.bridge.notifyTaskDone(taskId, success, replyToMessageId);
             }
@@ -2878,7 +2878,7 @@ export function startConsole(
                   const workspaceAgent = getWorkspace(dbRecord.workspace)?.agent ?? undefined;
                   const revived = await sessionManager.reviveSession(sessionId, {
                     feishuChatId: 'web-console',
-                    directorAgentName: dbRecord.agent_name ?? workspaceAgent,
+                    agentName: dbRecord.agent_name ?? workspaceAgent,
                   });
                   if (revived?.sessionId) {
                     await sessionManager.send(revived.sessionId, text, messageId, { webOnly: true });
@@ -2946,13 +2946,13 @@ export function startConsole(
             // MCP send_attachment calls do not pass target_channel. Queue them on the
             // active turn so attachments are sent after the text reply completes.
             if (!body.target_channel) {
-              const attachment = { path: resolved, sourceSessionId: sourceSessionId ?? undefined, workspace: sourceWorkspace ?? undefined, sourceDirector: legacySourceDirector ?? undefined };
+              const attachment = { path: resolved, sourceSessionId: sourceSessionId ?? undefined, workspace: sourceWorkspace ?? undefined };
               const item = sourceSessionId && sessionManager
                 ? sessionManager.enqueueAttachmentForHeadBySessionId(sourceSessionId, attachment)
                 : workspaceDefaultSessionId && sessionManager
                   ? sessionManager.enqueueAttachmentForHeadBySessionId(workspaceDefaultSessionId, attachment)
                   : legacySourceDirector && legacySourceDirector !== 'main' && sessionManager
-                    ? sessionManager.getPool().enqueueAttachmentForHeadByLabel(legacySourceDirector, attachment)
+                    ? sessionManager.getRuntime().enqueueAttachmentForHeadByLabel(legacySourceDirector, attachment)
                     : queue.addPendingAttachmentToOldest(attachment);
               if (item) {
                 writeAuditEntry('attachment.queue', true, {
@@ -3002,7 +3002,7 @@ export function startConsole(
               } else if (workspaceDefaultSessionId && sessionManager) {
                 targetChatId = sessionManager.getChatIdBySessionId(workspaceDefaultSessionId);
               } else if (legacySourceDirector && legacySourceDirector !== 'main' && sessionManager) {
-                targetChatId = sessionManager.getChatIdByLabel(legacySourceDirector);
+                targetChatId = sessionManager.runtimeGetChatIdByLabel(legacySourceDirector);
               }
               if (!targetChatId) {
                 targetChatId = messaging?.getLastChatId() ?? null;
@@ -3021,7 +3021,7 @@ export function startConsole(
               } else if (workspaceDefaultSessionId && sessionManager) {
                 replyMessageId = sessionManager.getProcessingMessageIdBySessionId(workspaceDefaultSessionId);
               } else if (legacySourceDirector && legacySourceDirector !== 'main' && sessionManager) {
-                replyMessageId = sessionManager.getProcessingMessageIdByLabel(legacySourceDirector);
+                replyMessageId = sessionManager.runtimeGetProcessingMessageIdByLabel(legacySourceDirector);
               } else {
                 const peeked = queue.peek();
                 replyMessageId = peeked?.messageId ?? null;
@@ -3118,7 +3118,7 @@ export function startConsole(
             writeAuditEntry('queue.clear', true, { target: 'main', cleared: cleared.length });
             return Response.json({ ok: true, cleared: cleared.length });
           }
-          if (url.pathname === '/api/directors/queue/cancel' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/queue/cancel' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; director?: string; correlation_id?: string; correlationId?: string };
             const directorLabel = (body.director_label ?? body.director ?? '').trim();
             const correlationId = (body.correlation_id ?? body.correlationId ?? '').trim();
@@ -3130,7 +3130,7 @@ export function startConsole(
               writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'session manager unavailable' });
               return Response.json({ ok: false, error: 'director session manager unavailable' }, { status: 503 });
             }
-            const cancelled = await sessionManager.cancelQueuedByLabel(directorLabel, correlationId);
+            const cancelled = await sessionManager.runtimeCancelQueuedByLabel(directorLabel, correlationId);
             if (!cancelled) {
               writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'queue item not found or already cancelled' });
               return Response.json({ ok: false, error: 'queue item not found or already cancelled' }, { status: 404 });
@@ -3144,8 +3144,8 @@ export function startConsole(
             return Response.json({
               ok: true,
               item: {
-                director_label: cancelled.label,
-                groupName: cancelled.groupName,
+                runtime_label: cancelled.label,
+                workspaceName: cancelled.workspaceName,
                 correlationId,
                 messageId: cancelled.item.messageId,
                 interrupted: cancelled.interrupted,
@@ -3274,7 +3274,7 @@ export function startConsole(
             }));
 
             // Merge live status by stable sessionId. Do not infer workspace sessions
-            // from DirectorPool groupName/routingKey; SessionManager is the domain boundary.
+            // from AgentRuntimePool workspaceName/routingKey; SessionManager is the domain boundary.
             for (const s of sessions) {
               const liveEntry = sessionManager?.getSession(s.sessionId);
               const ds = liveEntry?.bridge.getStatus();
@@ -3502,11 +3502,11 @@ export function startConsole(
             writeAuditEntry('persona.session_link.delete', true, { target: key, channel, externalId });
             return Response.json({ ok: true, deleted: true, key });
           }
-          if (url.pathname === '/api/directors/switch-agent' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/switch-agent' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; agent?: string };
             try {
               const result = await switchDirectorAgent(body.director_label ?? 'main', body.agent ?? '');
-              writeAuditEntry('director.switch_agent', true, { target: result.director_label, agent: result.agent, agentType: result.agent_type });
+              writeAuditEntry('director.switch_agent', true, { target: result.runtime_label, agent: result.agent, agentType: result.agent_type });
               return Response.json(result);
             } catch (err) {
               const error = err as Error & { status?: number };
@@ -3514,11 +3514,11 @@ export function startConsole(
               return Response.json({ ok: false, error: error.message || String(error) }, { status: error.status ?? 500 });
             }
           }
-          if (url.pathname === '/api/directors/switch-persona' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/switch-persona' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; role?: string };
             try {
               const result = await switchDirectorPersona(body.director_label ?? 'main', body.role ?? '');
-              writeAuditEntry('director.switch_persona', true, { target: result.director_label, role: result.role });
+              writeAuditEntry('director.switch_persona', true, { target: result.runtime_label, role: result.role });
               return Response.json(result);
             } catch (err) {
               const error = err as Error & { status?: number };
@@ -3526,7 +3526,7 @@ export function startConsole(
               return Response.json({ ok: false, error: error.message || String(error) }, { status: error.status ?? 500 });
             }
           }
-          if (url.pathname === '/api/directors/command' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/command' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; command?: string };
             try {
               const result = await runRuntimeDirectorCommand(body.director_label ?? 'main', body.command ?? '');
@@ -3547,7 +3547,7 @@ export function startConsole(
               return Response.json({ ok: false, error: error.message || String(error) }, { status: error.status ?? 500 });
             }
           }
-          if (url.pathname === '/api/directors/shutdown' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/shutdown' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string };
             const targetLabel = (body.director_label ?? '').trim();
             try {
@@ -3566,15 +3566,15 @@ export function startConsole(
                 err.status = 503;
                 throw err;
               }
-              const target = sessionManager.getPoolStatus().find((entry) => entry.label === targetLabel && !entry.closed);
+              const target = sessionManager.getRuntimeStatus().find((entry) => entry.label === targetLabel && !entry.closed);
               if (!target) {
                 const err = new Error(`Director "${targetLabel}" is not active`) as Error & { status?: number };
                 err.status = 404;
                 throw err;
               }
-              await sessionManager.getPool().shutdown(target.routingKey);
-              writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, groupName: target.groupName ?? null });
-              return Response.json({ ok: true, director_label: targetLabel, routing_key: target.routingKey });
+              await sessionManager.getRuntime().shutdown(target.routingKey);
+              writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, workspaceName: target.workspaceName ?? null });
+              return Response.json({ ok: true, runtime_label: targetLabel, runtime_routing_key: target.routingKey });
             } catch (err) {
               const error = err as Error & { status?: number };
               writeAuditEntry('director.shutdown', false, { target: targetLabel || null, error: error.message || String(error) });
@@ -3831,7 +3831,7 @@ export function startConsole(
               if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
               const entry = await sessionManager.createNewSession(wsName, {
                 feishuChatId: 'web-console',
-                directorAgentName: body.agent,
+                agentName: body.agent,
               });
               writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
               return Response.json({
@@ -3951,7 +3951,7 @@ export function startConsole(
             const targetLabel: string | null = typeof msg.director === 'string' && msg.director.trim() ? msg.director.trim() : null;
             const targetSessionId = explicitSessionId
               ?? (targetLabel && sessionManager
-                ? sessionManager.getPoolStatus().find((e) => e.label === targetLabel)?.directorStatus?.sessionId ?? null
+                ? sessionManager.getRuntimeStatus().find((e) => e.label === targetLabel)?.directorStatus?.sessionId ?? null
                 : null);
             if (targetSessionId && sessionManager) {
               const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;

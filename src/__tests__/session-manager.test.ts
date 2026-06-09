@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import { rmSync, mkdirSync } from 'fs';
 import { SessionManager } from '../session-manager.js';
 import { WorkspaceRegistry } from '../workspace-registry.js';
-import { DirectorPool, type PoolEntry } from '../director-pool.js';
+import { AgentRuntimePool, type RuntimeEntry } from '../agent-runtime-pool.js';
 import { SessionBridge } from '../session-bridge.js';
 import { MessageQueue } from '../queue.js';
 import {
@@ -68,7 +68,7 @@ class FakeAdapter implements DirectorSessionAdapter {
   completeTurn(result: DirectorTurnResult) { this.hooks.onTurnComplete(result); }
 }
 
-function createTestBridge(label: string, groupName: string): SessionBridge {
+function createTestBridge(label: string, workspaceName: string): SessionBridge {
   return new SessionBridge({
     agents: {
       defaults: { director: 'fake', default: 'fake' },
@@ -88,13 +88,13 @@ function createTestBridge(label: string, groupName: string): SessionBridge {
     },
     label,
     isMain: false,
-    groupName,
+    workspaceName,
     directorFactory: (options, hooks) => new FakeAdapter(options, hooks),
   });
 }
 
-function createTestPool(): DirectorPool {
-  return new DirectorPool(
+function createTestPool(): AgentRuntimePool {
+  return new AgentRuntimePool(
     createTestBridge('main', 'main'),
     { max_directors: 10, idle_timeout_minutes: 0, small_group_threshold: 5 },
     {
@@ -129,7 +129,7 @@ function createTestPool(): DirectorPool {
   );
 }
 
-function createRestoredEntry(sessionId: string, workspace: string, routingKey: string): PoolEntry {
+function createRestoredEntry(sessionId: string, workspace: string, routingKey: string): RuntimeEntry {
   const bridge = {
     getStatus: () => ({
       sessionId,
@@ -148,7 +148,7 @@ function createRestoredEntry(sessionId: string, workspace: string, routingKey: s
     queue: new MessageQueue('/dev/null'),
     routingKey,
     feishuChatId: routingKey,
-    groupName: workspace,
+    workspaceName: workspace,
     lastActiveAt: Date.now(),
     messagesSinceFlush: 0,
   };
@@ -157,13 +157,13 @@ function createRestoredEntry(sessionId: string, workspace: string, routingKey: s
 class RestoreOnlyPool extends EventEmitter {
   readonly sent: Array<{ routingKey: string; text: string; messageId: string }> = [];
 
-  constructor(private readonly restoredEntries: PoolEntry[]) {
+  constructor(private readonly restoredEntries: RuntimeEntry[]) {
     super();
   }
 
   async restoreEntries(): Promise<void> {}
-  listActiveEntries(): PoolEntry[] { return this.restoredEntries; }
-  get(routingKey: string): PoolEntry | undefined {
+  listActiveEntries(): RuntimeEntry[] { return this.restoredEntries; }
+  get(routingKey: string): RuntimeEntry | undefined {
     return this.restoredEntries.find((entry) => entry.routingKey === routingKey);
   }
   async send(routingKey: string, text: string, messageId: string): Promise<void> {
@@ -187,7 +187,7 @@ describe('SessionManager', () => {
 
     registry.getOrCreate('test-ws');
     createSessionRecord({ sessionId: 'sess-1', workspace: 'test-ws', role: 'director' });
-    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', groupName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
+    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', workspaceName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
 
     expect(getSessionRecord('sess-1')).not.toBeNull();
   });
@@ -199,7 +199,7 @@ describe('SessionManager', () => {
 
     registry.getOrCreate('test-ws');
     createSessionRecord({ sessionId: 'sess-1', workspace: 'test-ws' });
-    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', groupName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
+    manager.registerSession('sess-1', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', workspaceName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
 
     expect(getWorkspace('test-ws')!.default_session_id).toBe('sess-1');
   });
@@ -212,7 +212,7 @@ describe('SessionManager', () => {
     registry.getOrCreate('test-ws');
     setDefaultSession('test-ws', 'existing-session');
     createSessionRecord({ sessionId: 'sess-2', workspace: 'test-ws' });
-    manager.registerSession('sess-2', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', groupName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
+    manager.registerSession('sess-2', 'oc_test', 'test-ws', { bridge: createTestBridge('lbl', 'test-ws'), queue: new MessageQueue('/dev/null'), routingKey: 'oc_test', feishuChatId: 'oc_test', workspaceName: 'test-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0 });
 
     expect(getWorkspace('test-ws')!.default_session_id).toBe('existing-session');
   });
@@ -348,7 +348,7 @@ describe('SessionManager', () => {
     const pool = new RestoreOnlyPool([
       createRestoredEntry('live-restore', 'restore-ws', 'rk-live'),
       createRestoredEntry('archived-restore', 'restore-ws', 'rk-archived'),
-    ]) as unknown as DirectorPool;
+    ]) as unknown as AgentRuntimePool;
     const manager = new SessionManager(pool, registry);
 
     await manager.restoreEntries();

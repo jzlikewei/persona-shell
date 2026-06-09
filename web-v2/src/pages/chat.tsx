@@ -220,7 +220,7 @@ const MessageBlock = memo(function MessageBlock({
             'font-mono text-[11px] font-extrabold uppercase tracking-[.05em]',
             isUser ? 'text-[#89b4fa]' : 'text-[#a6e3a1]'
           )}>
-            {isUser ? 'User' : message.director || 'Director'}
+            {isUser ? 'User' : message.agentLabel || 'Agent'}
           </span>
           <span className="font-mono text-[10px] text-[#6c7086]">{formatTime(message.timestamp)}</span>
           {!isUser && message.model && (
@@ -259,7 +259,7 @@ function StreamingBlock({ phase, text, tools }: { phase: 'thinking' | 'streaming
     <article className="mb-3 flex justify-start px-4">
       <div className="flex max-w-[min(76%,780px)] flex-col items-start">
         <div className="mb-1 flex items-center gap-2">
-          <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Director</span>
+          <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Agent</span>
           <span className="font-mono text-[10px] text-[#6c7086]">{statusLabel}</span>
         </div>
         <div className="w-fit rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">

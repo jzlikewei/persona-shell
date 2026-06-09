@@ -41,7 +41,7 @@ export interface DirectorDynamicToolResult {
 
 export interface AssistantTurnEvent {
   type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted';
-  director: string;
+  agentLabel: string;
   sessionId?: string | null;
   turnId: string;
   messageId?: string;
@@ -98,7 +98,6 @@ export interface DirectorSessionAdapter {
 export interface DirectorSessionAdapterOptions {
   label: string;
   isMain: boolean;
-  groupName?: string;
   personaRole?: string;
   workspaceName: string;
   workspaceContextPath: string;

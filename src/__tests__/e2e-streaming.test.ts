@@ -122,14 +122,14 @@ const agentsConfig = {
   },
 };
 
-function createBridgeWithAdapter(label: string, groupName: string, sessionId?: string): { bridge: SessionBridge; getAdapter: () => FakeAdapter } {
+function createBridgeWithAdapter(label: string, workspaceName: string, sessionId?: string): { bridge: SessionBridge; getAdapter: () => FakeAdapter } {
   let adapterRef: FakeAdapter | null = null;
   const bridge = new SessionBridge({
     agents: agentsConfig,
     config: bridgeConfig,
     label,
     isMain: label === 'main',
-    groupName: label === 'main' ? undefined : groupName,
+    workspaceName: label === 'main' ? undefined : workspaceName,
     directorFactory: (options, hooks) => {
       adapterRef = new FakeAdapter(options, hooks, sessionId);
       return adapterRef;
@@ -245,7 +245,7 @@ describe('E2E streaming message routing', () => {
     manager.registerSession('sess-auto-1', 'oc_autodef', 'auto-default-ws', {
       bridge, queue: new MessageQueue('/dev/null'),
       routingKey: 'oc_autodef', feishuChatId: 'oc_autodef',
-      groupName: 'auto-default-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0,
+      workspaceName: 'auto-default-ws', lastActiveAt: Date.now(), messagesSinceFlush: 0,
     });
 
     expect(registry.resolveDefaultSession('auto-default-ws')).toBe('sess-auto-1');
@@ -262,7 +262,7 @@ describe('E2E streaming message routing', () => {
     await bridge1.start();
     manager.registerSession('sess-multi-1', 'key1', 'multi-ws', {
       bridge: bridge1, queue: new MessageQueue('/dev/null'),
-      routingKey: 'key1', feishuChatId: 'oc_test', groupName: 'multi-ws',
+      routingKey: 'key1', feishuChatId: 'oc_test', workspaceName: 'multi-ws',
       lastActiveAt: Date.now(), messagesSinceFlush: 0,
     });
 
