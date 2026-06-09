@@ -216,9 +216,76 @@ curl -sk -u "pshell:your-token" -o /dev/null -w "%{http_code}" https://your-doma
 # 期望: 200
 ```
 
+## 前端自动部署
+
+Nginx 推荐配置为：静态文件从服务器本地 serve（`/assets/`、`/index.html`），只有 `/api/` 和 `/ws` 走隧道。这样前端加载不经过隧道，速度更快。
+
+Nginx 配置示例：
+
+```nginx
+server {
+    listen 14242 ssl;
+    server_name your-domain.com;
+
+    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+
+    root /var/www/pshell-ui;
+    index index.html;
+
+    # 带 hash 的静态资源，长期缓存
+    location /assets/ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # API 走隧道
+    location /api/ {
+        proxy_pass http://127.0.0.1:13000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+
+    # WebSocket 走隧道
+    location /ws {
+        proxy_pass http://127.0.0.1:13000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+
+    # SPA fallback
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+### 自动同步
+
+`ensureWebV2Dist` 在每次构建前端后，会自动检查 `web-v2/.deploy.env`，如果存在就 rsync 到远程服务器。这是 fire-and-forget，不阻塞启动。
+
+配置方法（`web-v2/.deploy.env`，已 gitignore，不会进仓库）：
+
+```env
+DEPLOY_HOST=user@your-server
+DEPLOY_PATH=/var/www/pshell-ui
+```
+
+无此文件时自动跳过，对其他用户完全透明。
+
 ## 安全注意事项
 
-- **双层认证**：Nginx Basic Auth + pshell 内置 token，两层都建议开启
+- **Token 认证**：pshell 内置 token 同时保护 HTTP API（`Bearer` header）和 WebSocket（`?token=` query param）。前端 401 时自动弹出 token 输入框
 - **SSH 密钥**：隧道使用 SSH 密钥认证，不要用密码认证
 - **证书续期**：Certbot 自动续期，无需手动操作
 - **隧道监控**：autossh 断线自动重连；`KeepAlive` 确保 launchd 在进程退出后重新拉起

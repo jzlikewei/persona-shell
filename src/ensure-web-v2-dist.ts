@@ -9,12 +9,14 @@
  * - mtime 比对覆盖 src/、index.html、vite.config.ts、package.json 这几类影响构建产物的输入。
  * - build 失败不阻断启动 —— 控制台会报错,/ 路由会返回 500。
  */
-import { existsSync, readdirSync, statSync } from 'fs';
+import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { spawn } from 'child_process';
 
 const WEB_V2_ROOT = resolve(import.meta.dir, '..', 'web-v2');
-const DIST_INDEX = join(WEB_V2_ROOT, 'dist', 'index.html');
+const DIST_DIR = join(WEB_V2_ROOT, 'dist');
+const DIST_INDEX = join(DIST_DIR, 'index.html');
+const DEPLOY_ENV = join(WEB_V2_ROOT, '.deploy.env');
 const SRC_DIR = join(WEB_V2_ROOT, 'src');
 // 影响构建结果的额外输入 — package.json / vite.config / 入口 html / Tailwind 配置等
 const EXTRA_INPUTS = ['index.html', 'vite.config.ts', 'package.json', 'tsconfig.json', 'tsconfig.app.json'];
@@ -71,6 +73,37 @@ function runBuild(): Promise<number> {
   });
 }
 
+/** 如果存在 .deploy.env，rsync dist 到远程服务器（fire-and-forget，不阻塞启动） */
+function deployDist(): void {
+  if (!existsSync(DEPLOY_ENV)) return;
+  const env: Record<string, string> = {};
+  for (const line of readFileSync(DEPLOY_ENV, 'utf-8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  }
+  const host = env['DEPLOY_HOST'];
+  const path = env['DEPLOY_PATH'] || '/var/www/pshell-ui';
+  if (!host) return;
+
+  console.log(`[ensure-web-v2-dist] deploying to ${host}:${path} ...`);
+  const child = spawn('rsync', ['-az', '--delete', `${DIST_DIR}/`, `${host}:${path}/`], {
+    stdio: 'inherit',
+  });
+  child.on('close', (code) => {
+    if (code === 0) {
+      console.log(`[ensure-web-v2-dist] ✓ deploy 完成`);
+    } else {
+      console.error(`[ensure-web-v2-dist] ✗ deploy 失败 (exit=${code})`);
+    }
+  });
+  child.on('error', (err) => {
+    console.error(`[ensure-web-v2-dist] ✗ deploy 启动失败:`, err.message);
+  });
+}
+
 /**
  * 启动时调用一次。返回 true 表示 dist 可用(可能本来就在,也可能刚 build 完);
  * 返回 false 表示 build 失败 —— 调用方可以决定是否继续启动(默认继续,/ 会 500)。
@@ -85,6 +118,7 @@ export async function ensureWebV2Dist(): Promise<boolean> {
   const elapsed = ((Date.now() - start) / 1000).toFixed(1);
   if (code === 0) {
     console.log(`[ensure-web-v2-dist] ✓ web-v2 构建完成 (${elapsed}s)`);
+    deployDist();
     return true;
   }
   console.error(`[ensure-web-v2-dist] ✗ web-v2 构建失败 (exit=${code}, ${elapsed}s) — / 会返回 500`);
