@@ -238,13 +238,11 @@ async function main() {
     },
   };
 
-  // 2.3/2.4: Restore queue state from disk
   const restoredQueueCount = queue.restoreFromState();
   if (restoredQueueCount > 0) {
     console.log(`[shell] Restored ${restoredQueueCount} queued message(s) from state`);
   }
 
-  // 2.2/2.4: Restore director state from disk
   const restoredDirector = director.restoreState();
   if (restoredDirector) {
     const flushAgoSec = Math.floor((Date.now() - restoredDirector.lastFlushAt) / 1000);
@@ -253,7 +251,6 @@ async function main() {
     );
   }
 
-  // 7.0: Write .mcp.json BEFORE director.start() so Claude Code discovers task MCP server on spawn
   // DIRECTOR_LABEL is NOT in this config — it's injected via process env by each Director's spawn
   const mcpConfig = {
     mcpServers: {
@@ -318,7 +315,6 @@ async function main() {
   await sessionManager.restoreEntries();
   await sessionManager.killUnknownOrphans();
 
-  // 7.3: Task runner — subprocess lifecycle management
   const taskRunner = new TaskRunner({
     configPath,
     agents: config.agents,
@@ -386,7 +382,6 @@ async function main() {
     };
   }
 
-  // 7.3.4/7.3.5: Task lifecycle events → db update + Director notification + messaging notification
   function mergeTaskExtra(taskId: string, patch: Record<string, unknown>): void {
     const current = getTask(taskId);
     const cleanPatch = Object.fromEntries(
@@ -523,7 +518,6 @@ async function main() {
       mergeTaskExtra(result.taskId, { codex_thread_id: result.codexThreadId });
     }
 
-    // 7.3.3: Retry if under max_retry — retry logic is here (Shell layer)
     const task = getTask(result.taskId);
     if (task && task.retry_count < task.max_retry && result.error !== 'cancelled') {
       updateTask(result.taskId, { retry_count: task.retry_count + 1, status: 'dispatched' });
@@ -558,7 +552,6 @@ async function main() {
     });
   });
 
-  // 7.3.5: Director's response to task notifications — reply to the notification message
   director.on('system-response', async (reply: string, replyToMessageId: string) => {
     if (cancelledSystemMessageIds.delete(replyToMessageId)) return;
     try {
@@ -620,7 +613,6 @@ async function main() {
     }
   }
 
-  // 7.4: Scheduler — interval-driven cron job automation
   const scheduler = new Scheduler(
     config.scheduler,
     {
@@ -802,7 +794,6 @@ async function main() {
   }
 
 
-  // 1.2: Auto-flush notification — notify last active chat when context is auto-flushed
   director.on('auto-flush-complete', () => {
     const lastChatId = messaging.getLastChatId();
     if (lastChatId) {
@@ -844,7 +835,6 @@ async function main() {
     abortStreamingReplies(Array.from(streamingReplies.keys()).map((correlationId) => ({ correlationId })), 'Director 流式输出已中断');
   });
 
-  // 4.1: Alert notification — forward Director and system alerts to messaging
   director.on('alert', (message: string) => {
     metrics.addError(message);
     const lastChatId = messaging.getLastChatId();
@@ -1188,7 +1178,6 @@ async function main() {
       process.exit(0);
     }
 
-    // 1.4: /help — list all available commands — global operation
     if (text.trim() === '/help') {
       const lines = [
         '📖 可用命令:',
@@ -1209,7 +1198,6 @@ async function main() {
       return;
     }
 
-    // 1.1: ACK — add emoji reaction to let user know message is received
     messaging.addReaction(messageId, 'Typing').catch((err) => {
       console.warn('[shell] Failed to add reaction:', err);
     });
@@ -1315,7 +1303,6 @@ async function main() {
         queue.markDispatched(correlationId);
         await startStreamingReplyFor(correlationId, messageId);
       } catch (err) {
-        // 3.3: All send errors must clean up queue state to prevent orphaned items
         queue.markDispatched(correlationId);
         queue.resolve(correlationId);
         await abortStreamingReply(correlationId, '消息发送失败');
@@ -1347,7 +1334,6 @@ async function main() {
       return;
     }
 
-    // 4.3: Use duration_ms from Claude CLI result event (actual processing time),
     // falling back to queue timestamp arithmetic if unavailable
     const elapsedMs = (typeof durationMs === 'number' && durationMs > 0)
       ? durationMs
@@ -1389,7 +1375,6 @@ async function main() {
     console.error('[shell] Director closed unexpectedly');
     metrics.addError('Director closed unexpectedly');
     await Promise.all(Array.from(streamingReplies.keys()).map((correlationId) => abortStreamingReply(correlationId, 'Director 已关闭，本轮回复已中断')));
-    // 4.1: Notify before exit
     const lastChatId = messaging.getLastChatId();
     if (lastChatId) {
       try {
