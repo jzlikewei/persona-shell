@@ -18,6 +18,9 @@ const PERSONA_WORKSPACE = process.env.PERSONA_WORKSPACE?.trim() || (DIRECTOR_LAB
 const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
 
+// Debug: log env on startup to diagnose workspace routing
+console.error(`[mcp-server] env: DIRECTOR_LABEL=${DIRECTOR_LABEL} PERSONA_WORKSPACE=${PERSONA_WORKSPACE} PERSONA_SESSION_ID=${PERSONA_SESSION_ID ?? '(none)'} SHELL_PORT=${SHELL_PORT}`);
+
 /** Scan personas/ directory and return available role names */
 function getAvailableRoles(): string[] {
   if (!PERSONA_DIR) return [];

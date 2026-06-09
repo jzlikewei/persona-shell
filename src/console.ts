@@ -75,7 +75,7 @@ function canonicalConsoleWorkspaceName(name: string | null | undefined): string 
     .slice(0, 80)
     .trim();
   if (!sanitized) return null;
-  return sanitized === 'Main director' ? 'main' : sanitized;
+  return sanitized === 'Main' ? 'main' : sanitized;
 }
 
 // Shell 启动时间，用于计算 uptime
@@ -405,7 +405,7 @@ export function startConsole(
     const mainWorkspaceConfig = getWorkspaceConfig('main');
     const workspaces: ConsoleWorkspace[] = [{
       id: 'main',
-      name: 'Main director',
+      name: 'Main',
       path: join(config.director.persona_dir, 'daily', 'state.md'),
       source: 'main',
       cwd: mainWorkspaceConfig?.cwd,
@@ -2859,12 +2859,16 @@ export function startConsole(
             const payload = parseSendApiPayload(await req.json());
             if (!payload.ok) return Response.json({ ok: false, message: payload.message }, { status: payload.status });
             const { sessionId, text } = payload;
+
+            // Route all messages (including slash commands) through chatHandlers,
+            // so index.ts' unified slash command handling applies to web messages too.
+            const messageId = `web-${randomUUID()}`;
+            const webClient = clients.values().next().value;
+            if (webClient) messageWsMap.set(messageId, { ws: webClient, createdAt: Date.now() });
+
             try {
               const mainSessionId = director.getStatus().sessionId;
               if (mainSessionId && sessionId === mainSessionId) {
-                const messageId = `web-${randomUUID()}`;
-                const webClient = clients.values().next().value;
-                if (webClient) messageWsMap.set(messageId, { ws: webClient, createdAt: Date.now() });
                 for (const handler of chatHandlers) {
                   await handler({
                     text,
@@ -2886,7 +2890,7 @@ export function startConsole(
                   const respawned = await sessionManager.sendToWorkspaceDefaultSession(dbRecord.workspace, {
                     feishuChatId: 'web-console',
                     text,
-                    messageId: `web-${randomUUID()}`,
+                    messageId,
                     sendOptions: { webOnly: true },
                   });
                   const newSessionId = respawned.sessionId ?? sessionId;
@@ -2896,10 +2900,11 @@ export function startConsole(
                 writeAuditEntry('director.send', false, { target: sessionId, reason: 'session not found' });
                 return Response.json({ ok: false, message: `Session "${sessionId}" not found` }, { status: 404 });
               }
-              await sessionManager.send(sessionId, text, `web-${randomUUID()}`, { webOnly: true });
+              await sessionManager.send(sessionId, text, messageId, { webOnly: true });
               writeAuditEntry('director.send', true, { target: sessionId, bytes: Buffer.byteLength(text, 'utf-8') });
               return Response.json({ ok: true, message: 'sent to session', sessionId });
             } catch (err) {
+              messageWsMap.delete(messageId);
               writeAuditEntry('director.send', false, { target: sessionId, error: String(err) });
               return Response.json({ ok: false, message: String(err) }, { status: 500 });
             }
@@ -3141,7 +3146,7 @@ export function startConsole(
             }
             const sourceName = originalName ?? wsName;
             if (sourceName === 'main' && wsName !== 'main') {
-              return Response.json({ error: 'Main director workspace cannot be renamed' }, { status: 400 });
+              return Response.json({ error: 'Main workspace cannot be renamed' }, { status: 400 });
             }
             if (sourceName !== 'main') {
               const sourcePath = join(config.director.persona_dir, 'workspaces', sourceName);
@@ -3803,6 +3808,7 @@ export function startConsole(
                 await director.resetSession();
                 const sessionId = director.getStatus().sessionId;
                 if (!sessionId) return Response.json({ ok: false, error: 'main session was not initialized' }, { status: 500 });
+                workspaceRegistry?.setDefaultSession('main', sessionId);
                 writeAuditEntry('session.create', true, { workspace: wsName, sessionId, director: 'main' });
                 return Response.json({ ok: true, sessionId, workspace: wsName });
               }
@@ -3836,7 +3842,11 @@ export function startConsole(
               const record = getSessionRecord(sessionId);
               if (record?.workspace === 'main') {
                 const isCurrentMain = director.getStatus().sessionId === sessionId;
-                if (isCurrentMain) await director.resetSession();
+                if (isCurrentMain) {
+                  await director.resetSession();
+                  const newId = director.getStatus().sessionId;
+                  if (newId) workspaceRegistry?.setDefaultSession('main', newId);
+                }
                 const ok = archiveSessionInDb(sessionId);
                 writeAuditEntry(body.killDirector ? 'session.archive.kill' : 'session.archive.soft', ok, { target: sessionId, director: 'main', rotated: isCurrentMain });
                 return Response.json({ ok, sessionId, mode: isCurrentMain ? 'archived-and-rotated' : 'archived' });

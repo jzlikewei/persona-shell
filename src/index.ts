@@ -287,8 +287,10 @@ async function main() {
   const workspaceRegistry = new WorkspaceRegistry();
   const sessionManager = new SessionManager(pool, workspaceRegistry);
 
-  // Register main workspace + migrate legacy KV data
+  // Register main workspace + set its default session
   workspaceRegistry.getOrCreate('main');
+  const mainSessionId = director.getStatus().sessionId;
+  if (mainSessionId) workspaceRegistry.setDefaultSession('main', mainSessionId);
   {
     const wsDir = join(config.director.persona_dir, 'workspaces');
     const knownNames: string[] = ['main'];
@@ -328,7 +330,16 @@ async function main() {
     (id, data) => updateTask(id, data),
   );
 
-  /** Resolve the target chatId and Director for a task callback using source_session_id. */
+  /** Resolve the target chatId and Director for a task callback.
+   *
+   * Delivery priority:
+   *  1. source_session_id not archived → deliver to that session's director (revive if dead)
+   *  2. source_session_id archived → deliver to workspace's default session
+   *  3. workspace has no default session → deliver to main director
+   *  4. no workspace / no session → deliver to main director
+   *
+   * Main director always has at least one session, so delivery never fails silently.
+   */
   async function resolveTaskTarget(task: { source_session_id?: string | null; workspace?: string | null }): Promise<{
     chatId: string | null;
     isWeb: boolean;
@@ -338,39 +349,45 @@ async function main() {
     const sourceSessionId = task.source_session_id?.trim() || null;
     const sourceRecord = sourceSessionId ? getSessionRecord(sourceSessionId) : null;
     const workspace = task.workspace?.trim() || sourceRecord?.workspace || 'main';
-    const defaultSessionId = sourceRecord?.archived === 1
-      ? sessionManager.resolveDefaultSession(workspace)
-      : sourceSessionId ?? sessionManager.resolveDefaultSession(workspace);
     const mainSessionId = director.getStatus().sessionId;
 
-    if (defaultSessionId && defaultSessionId === mainSessionId) {
-      return {
-        chatId: messaging.getLastChatId(),
-        isWeb: false,
-        webLabel: null,
-        notifyDirector: async (taskId, success, msgId) => {
-          if (msgId) await startSystemStreamingReply(msgId);
-          await director.notifyTaskDone(taskId, success, msgId);
-        },
-      };
-    }
-
-    if (defaultSessionId) {
-      const entry = sessionManager.getPoolEntryBySessionId(defaultSessionId);
-      if (entry) {
-        const isWeb = entry.feishuChatId === 'web-console' || entry.routingKey.startsWith('web-');
-        return {
-          chatId: isWeb ? null : entry.feishuChatId,
-          isWeb,
-          webLabel: isWeb ? entry.groupName : null,
-          notifyDirector: async (taskId, success, msgId) => {
-            await entry.bridge.notifyTaskDone(taskId, success, msgId);
-          },
-        };
+    // Step 1: source session not archived → try deliver to its director
+    if (sourceSessionId && sourceRecord && sourceRecord.archived !== 1) {
+      if (sourceSessionId === mainSessionId) {
+        return mainTarget();
       }
-      console.warn(`[shell] Task source_session_id=${defaultSessionId} is not live, falling back to main`);
+      const entry = sessionManager.getPoolEntryBySessionId(sourceSessionId);
+      if (entry) return poolTarget(entry);
+      // Pool entry dead — try revive via workspace
+      const revived = await tryReviveWorkspace(workspace);
+      if (revived) return poolTarget(revived);
     }
 
+    // Step 2: source session archived or missing → try workspace default session
+    if (workspace !== 'main') {
+      const defaultSessionId = sessionManager.resolveDefaultSession(workspace);
+      if (defaultSessionId && defaultSessionId === mainSessionId) {
+        return mainTarget();
+      }
+      if (defaultSessionId) {
+        const entry = sessionManager.getPoolEntryBySessionId(defaultSessionId);
+        if (entry) return poolTarget(entry);
+      }
+      // No live default — try revive workspace
+      const revived = await tryReviveWorkspace(workspace);
+      if (revived) return poolTarget(revived);
+    }
+
+    // Step 3: fallback to main
+    return mainTarget();
+  }
+
+  function mainTarget(): {
+    chatId: string | null;
+    isWeb: boolean;
+    webLabel: null;
+    notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
+  } {
     return {
       chatId: messaging.getLastChatId(),
       isWeb: false,
@@ -380,6 +397,40 @@ async function main() {
         await director.notifyTaskDone(taskId, success, msgId);
       },
     };
+  }
+
+  function poolTarget(entry: { bridge: SessionBridge; feishuChatId: string; routingKey: string; groupName: string }): {
+    chatId: string | null;
+    isWeb: boolean;
+    webLabel: string | null;
+    notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
+  } {
+    const isWeb = entry.feishuChatId === 'web-console' || entry.routingKey.startsWith('web-');
+    return {
+      chatId: isWeb ? null : entry.feishuChatId,
+      isWeb,
+      webLabel: isWeb ? entry.groupName : null,
+      notifyDirector: async (taskId, success, msgId) => {
+        await entry.bridge.notifyTaskDone(taskId, success, msgId);
+      },
+    };
+  }
+
+  async function tryReviveWorkspace(workspace: string): Promise<{ bridge: SessionBridge; feishuChatId: string; routingKey: string; groupName: string } | null> {
+    try {
+      const session = await sessionManager.getOrCreateForWorkspace(workspace, { feishuChatId: 'web-console' });
+      if (session?.bridge) {
+        return {
+          bridge: session.bridge,
+          feishuChatId: 'web-console',
+          routingKey: `web-workspace:${workspace}`,
+          groupName: workspace,
+        };
+      }
+    } catch (err) {
+      console.warn(`[shell] Failed to revive workspace "${workspace}" for task callback:`, err);
+    }
+    return null;
   }
 
   function mergeTaskExtra(taskId: string, patch: Record<string, unknown>): void {
@@ -1150,6 +1201,8 @@ async function main() {
         label = `group "${poolEntry.groupName}"`;
       } else {
         await director.resetSession();
+        const newMainSessionId = director.getStatus().sessionId;
+        if (newMainSessionId) workspaceRegistry.setDefaultSession('main', newMainSessionId);
       }
       await messaging.reply(messageId, `${label} session 已重置，新 session 已启动`).catch(() => {});
       console.log(`[shell] /new-session: cleared session for ${label}`);

@@ -58,7 +58,7 @@ export function RootLayout() {
   const isSubPage = location.pathname !== '/' && location.pathname !== ''
   const activeProject = context.projects[0]
   const activeWorkspaceInfo = context.workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? context.workspaces[0]
-  const activeWorkspaceName = activeWorkspaceInfo?.source === 'memory' ? activeWorkspaceInfo.name : (activeWorkspaceInfo?.name === 'Main director' ? 'main' : activeWorkspaceInfo?.name)
+  const activeWorkspaceName = activeWorkspaceInfo?.source === 'memory' ? activeWorkspaceInfo.name : (activeWorkspaceInfo?.name === 'Main' ? 'main' : activeWorkspaceInfo?.name)
   const { sessions, activeSession, setActiveSession, loadSessions } = useSessions(activeWorkspaceName)
   const activeSessionInfo = sessions.find(session => session.id === activeSession) ?? sessions[0]
   const { on } = useWebSocket()
@@ -283,16 +283,13 @@ export function RootLayout() {
         open={archiveTarget !== null}
         onOpenChange={(open) => { if (!open) setArchiveTarget(null) }}
         title="归档 Session"
-        description={archiveTarget ? `确定要归档 "${archiveTarget.label || archiveTarget.id}" 吗?` : ''}
-        confirmLabel="归档"
+        description={archiveTarget ? `归档将关闭 "${archiveTarget.label || archiveTarget.id}" 的 Director 进程。请确认重要信息已保存。` : ''}
+        confirmLabel="确认归档"
         destructive
-        extraCheckboxes={[
-          { id: 'killDirector', label: '同时关闭 Director 进程(默认仅标记归档,Director 继续运行)' },
-        ]}
-        onConfirm={async (extra) => {
+        onConfirm={async () => {
           if (!archiveTarget) return
           await sessionsMut.archive(archiveTarget.id, {
-            killDirector: !!extra.killDirector,
+            killDirector: true,
             onSuccess: () => { void loadSessions() },
           })
           setArchiveTarget(null)

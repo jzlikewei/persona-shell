@@ -376,6 +376,8 @@ export function ResultPanel({ task, onClose }: { task: Task | null; onClose: () 
 
   useEffect(() => {
     setOutput(null)
+    setConfirmAction(null)
+    setActionPending(null)
     if (!task) return
     if (task.status !== 'completed' && task.status !== 'failed') return
     if (!task.result_file) return
@@ -386,12 +388,19 @@ export function ResultPanel({ task, onClose }: { task: Task | null; onClose: () 
       .finally(() => setLoadingOutput(false))
   }, [task?.id, task?.status, task?.result_file, get])
 
+  const [actionPending, setActionPending] = useState<'cancel' | 'retry' | null>(null)
+  const [confirmAction, setConfirmAction] = useState<'cancel' | 'retry' | null>(null)
+
   const handleAction = useCallback(async (action: 'cancel' | 'retry') => {
     if (!task) return
+    setActionPending(action)
     try {
       await post(`/api/tasks/${task.id}/${action}`)
     } catch (err) {
       console.error(`Failed to ${action} task:`, err)
+    } finally {
+      setActionPending(null)
+      setConfirmAction(null)
     }
   }, [task, post])
 
@@ -446,19 +455,38 @@ export function ResultPanel({ task, onClose }: { task: Task | null; onClose: () 
               </button>
             )}
             {canCancel && (
-              <button
-                onClick={() => handleAction('cancel')}
-                className="inline-flex h-6 items-center gap-1 rounded bg-[#f38ba8]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#f38ba8] hover:bg-[#f38ba8]/25"
-              >
-                <XCircle className="size-2.5" /> Cancel
-              </button>
+              confirmAction === 'cancel' ? (
+                <span className="inline-flex items-center gap-1.5">
+                  <button
+                    onClick={() => handleAction('cancel')}
+                    disabled={actionPending === 'cancel'}
+                    className="inline-flex h-6 items-center gap-1 rounded bg-[#f38ba8]/30 px-2 font-mono text-[9px] font-bold uppercase text-[#f38ba8] hover:bg-[#f38ba8]/40 disabled:opacity-50"
+                  >
+                    {actionPending === 'cancel' ? <Loader2 className="size-2.5 animate-spin" /> : <XCircle className="size-2.5" />} Confirm
+                  </button>
+                  <button
+                    onClick={() => setConfirmAction(null)}
+                    className="inline-flex h-6 items-center rounded px-1.5 font-mono text-[9px] text-[#6c7086] hover:text-[#a6adc8]"
+                  >
+                    ✕
+                  </button>
+                </span>
+              ) : (
+                <button
+                  onClick={() => setConfirmAction('cancel')}
+                  className="inline-flex h-6 items-center gap-1 rounded bg-[#f38ba8]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#f38ba8] hover:bg-[#f38ba8]/25"
+                >
+                  <XCircle className="size-2.5" /> Cancel
+                </button>
+              )
             )}
             {canRetry && (
               <button
                 onClick={() => handleAction('retry')}
-                className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25"
+                disabled={actionPending === 'retry'}
+                className="inline-flex h-6 items-center gap-1 rounded bg-[#89b4fa]/15 px-2 font-mono text-[9px] font-bold uppercase text-[#89b4fa] hover:bg-[#89b4fa]/25 disabled:opacity-50"
               >
-                <RotateCcw className="size-2.5" /> Retry
+                {actionPending === 'retry' ? <Loader2 className="size-2.5 animate-spin" /> : <RotateCcw className="size-2.5" />} Retry
               </button>
             )}
           </div>

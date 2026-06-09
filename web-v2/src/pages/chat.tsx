@@ -1,4 +1,4 @@
-import { isValidElement, memo, useCallback, useMemo, useRef, useState, type ReactNode, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { isValidElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type ChangeEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useOutletContext } from 'react-router'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -263,15 +263,22 @@ function StreamingBlock({ phase, text, tools }: { phase: 'thinking' | 'streaming
           <span className="font-mono text-[10px] text-[#6c7086]">{statusLabel}</span>
         </div>
         <div className="w-fit rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
-          {phase === 'streaming' && text ? (
+          {text ? (
             <>
               <MarkdownContent content={text} />
-              <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-[#a6e3a1]" />
+              {phase === 'streaming' && <span className="ml-1 inline-block h-4 w-2 animate-pulse bg-[#a6e3a1]" />}
+              {phase === 'tool_running' && (
+                <div className="mt-2 flex items-center gap-2 font-mono text-xs text-[#a6adc8]">
+                  <Loader2 className="size-3 animate-spin text-[#89b4fa]" />
+                  <span>执行 {lastRunningTool?.name ?? 'tool'}…</span>
+                </div>
+              )}
             </>
           ) : (
             <div className="flex items-center gap-2 font-mono text-xs text-[#a6adc8]">
               <Loader2 className="size-3.5 animate-spin text-[#89b4fa]" />
               {phase === 'thinking' && <span>思考中…</span>}
+              {phase === 'streaming' && <span>接收中…</span>}
               {phase === 'tool_running' && <span>执行 {lastRunningTool?.name ?? 'tool'}…</span>}
             </div>
           )}
@@ -346,7 +353,28 @@ export function ChatPage() {
   const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0
   // 搜索状态在 ChatPage 内管,不污染 use-chat 抽象
   const [searchQuery, setSearchQuery] = useState('')
-  const [input, setInput] = useState('')
+  const draftKey = activeSession ? `persona-shell:v2:draft:${activeSession}` : null
+  const [input, setInput] = useState(() => {
+    if (!draftKey) return ''
+    return localStorage.getItem(draftKey) ?? ''
+  })
+
+  useEffect(() => {
+    if (draftKey) {
+      const saved = localStorage.getItem(draftKey) ?? ''
+      setInput(saved)
+    } else {
+      setInput('')
+    }
+  }, [draftKey])
+
+  const updateInput = useCallback((value: string) => {
+    setInput(value)
+    if (draftKey) {
+      if (value) localStorage.setItem(draftKey, value)
+      else localStorage.removeItem(draftKey)
+    }
+  }, [draftKey])
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -382,7 +410,7 @@ export function ChatPage() {
     const filesText = attachmentText(attachments)
     const content = [body, filesText].filter(Boolean).join('\n\n')
     sendMessage(content, setActiveSession)
-    setInput('')
+    updateInput('')
     setAttachments([])
     setUploadError(null)
     // 发出消息后强制重新贴底:用户可能正在上面看历史,此刻应跟着新消息走
@@ -411,7 +439,7 @@ export function ChatPage() {
   }
 
   const handleTextareaChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(event.target.value)
+    updateInput(event.target.value)
     const el = event.target
     el.style.height = 'auto'
     el.style.height = Math.min(Math.max(el.scrollHeight, 82), 220) + 'px'

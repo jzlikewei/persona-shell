@@ -117,9 +117,15 @@ Agent 和 Session 不感知消息来源。回复路由由基础设施层（Messa
 
 ### 后台任务回调
 
-Task 完成后回调路由：
-- 先找原 sessionId 对应的 Session
-- 如果该 Session 已归档 → 回到 workspace 的 default session
+Task 完成后回调投递优先级：
+
+1. `source_session_id` 未归档 → 投递给该 session 对应的 director（如果 director 死了，拉起来）
+2. `source_session_id` 已归档 → 投递给该 workspace 的 default session
+3. workspace 没有 default session / 无法拉起 → 投递给 main director
+4. main director 始终至少有一个 session，保证回调不会静默丢失
+
+注意：MCP server 的 `PERSONA_WORKSPACE` / `PERSONA_SESSION_ID` 通过 CLI 进程的 env 继承传递。
+如果 env 未正确传递（如 session 创建时机问题），`normalizeTaskSource` 会用 workspace 从 DB 查找 default session 兜底。
 
 ### Cron 调度
 
