@@ -5,7 +5,6 @@ import { getState, setState, deleteState } from './task/task-store.js';
 
 export interface QueueItem {
   text: string;
-  directorText?: string;
   messageId: string;
   chatId: string;
   timestamp: number;

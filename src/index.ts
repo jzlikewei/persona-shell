@@ -1336,7 +1336,7 @@ async function main() {
         return;
       }
 
-      const correlationId = queue.enqueue({ text, directorText, messageId, chatId });
+      const correlationId = queue.enqueue({ text, messageId, chatId });
       queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
       try {
         await startStreamingReplyFor(correlationId, messageId);
