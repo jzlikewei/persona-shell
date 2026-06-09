@@ -21,6 +21,12 @@ export function useApi() {
     }
 
     const res = await fetch(url.toString(), { ...init, headers })
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('persona-shell:v2:auth-skip')
+      window.location.reload()
+      throw new Error('Unauthorized')
+    }
     if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`)
     return res.json()
   }, [])
@@ -40,6 +46,12 @@ export function useApi() {
     const headers = new Headers()
     if (token) headers.set('Authorization', `Bearer ${token}`)
     const res = await fetch(url.toString(), { headers })
+    if (res.status === 401) {
+      localStorage.removeItem('auth_token')
+      localStorage.removeItem('persona-shell:v2:auth-skip')
+      window.location.reload()
+      throw new Error('Unauthorized')
+    }
     if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`)
     return res.text()
   }, [])

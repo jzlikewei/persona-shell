@@ -37,9 +37,28 @@ export function useWebSocket(path = '/ws') {
       } catch { /* ignore non-JSON */ }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       setStatus('disconnected')
-      reconnectTimer.current = setTimeout(connect, 3000)
+      // WS handshake rejected (e.g. 401) manifests as code 1006 + wasClean=false
+      // Probe with HTTP to distinguish auth failure from network issue
+      if (!event.wasClean) {
+        const token = localStorage.getItem('auth_token') || ''
+        fetch(`${config.apiBase}/api/config-summary`, {
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        }).then(res => {
+          if (res.status === 401) {
+            localStorage.removeItem('auth_token')
+            localStorage.removeItem('persona-shell:v2:auth-skip')
+            window.location.reload()
+            return
+          }
+          reconnectTimer.current = setTimeout(connect, 3000)
+        }).catch(() => {
+          reconnectTimer.current = setTimeout(connect, 3000)
+        })
+      } else {
+        reconnectTimer.current = setTimeout(connect, 3000)
+      }
     }
 
     ws.onerror = () => ws.close()
