@@ -3506,7 +3506,7 @@ export function startConsole(
             const body = await req.json() as { director_label?: string; agent?: string };
             try {
               const result = await switchDirectorAgent(body.director_label ?? 'main', body.agent ?? '');
-              writeAuditEntry('director.switch_agent', true, { target: result.director_label, agent: result.agent, agentType: result.agent_type });
+              writeAuditEntry('director.switch_agent', true, { target: result.runtime_label, agent: result.agent, agentType: result.agent_type });
               return Response.json(result);
             } catch (err) {
               const error = err as Error & { status?: number };
@@ -3518,7 +3518,7 @@ export function startConsole(
             const body = await req.json() as { director_label?: string; role?: string };
             try {
               const result = await switchDirectorPersona(body.director_label ?? 'main', body.role ?? '');
-              writeAuditEntry('director.switch_persona', true, { target: result.director_label, role: result.role });
+              writeAuditEntry('director.switch_persona', true, { target: result.runtime_label, role: result.role });
               return Response.json(result);
             } catch (err) {
               const error = err as Error & { status?: number };
