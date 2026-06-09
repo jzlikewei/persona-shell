@@ -16,6 +16,8 @@ export class CodexAppServerSessionAdapter implements DirectorSessionAdapter {
         config: options.config,
         agent: options.directorAgent,
         personaRole: options.personaRole ?? 'director',
+        workspaceName: options.workspaceName,
+        workspaceContextPath: options.workspaceContextPath,
       },
       {
         getSessionId: () => this.hooks.getSessionId(),

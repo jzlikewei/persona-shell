@@ -51,6 +51,7 @@ Prompt 分层约定：
 soul.md + meta.md                 -> baseInstructions
 provider system_prompt_file       -> developerInstructions
 personas/{role}.md                -> developerInstructions
+workspaces/{workspace}/context.md -> developerInstructions
 用户任务                           -> turn/start.input
 ```
 

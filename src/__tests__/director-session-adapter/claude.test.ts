@@ -54,6 +54,8 @@ function createTestAdapter(hooks: DirectorSessionAdapterHooks): ClaudeSessionAda
   const options: DirectorSessionAdapterOptions = {
     label: 'test',
     isMain: false,
+    workspaceName: 'test',
+    workspaceContextPath: '/tmp/persona-test/workspaces/test/context.md',
     config: {
       persona_dir: '/tmp/persona-test',
       pipe_dir: '/tmp/persona-test',

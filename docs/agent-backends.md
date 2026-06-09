@@ -157,7 +157,7 @@ legacy turn-based `codex exec` provider 已下线，配置层不再接受 `type:
 
 Codex 不支持 Claude Code 的 `--plugin-dir` / `--append-system-prompt-file` 参数。当前主线身份注入走 Codex App Server instructions：
 
-- **App Server instructions**：`thread/start` 注入 `baseInstructions` / `developerInstructions`，其中 `soul.md`、`meta.md`、`personas/{role}.md` 和 provider `system_prompt_file` 在启动线程时进入 Codex instruction 层。
+- **App Server instructions**：`thread/start` 注入 `baseInstructions` / `developerInstructions`，其中 `soul.md`、`meta.md`、`personas/{role}.md`、provider `system_prompt_file`，以及当前 workspace 的 `context.md` 在启动线程时进入 Codex instruction 层。`context.md` 同时保留为可写的持久工作记忆文件。
 - **Skills 发现**：当前不通过 `codex app-server` 启动参数显式传 `skills_dir`。Codex App Server 依赖 Codex 原生 skill 发现机制读取当前工作根下的 `.agents/skills`，因此身份仓库必须保持 `~/.persona/.agents/skills -> ~/.persona/skills` 软链接。Workspace Director 若配置了 provider/workspace `cwd`，仍建议保留该软链接作为 Persona skills 的统一入口；变更 skill 后用 flush 开新线程加载最新资产。
 - **Codex 原生配置**：Codex harness 支持通过 `model_instructions_file` / `developer_instructions` 等配置读取 instruction 内容；Persona Shell 已下线 Tenbase 时代的手工拼 prompt 方案。
 - **任务系统**：默认通过 task CLI 用法注入 prompt，避免 Codex 将 MCP tools schema 带进 Responses 请求；需要原生 MCP 时可设 `mcp_mode: mcp`
@@ -254,7 +254,7 @@ agents:
 
 注意事项：
 
-- `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool Director 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{label}-{group}/`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录。
+- `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool Director 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{workspace}/`，除非 workspace 表配置了真实项目 `cwd`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录或配置的项目目录。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
 - 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。

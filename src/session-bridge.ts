@@ -134,6 +134,8 @@ export class SessionBridge extends EventEmitter {
       label: this.label,
       isMain: this.isMain,
       groupName: this.groupName,
+      workspaceName: this.workspaceName,
+      workspaceContextPath: this.getWorkspaceContextFilePath(),
       config: this.config,
       agents: this.agents,
       directorAgent: this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.directorAgentName)),
@@ -1278,6 +1280,15 @@ export class SessionBridge extends EventEmitter {
 
   private getSessionStatePromptPath(): string {
     return this.isMain ? 'daily/state.md' : this.getSessionStateFilePath();
+  }
+
+  private getWorkspaceContextFilePath(): string {
+    if (!this.isMain) return this.getSessionStateFilePath();
+    const dir = join(this.config.persona_dir, 'daily');
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const file = join(dir, 'state.md');
+    if (!existsSync(file)) writeFileSync(file, '');
+    return file;
   }
 
   private getAgentSwitchBootstrapSource(freshStart: boolean): string | undefined {

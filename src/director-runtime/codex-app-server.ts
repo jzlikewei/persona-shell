@@ -76,6 +76,8 @@ export interface CodexAppServerRuntimeOptions {
   config: Config['director'];
   agent: AgentRuntimeConfig;
   personaRole: string;
+  workspaceName?: string;
+  workspaceContextPath?: string;
 }
 
 export class CodexAppServerRuntime {
@@ -572,7 +574,10 @@ export class CodexAppServerRuntime {
   private readDeveloperInstructions(): string {
     const files = [`personas/${this.options.personaRole}.md`];
     if (this.options.agent.system_prompt_file) files.unshift(this.options.agent.system_prompt_file);
-    return this.readPromptSections(files);
+    return [
+      this.readPromptSections(files),
+      this.readWorkspaceContextInstructions(),
+    ].filter(Boolean).join('\n\n');
   }
 
   private readPromptSections(files: string[]): string {
@@ -588,6 +593,33 @@ export class CodexAppServerRuntime {
       })
       .filter(Boolean)
       .join('\n\n');
+  }
+
+  private readWorkspaceContextInstructions(): string {
+    const contextPath = this.options.workspaceContextPath;
+    if (!contextPath) return '';
+    const context = this.readAbsoluteFile(contextPath);
+    return [
+      '# Persona Workspace Context',
+      '',
+      `当前 workspace：${this.options.workspaceName ?? 'unknown'}`,
+      `上下文文件：${contextPath}`,
+      '',
+      '这个文件是当前 workspace 的持久工作记忆。重要状态变更时必须主动更新它，不要只等 flush。',
+      '',
+      context
+        ? `## context.md\n${context}`
+        : '## context.md\n（当前上下文文件为空。）',
+    ].join('\n');
+  }
+
+  private readAbsoluteFile(path: string): string {
+    if (!path || !existsSync(path)) return '';
+    try {
+      return readFileSync(path, 'utf-8').trim();
+    } catch {
+      return '';
+    }
   }
 
   private toSandboxPolicy(mode: AgentRuntimeConfig['sandbox']): Record<string, JsonValue> {

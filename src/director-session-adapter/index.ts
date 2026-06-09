@@ -85,6 +85,8 @@ export interface DirectorSessionAdapterOptions {
   isMain: boolean;
   groupName?: string;
   personaRole?: string;
+  workspaceName: string;
+  workspaceContextPath: string;
   config: Config['director'];
   agents: Config['agents'];
   directorAgent: AgentRuntimeConfig;

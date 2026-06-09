@@ -322,7 +322,7 @@ SessionBridge (session-bridge.ts)
 
 **Codex**（App Server JSON-RPC）：
 ```text
-initialize -> thread/start(baseInstructions, developerInstructions, cwd, sandbox)
+initialize -> thread/start(baseInstructions, developerInstructions(+workspace context), cwd, sandbox)
 turn/start(input) -> item/agentMessage/delta ... -> turn/completed
 ```
 

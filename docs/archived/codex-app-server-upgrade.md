@@ -74,7 +74,7 @@
 | 能力 | 说明 |
 |------|------|
 | 沙箱策略映射 | `read-only` → `readOnly`；`workspace-write` → `workspaceWrite` + `writableRoots`；default → `dangerFullAccess` |
-| Prompt 分层 | `soul.md`+`meta.md` → `baseInstructions`；`personas/{role}.md` + `system_prompt_file` → `developerInstructions`。Codex 原生也支持通过配置读取 `model_instructions_file` / `developer_instructions`；Tenbase 时代的手工拼 prompt 方案已下线。 |
+| Prompt 分层 | `soul.md`+`meta.md` → `baseInstructions`；`personas/{role}.md` + `system_prompt_file` + 当前 workspace `context.md` → `developerInstructions`。Codex 原生也支持通过配置读取 `model_instructions_file` / `developer_instructions`；Tenbase 时代的手工拼 prompt 方案已下线。 |
 | MCP 注入 | `mcp_mode: mcp` 时通过 `-c` TOML 覆盖参数注入 MCP 服务器 |
 | 进程组管理 | `detached: true` + `process.kill(-pid)` 终止进程组 |
 | 日志 | stderr 重定向到 `codex-app-server-stderr.log`；所有 JSON-RPC 收发通过 `logOutput` 记录 |

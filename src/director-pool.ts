@@ -8,7 +8,7 @@ import { MessageQueue, type PendingAttachment, type QueueItem } from './queue.js
 import { ClaudeProcess } from './claude-process.js';
 import { loadConfig, type Config, isCodexFamily } from './config.js';
 import type { CardAction, MessagingClient, StreamingReplyHandle } from './messaging/messaging.js';
-import { getState, setState } from './task/task-store.js';
+import { getState, setState, getWorkspace } from './task/task-store.js';
 import { log, getLogDir } from './logger.js';
 
 /** Pool entry data persisted to SQLite for crash recovery */
@@ -222,7 +222,7 @@ export class DirectorPool extends EventEmitter {
 
     const label = routingKeyToLabel(routingKey);
     const name = opts.groupName ?? routingKey.slice(0, 8);
-    const workspaceCwd = getState<{ cwd?: string }>(`workspace:config:${name}`)?.cwd;
+    const workspaceCwd = getWorkspace(name)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${name}`)?.cwd;
     console.log(`[pool] Creating session bridge for group "${name}" (label=${label}${workspaceCwd ? `, cwd=${workspaceCwd}` : ''})`);
 
     const bridge = new SessionBridge({
@@ -821,7 +821,7 @@ export class DirectorPool extends EventEmitter {
     let restored = 0;
 
     for (const item of saved) {
-      const workspaceCwd = getState<{ cwd?: string }>(`workspace:config:${item.groupName}`)?.cwd;
+      const workspaceCwd = getWorkspace(item.groupName)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${item.groupName}`)?.cwd;
       const bridge = new SessionBridge({
         agents: this.getFreshAgentsConfig(),
         config: this.directorConfig,

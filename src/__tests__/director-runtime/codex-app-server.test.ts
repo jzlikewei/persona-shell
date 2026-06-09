@@ -185,4 +185,68 @@ describe('CodexAppServerRuntime', () => {
       threadSource: 'user',
     });
   });
+
+  test('injects soul, role persona, and workspace context into app-server thread instructions', () => {
+    const personaDir = '/tmp/persona-codex-context-test';
+    const contextPath = join(personaDir, 'workspaces', 'demo', 'context.md');
+    rmSync(personaDir, { recursive: true, force: true });
+    mkdirSync(join(personaDir, 'personas'), { recursive: true });
+    mkdirSync(join(personaDir, 'workspaces', 'demo'), { recursive: true });
+    writeFileSync(join(personaDir, 'soul.md'), 'Soul instruction');
+    writeFileSync(join(personaDir, 'meta.md'), 'Meta instruction');
+    writeFileSync(join(personaDir, 'personas', 'director.md'), 'Director persona instruction');
+    writeFileSync(contextPath, '# Context\nCurrent task state');
+
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: 'demo',
+        logDir: '/tmp/persona-test/logs',
+        config: {
+          persona_dir: personaDir,
+          pipe_dir: '/tmp/persona-test',
+          pid_file: '/tmp/persona-test/test.pid',
+          time_sync_interval_ms: 999999,
+          flush_context_limit: 999999,
+          flush_interval_ms: 999999,
+          quote_max_length: 32,
+        },
+        agent: { type: 'codex-app-server', command: 'codex', name: 'codex-live' },
+        personaRole: 'director',
+        workspaceName: 'demo',
+        workspaceContextPath: contextPath,
+      },
+      {
+        getSessionId: () => 'thread-1',
+        getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'demo', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'demo' }),
+        setSessionName: () => {},
+        buildSessionName: () => 'session-1',
+        persistSession: () => {},
+        clearSession: () => {},
+        logOutput: () => {},
+        onChunk: () => {},
+        onToolCall: () => {},
+        onPartialAgentMessage: () => {},
+        onMetrics: () => {},
+        onTurnComplete: () => {},
+        onTurnFailure: () => {},
+        onRuntimeClosed: () => {},
+      },
+    );
+    const runtimePrivate = runtime as unknown as {
+      threadOptions(): Record<string, unknown>;
+    };
+
+    const options = runtimePrivate.threadOptions();
+    const baseInstructions = String(options.baseInstructions);
+    const developerInstructions = String(options.developerInstructions);
+    expect(baseInstructions).toContain('Soul instruction');
+    expect(baseInstructions).toContain('Meta instruction');
+    expect(developerInstructions).toContain('Director persona instruction');
+    expect(developerInstructions).toContain('当前 workspace：demo');
+    expect(developerInstructions).toContain(`上下文文件：${contextPath}`);
+    expect(developerInstructions).toContain('Current task state');
+
+    rmSync(personaDir, { recursive: true, force: true });
+  });
 });
