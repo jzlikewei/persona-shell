@@ -218,6 +218,10 @@ launchctl start com.persona.shell
 
 > **环境变量**：子角色进程启动时会自动清除继承的 `CLAUDE_CODE_SIMPLE` 环境变量，不再受父进程的工具集限制。无需手动处理。
 
+## 远程访问
+
+如果需要从外部网络访问 Web 控制台（如将内网机器上的 pshell 通过 HTTPS 暴露到公网），参见 [远程访问指南](remote-access.md)。
+
 ## 常见问题（FAQ）
 
 ### 群聊中必须 @机器人 才能回复

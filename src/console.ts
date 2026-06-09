@@ -2904,8 +2904,21 @@ export function startConsole(
               }
 
               if (!sessionManager) return Response.json({ ok: false, message: 'Session manager not available' }, { status: 503 });
-              const session = sessionManager.getSession(sessionId);
+              let session = sessionManager.getSession(sessionId);
               if (!session) {
+                // Session was idle-reclaimed — look up workspace from DB and respawn Director
+                const dbRecord = getSessionRecord(sessionId);
+                if (dbRecord?.workspace && !dbRecord.archived) {
+                  const respawned = await sessionManager.sendToWorkspaceDefaultSession(dbRecord.workspace, {
+                    feishuChatId: 'web-console',
+                    text,
+                    messageId: `web-${randomUUID()}`,
+                    sendOptions: { webOnly: true },
+                  });
+                  const newSessionId = respawned.sessionId ?? sessionId;
+                  writeAuditEntry('director.send', true, { target: newSessionId, respawnedFrom: sessionId, bytes: Buffer.byteLength(text, 'utf-8') });
+                  return Response.json({ ok: true, message: 'respawned director and sent', sessionId: newSessionId, respawned: true });
+                }
                 writeAuditEntry('director.send', false, { target: sessionId, reason: 'session not found' });
                 return Response.json({ ok: false, message: `Session "${sessionId}" not found` }, { status: 404 });
               }
