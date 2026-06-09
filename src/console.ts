@@ -40,9 +40,6 @@ interface ConsoleWorkspace {
   source: 'main' | 'memory';
   cwd?: string;
   agent?: string;
-  directorLabel?: string;
-  routingKey?: string;
-  groupName?: string;
   sessionId?: string | null;
   sessionName?: string | null;
   alive?: boolean;
@@ -353,46 +350,19 @@ export function startConsole(
     });
 
     const mainStatus = director.getStatus();
-    const poolStatus = sessionManager?.getPoolStatus() ?? [];
-    const safeGroupName = (name: string) => name.replace(/[\/\\:*?"<>|]/g, '_');
-    const directorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
-      const match = poolStatus.find((entry) => {
-        const safeName = safeGroupName(entry.groupName);
-        return workspaceName === safeName
-          || workspaceName === entry.label
-          || workspaceName === `${entry.label}-${safeName}`
-          || workspaceName.startsWith(`${entry.label}-`);
-      });
-      if (!match) return {};
+    const sessionInfoForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
+      const defaultSessionId = getWorkspace(workspaceName)?.default_session_id ?? null;
+      if (!defaultSessionId) return { sessionId: null, sessionName: null, alive: false };
+      const liveEntry = sessionManager?.getSession(defaultSessionId);
+      const liveStatus = liveEntry?.bridge.getStatus();
+      const record = getSessionRecord(defaultSessionId);
       return {
-        directorLabel: match.label,
-        routingKey: match.routingKey,
-        groupName: match.groupName,
-        sessionId: match.directorStatus?.sessionId ?? null,
-        sessionName: match.directorStatus?.sessionName ?? null,
-        alive: match.directorStatus?.alive ?? false,
-        lastActiveAt: match.lastActiveAt,
+        sessionId: defaultSessionId,
+        sessionName: liveStatus?.sessionName ?? record?.session_name ?? null,
+        alive: liveStatus?.alive ?? false,
+        lastActiveAt: liveEntry?.lastActiveAt,
       };
     };
-    const legacyDirectorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
-      const match = workspaceName.match(/^([0-9a-f]{8})-(.+)$/i);
-      if (!match) return {};
-      const [, label, groupName] = match;
-      return {
-        directorLabel: label,
-        groupName,
-        sessionId: null,
-        sessionName: null,
-        alive: false,
-      };
-    };
-    const unlinkedDirectorForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => ({
-      directorLabel: `workspace-${createHash('sha256').update(workspaceName).digest('hex').slice(0, 8)}`,
-      groupName: workspaceName,
-      sessionId: null,
-      sessionName: null,
-      alive: false,
-    });
     const localHistoryForWorkspace = (workspaceName: string): Partial<ConsoleWorkspace> => {
       const stats = getWorkspaceSessionStats(workspaceName);
       if (stats.sessionCount === 0) return {};
@@ -410,7 +380,6 @@ export function startConsole(
       source: 'main',
       cwd: mainWorkspaceConfig?.cwd,
       agent: mainWorkspaceConfig?.agent,
-      directorLabel: 'main',
       sessionId: mainStatus.sessionId ?? null,
       sessionName: mainStatus.sessionName ?? null,
       alive: mainStatus.alive,
@@ -428,14 +397,8 @@ export function startConsole(
           // Skip legacy {hash}-{name} directories when the migrated {name} directory exists
           const legacyMatch = name.match(/^[0-9a-f]{8}-(.+)$/i);
           if (legacyMatch && nameSet.has(legacyMatch[1])) continue;
-          const routing = {
-            ...unlinkedDirectorForWorkspace(name),
-            ...legacyDirectorForWorkspace(name),
-            ...directorForWorkspace(name),
-          };
           const wsConfig = getWorkspaceConfig(name);
-          const wsName = routing.groupName ?? name;
-          const hidden = wsConfig?.hidden ?? (hasAnySessionHistory(wsName) ? false : true);
+          const hidden = wsConfig?.hidden ?? (hasAnySessionHistory(name) ? false : true);
           workspaces.push({
             id: `memory-${name}`,
             name,
@@ -444,8 +407,8 @@ export function startConsole(
             cwd: wsConfig?.cwd,
             agent: wsConfig?.agent,
             hidden,
-            ...routing,
-            ...localHistoryForWorkspace(wsName),
+            ...sessionInfoForWorkspace(name),
+            ...localHistoryForWorkspace(name),
           });
         } catch {
           // Best effort for UI context.
@@ -592,6 +555,56 @@ export function startConsole(
       costUsd: t.cost_usd ?? undefined,
     }));
 
+    const runtimePool = sessionManager ? sessionManager.getPoolStatus().map((entry) => ({
+      routingKey: entry.routingKey,
+      groupName: entry.groupName,
+      label: entry.label,
+      lastActiveAt: entry.lastActiveAt,
+      queueLength: entry.queueLength,
+      queue: entry.queue,
+      activity: entry.directorStatus?.activityState ?? null,
+      alive: entry.directorStatus?.alive ?? false,
+      currentMessage: entry.directorStatus?.currentMessagePreview && entry.directorStatus?.currentMessageStartedAt ? {
+        preview: entry.directorStatus.currentMessagePreview,
+        elapsedMs: now - entry.directorStatus.currentMessageStartedAt,
+        startedAt: entry.directorStatus.currentMessageStartedAt,
+      } : null,
+      pid: entry.directorStatus?.pid ?? null,
+      sessionId: entry.directorStatus?.sessionId ?? null,
+      liveSessionArchived: entry.directorStatus?.sessionId
+        ? getSessionRecord(entry.directorStatus.sessionId)?.archived === 1
+        : false,
+      directorAgentName: entry.directorAgentName ?? entry.directorStatus?.agentName ?? null,
+      directorAgentType: entry.directorStatus?.agentType ?? null,
+      directorAgentModel: entry.directorStatus?.agentModel ?? null,
+      personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
+      restartCount: entry.directorStatus?.restartCount ?? 0,
+      recentRestartCount: entry.directorStatus?.recentRestartCount ?? 0,
+      recentRestartAt: entry.directorStatus?.recentRestartAt ?? [],
+      lastRestartAt: entry.directorStatus?.lastRestartAt ?? null,
+      lastRestartReason: entry.directorStatus?.lastRestartReason ?? null,
+      lastCrashAt: entry.directorStatus?.lastCrashAt ?? null,
+      lastCrashReason: entry.directorStatus?.lastCrashReason ?? null,
+      closed: entry.closed ?? false,
+      closedAt: entry.closedAt ?? null,
+      closedReason: entry.closedReason ?? null,
+      context: entry.directorStatus ? {
+        tokens: entry.directorStatus.contextMetricsLive ? entry.directorStatus.lastInputTokens : null,
+        observedTokens: entry.directorStatus.lastInputTokens,
+        contextTokens: entry.directorStatus.contextTokens,
+        limit: entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit,
+        percent: entry.directorStatus.contextMetricsLive && (entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit) > 0
+          ? Math.round((entry.directorStatus.lastInputTokens / (entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit)) * 100)
+          : 0,
+        live: entry.directorStatus.contextMetricsLive,
+        lastFlushAgoMs: now - entry.directorStatus.lastFlushAt,
+        lastFlushAt: entry.directorStatus.lastFlushAt,
+        flushLimit: entry.directorStatus.flushContextLimit,
+        contextWindow: entry.directorStatus.contextWindow,
+        autoFlushDisabled: entry.directorStatus.autoFlushDisabled,
+      } : null,
+    })) : [];
+
     return {
       type: 'status' as const,
       data: {
@@ -647,58 +660,9 @@ export function startConsole(
           summary: taskSummary,
           recent: recentTasks,
         },
-        pool: sessionManager ? sessionManager.getPoolStatus().map((entry) => ({
-          routingKey: entry.routingKey,
-          groupName: entry.groupName,
-          label: entry.label,
-          lastActiveAt: entry.lastActiveAt,
-          queueLength: entry.queueLength,
-          queue: entry.queue,
-          activity: entry.directorStatus?.activityState ?? null,
-          alive: entry.directorStatus?.alive ?? false,
-          currentMessage: entry.directorStatus?.currentMessagePreview && entry.directorStatus?.currentMessageStartedAt ? {
-            preview: entry.directorStatus.currentMessagePreview,
-            elapsedMs: now - entry.directorStatus.currentMessageStartedAt,
-            startedAt: entry.directorStatus.currentMessageStartedAt,
-          } : null,
-          pid: entry.directorStatus?.pid ?? null,
-          sessionId: entry.directorStatus?.sessionId ?? null,
-          // 把 pool entry 对应 session 的 archived 状态透出,前端 useSessions
-          // 在 unshift 自己的 live 合并时,需要这个标志决定是否跳过(已归档 session
-          // 不应再回列表)。如果 entry 没有 sessionId(冷启动前),archived 为 false。
-          liveSessionArchived: entry.directorStatus?.sessionId
-            ? getSessionRecord(entry.directorStatus.sessionId)?.archived === 1
-            : false,
-          directorAgentName: entry.directorAgentName ?? entry.directorStatus?.agentName ?? null,
-          directorAgentType: entry.directorStatus?.agentType ?? null,
-          directorAgentModel: entry.directorStatus?.agentModel ?? null,
-          personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
-          restartCount: entry.directorStatus?.restartCount ?? 0,
-          recentRestartCount: entry.directorStatus?.recentRestartCount ?? 0,
-          recentRestartAt: entry.directorStatus?.recentRestartAt ?? [],
-          lastRestartAt: entry.directorStatus?.lastRestartAt ?? null,
-          lastRestartReason: entry.directorStatus?.lastRestartReason ?? null,
-          lastCrashAt: entry.directorStatus?.lastCrashAt ?? null,
-          lastCrashReason: entry.directorStatus?.lastCrashReason ?? null,
-          closed: entry.closed ?? false,
-          closedAt: entry.closedAt ?? null,
-          closedReason: entry.closedReason ?? null,
-          context: entry.directorStatus ? {
-            tokens: entry.directorStatus.contextMetricsLive ? entry.directorStatus.lastInputTokens : null,
-            observedTokens: entry.directorStatus.lastInputTokens,
-            contextTokens: entry.directorStatus.contextTokens,
-            limit: entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit,
-            percent: entry.directorStatus.contextMetricsLive && (entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit) > 0
-              ? Math.round((entry.directorStatus.lastInputTokens / (entry.directorStatus.contextWindow > 0 ? entry.directorStatus.contextWindow : entry.directorStatus.flushContextLimit)) * 100)
-              : 0,
-            live: entry.directorStatus.contextMetricsLive,
-            lastFlushAgoMs: now - entry.directorStatus.lastFlushAt,
-            lastFlushAt: entry.directorStatus.lastFlushAt,
-            flushLimit: entry.directorStatus.flushContextLimit,
-            contextWindow: entry.directorStatus.contextWindow,
-            autoFlushDisabled: entry.directorStatus.autoFlushDisabled,
-          } : null,
-        })) : [],
+        // Deprecated compatibility: runtime-only data. Main UI should use /api/sessions.
+        pool: runtimePool,
+        runtime: { pool: runtimePool },
       },
     };
   }
@@ -3487,7 +3451,10 @@ export function startConsole(
               channel?: string;
               external_id?: string;
               persona_session_id?: string | null;
+              session_id?: string | null;
+              workspace?: string | null;
               codex_thread_id?: string | null;
+              /** @deprecated legacy runtime label. */
               director_label?: string | null;
               role?: string | null;
             };
@@ -3495,7 +3462,9 @@ export function startConsole(
               writeAuditEntry('persona.session_link.upsert', false, {
                 channel: body.channel ?? null,
                 externalId: body.external_id ?? null,
-                directorLabel: body.director_label ?? null,
+                sessionId: body.session_id ?? null,
+                workspace: body.workspace ?? null,
+                legacyDirectorLabel: body.director_label ?? null,
                 role: body.role ?? null,
                 error: 'channel and external_id are required',
               });
@@ -3504,13 +3473,15 @@ export function startConsole(
             const links = upsertSessionLink(getState<Record<string, PersonaSessionLink>>('persona:session-links'), {
               channel: body.channel,
               externalId: body.external_id,
-              personaSessionId: body.persona_session_id ?? null,
+              personaSessionId: body.persona_session_id ?? body.session_id ?? null,
+              sessionId: body.session_id ?? body.persona_session_id ?? null,
+              workspace: body.workspace ?? null,
               codexThreadId: body.codex_thread_id ?? null,
-              directorLabel: body.director_label ?? null,
+              legacyDirectorLabel: body.director_label ?? null,
               role: body.role ?? null,
             });
             setState('persona:session-links', links);
-            writeAuditEntry('persona.session_link.upsert', true, { target: sessionLinkKey(body.channel, body.external_id), channel: body.channel, externalId: body.external_id, directorLabel: body.director_label ?? null, role: body.role ?? null });
+            writeAuditEntry('persona.session_link.upsert', true, { target: sessionLinkKey(body.channel, body.external_id), channel: body.channel, externalId: body.external_id, sessionId: body.session_id ?? body.persona_session_id ?? null, workspace: body.workspace ?? null, legacyDirectorLabel: body.director_label ?? null, role: body.role ?? null });
             return Response.json(links[sessionLinkKey(body.channel, body.external_id)]);
           }
           if (url.pathname === '/api/persona/session-links' && req.method === 'DELETE') {

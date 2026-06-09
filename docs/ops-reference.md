@@ -56,11 +56,11 @@ launchctl stop  com.persona.shell                                # 停止
 | Director PID | `/tmp/persona/director.pid` |
 | Session ID | `/tmp/persona/director-session` |
 | FIFO 管道 | `/tmp/persona/director-in`, `director-out` |
-| Pool Director（Claude） | `/tmp/persona/{label}/`（群聊 Director，含 session / PID / FIFO） |
-| Pool Director（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`；app-server stderr 在 `codex-app-server-stderr.log` |
-| Pool Director（Kimi） | `logs/{label}-kimi-stderr.log`；stdin/stdout pipe，无 FIFO |
+| Pool runtime entry（Claude） | `/tmp/persona/{label}/`（runtime 实例目录，含 session / PID / FIFO） |
+| Pool runtime entry（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`；app-server stderr 在 `codex-app-server-stderr.log` |
+| Pool runtime entry（Kimi） | `logs/{label}-kimi-stderr.log`；stdin/stdout pipe，无 FIFO |
 
-当前默认 Codex pool Director 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`；`codex-app-server` provider 的后台任务使用临时 App Server task runtime。legacy turn-based `codex exec` provider 已下线。
+Pool runtime entry / 历史文档中的 “Pool Director” 只是 DirectorPool 里的运行时实例别名，不是业务路由实体；业务路由以 workspace / sessionId 为准。当前默认 Codex pool runtime 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`；`codex-app-server` provider 的后台任务使用临时 App Server task runtime。legacy turn-based `codex exec` provider 已下线.
 
 ## Web 控制台
 

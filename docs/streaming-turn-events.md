@@ -13,7 +13,7 @@ Adapter (claude / codex-app-server)
 SessionBridge
   │  emitTurnEvent() → emit('turn-event', AssistantTurnEvent)
   ▼
-DirectorPool (多实例时)
+DirectorPool runtime event aggregator（多实例时）
   │  re-emit('turn-event')
   ▼
 Console (WebSocket server)

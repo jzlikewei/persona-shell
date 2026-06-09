@@ -79,7 +79,9 @@ describe('persona orchestration', () => {
       externalId: 'oc_1',
       personaSessionId: 'sess-1',
       codexThreadId: 'thread-1',
-      directorLabel: 'main',
+      sessionId: 'sess-1',
+      workspace: 'main',
+      legacyDirectorLabel: 'main',
       role: 'director',
     });
 
@@ -88,7 +90,9 @@ describe('persona orchestration', () => {
       externalId: 'oc_1',
       personaSessionId: 'sess-1',
       codexThreadId: 'thread-1',
-      directorLabel: 'main',
+      sessionId: 'sess-1',
+      workspace: 'main',
+      legacyDirectorLabel: 'main',
       role: 'director',
     });
     expect(links['feishu:oc_1'].updatedAt).toBeTruthy();

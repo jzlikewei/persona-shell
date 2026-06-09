@@ -84,7 +84,7 @@ sh -c 'claude [args] < /tmp/persona/director-in > /tmp/persona/director-out'
 | `--bare` | 精简输出 |
 | `-p {prompt}` | 一次性 prompt |
 
-> 典型主 Director 有 50+ 个参数（取决于 skill 数量）。
+> 典型 main Agent/Director runtime 有 50+ 个参数（取决于 skill 数量）。
 
 ### stream-json 协议
 
@@ -260,7 +260,7 @@ agents:
 
 注意事项：
 
-- `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool Director 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{workspace}/`，除非 workspace 表配置了真实项目 `cwd`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录或配置的项目目录。
+- `cwd` 可选；main Director 使用 provider `cwd`，默认回落到 `director.persona_dir`。pool runtime entry 会把 Codex cwd 设为当前群/话题的 workspace 目录：`~/.persona/workspaces/{workspace}/`，除非 workspace 表配置了真实项目 `cwd`。Codex app 按 workspace 精确过滤会话，查看某个群/话题会话时打开对应 workspace 目录或配置的项目目录。
 - `turn/steer` 会改变当前 active turn，不产生独立 turn。Shell 会清理追加消息的队列项，最终回复仍归属原始 active turn。
 - 当前实现采用每个 `SessionBridge` 一个 app-server 进程，优先保证群聊隔离；未来再评估多 thread 共享单进程。
 - 初期审批策略建议继续使用 `approval: never` + 明确 sandbox，避免 JSON-RPC approval 回调阻塞。

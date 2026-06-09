@@ -29,9 +29,13 @@ export interface StatusData {
   tasks: {
     summary: { running: number; completed: number; failed: number }
   }
+  /** @deprecated runtime-only diagnostic data; main UI must not use pool labels as workspace/session facts. */
   pool: Array<{
+    /** @deprecated runtime-only */
     routingKey: string
+    /** @deprecated runtime-only */
     groupName: string
+    /** @deprecated runtime-only */
     label: string
     alive: boolean
     queueLength: number
@@ -46,6 +50,9 @@ export interface StatusData {
     directorAgentType?: string | null
     directorAgentModel?: string | null
   }>
+  runtime?: {
+    pool: StatusData['pool']
+  }
 }
 
 export function useStatus() {

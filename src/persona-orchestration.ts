@@ -24,8 +24,12 @@ export interface PersonaSessionLink {
   channel: string;
   externalId: string;
   personaSessionId?: string | null;
+  sessionId?: string | null;
+  workspace?: string | null;
   codexThreadId?: string | null;
+  /** @deprecated legacy runtime label; use sessionId/workspace. */
   directorLabel?: string | null;
+  legacyDirectorLabel?: string | null;
   role?: string | null;
   updatedAt: string;
 }
