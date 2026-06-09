@@ -1063,7 +1063,7 @@ async function main() {
       : undefined;                               // 私聊: 默认 Director
 
     // Helper: resolve the target Director/queue for the current message context
-    const getTargetEntry = () => routingKey ? sessionManager.get(routingKey) : undefined;
+    const getTargetEntry = () => routingKey ? sessionManager.runtimeGet(routingKey) : undefined;
 
     /** 本体检查：配置了 master_id 时，仅本体可执行危险命令 */
     const isMaster = !config.feishu.master_id || msg.senderOpenId === config.feishu.master_id;
@@ -1104,7 +1104,7 @@ async function main() {
       if (routingKey && !poolEntry) {
         // Director not active — spin it up first so we can flush
         const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const agentName = sessionManager.getAgentName(routingKey)
+        const agentName = sessionManager.runtimeGetAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
         const session = await sessionManager.getOrCreateForWorkspace(workspaceName, { workspaceName, feishuChatId: chatId, agentName });
         poolEntry = session.sessionId ? sessionManager.getRuntimeEntryBySessionId(session.sessionId) ?? undefined : getTargetEntry();
@@ -1172,8 +1172,8 @@ async function main() {
 
       if (routingKey && chatType === 'group') {
         const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const currentAgent = sessionManager.getAgentName(routingKey)
-          ?? sessionManager.get(routingKey)?.bridge.getAgentName()
+        const currentAgent = sessionManager.runtimeGetAgentName(routingKey)
+          ?? sessionManager.runtimeGet(routingKey)?.bridge.getAgentName()
           ?? config.agents.defaults.director
           ?? 'claude';
         if (currentAgent === targetAgent) {
@@ -1276,7 +1276,7 @@ async function main() {
       let label = 'main';
       if (routingKey && chatType === 'group') {
         const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const agentName = sessionManager.getAgentName(routingKey)
+        const agentName = sessionManager.runtimeGetAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
         const poolEntry = await sessionManager.resetSession(routingKey, { workspaceName, feishuChatId: chatId, agentName });
         label = `group "${poolEntry.workspaceName}"`;
@@ -1390,7 +1390,7 @@ async function main() {
       // 小群/话题群 → workspace default session
       try {
         const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const agentName = sessionManager.getAgentName(routingKey);
+        const agentName = sessionManager.runtimeGetAgentName(routingKey);
         const session = await sessionManager.sendToWorkspaceDefaultSession(workspaceName, {
           workspaceName,
           feishuChatId: chatId,

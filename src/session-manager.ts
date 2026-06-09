@@ -350,57 +350,57 @@ export class SessionManager extends EventEmitter {
     return this.pool.setAgent(routingKey, opts);
   }
 
-  async switchAgentByLabel(label: string, agentName: string): Promise<RuntimeEntry> {
+  async runtimeSwitchAgentByLabel(label: string, agentName: string): Promise<RuntimeEntry> {
     return this.pool.switchAgentByLabel(label, agentName);
   }
 
-  async switchPersonaByLabel(label: string, roleName: string): Promise<RuntimeEntry> {
+  async runtimeSwitchPersonaByLabel(label: string, roleName: string): Promise<RuntimeEntry> {
     return this.pool.switchPersonaByLabel(label, roleName);
   }
 
-  async flushByLabel(label: string): Promise<boolean> {
+  async runtimeFlushByLabel(label: string): Promise<boolean> {
     return this.pool.flushByLabel(label);
   }
 
-  async clearContextByLabel(label: string): Promise<boolean> {
+  async runtimeClearContextByLabel(label: string): Promise<boolean> {
     return this.pool.clearContextByLabel(label);
   }
 
-  async restartByLabel(label: string): Promise<void> {
+  async runtimeRestartByLabel(label: string): Promise<void> {
     return this.pool.restartByLabel(label);
   }
 
-  async interruptOldestByLabel(label: string): Promise<QueueItem | undefined> {
+  async runtimeInterruptOldestByLabel(label: string): Promise<QueueItem | undefined> {
     return this.pool.interruptOldestByLabel(label);
   }
 
-  async detachByLabel(label: string): Promise<RuntimeEntry> {
+  async runtimeDetachByLabel(label: string): Promise<RuntimeEntry> {
     return this.pool.detachByLabel(label);
   }
 
   // --- Runtime lookup helpers ---
 
-  findByLabel(label: string): RuntimeEntry | undefined {
+  runtimeFindByLabel(label: string): RuntimeEntry | undefined {
     return this.pool.findByLabel(label);
   }
 
-  get(routingKey: string): RuntimeEntry | undefined {
+  runtimeGet(routingKey: string): RuntimeEntry | undefined {
     return this.pool.get(routingKey);
   }
 
-  getChatIdByLabel(label: string): string | null {
+  runtimeGetChatIdByLabel(label: string): string | null {
     return this.pool.getChatIdByLabel(label);
   }
 
-  getAgentName(routingKey: string): string | undefined {
+  runtimeGetAgentName(routingKey: string): string | undefined {
     return this.pool.getAgentName(routingKey);
   }
 
-  getProcessingMessageIdByLabel(label: string): string | null {
+  runtimeGetProcessingMessageIdByLabel(label: string): string | null {
     return this.pool.getProcessingMessageIdByLabel(label);
   }
 
-  async cancelQueuedByLabel(label: string, correlationId: string) {
+  async runtimeCancelQueuedByLabel(label: string, correlationId: string) {
     return this.pool.cancelQueuedByLabel(label, correlationId);
   }
 

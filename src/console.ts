@@ -117,7 +117,7 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
 
   // Try matching as workspace director label
   const entry = sessionMgr?.getRuntimeStatus().find((item) => item.label === requested);
-  const active = entry ? sessionMgr?.get(entry.routingKey) : undefined;
+  const active = entry ? sessionMgr?.runtimeGet(entry.routingKey) : undefined;
 
   if (active) {
     // Use workspace name path (new), plus old label path for compat
@@ -1036,7 +1036,7 @@ export function startConsole(
     const directors: Array<{ label: string; bridge: SessionBridge }> = [{ label: 'main', bridge: director }];
     if (sessionManager) {
       for (const entry of sessionManager.getRuntimeStatus()) {
-        const poolEntry = sessionManager.get(entry.routingKey);
+        const poolEntry = sessionManager.runtimeGet(entry.routingKey);
         if (poolEntry) directors.push({ label: entry.label, bridge: poolEntry.bridge });
       }
     }
@@ -1649,7 +1649,7 @@ export function startConsole(
     if (label === director.label || label === 'main') return director.getStatus().sessionId;
     const entry = sessionManager?.getRuntimeStatus().find((item) => item.label === label);
     if (!entry) return null;
-    return sessionManager?.get(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
+    return sessionManager?.runtimeGet(entry.routingKey)?.bridge.getStatus().sessionId ?? entry.directorStatus?.sessionId ?? null;
   }
 
   director.on('chunk', (text: string) => {
@@ -1862,7 +1862,7 @@ export function startConsole(
       err.status = 503;
       throw err;
     }
-    const entry = await sessionManager.switchAgentByLabel(targetLabel, agentName.trim());
+    const entry = await sessionManager.runtimeSwitchAgentByLabel(targetLabel, agentName.trim());
     return {
       ok: true,
       director_label: entry.bridge.label,
@@ -1891,7 +1891,7 @@ export function startConsole(
       err.status = 503;
       throw err;
     }
-    const entry = await sessionManager.switchPersonaByLabel(targetLabel, role);
+    const entry = await sessionManager.runtimeSwitchPersonaByLabel(targetLabel, role);
     return { ok: true, director_label: entry.bridge.label, role: entry.bridge.getPersonaRole() };
   }
 
@@ -1935,7 +1935,7 @@ export function startConsole(
     try {
       switch (normalized) {
         case 'flush': {
-          const success = await sessionManager.flushByLabel(targetLabel);
+          const success = await sessionManager.runtimeFlushByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）',
@@ -1943,7 +1943,7 @@ export function startConsole(
           break;
         }
         case 'clear': {
-          const success = await sessionManager.clearContextByLabel(targetLabel);
+          const success = await sessionManager.runtimeClearContextByLabel(targetLabel);
           result = {
             ok: success,
             message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）',
@@ -1951,7 +1951,7 @@ export function startConsole(
           break;
         }
         case 'esc': {
-          const cancelled = await sessionManager.interruptOldestByLabel(targetLabel);
+          const cancelled = await sessionManager.runtimeInterruptOldestByLabel(targetLabel);
           result = cancelled
             ? {
               ok: true,
@@ -1962,11 +1962,11 @@ export function startConsole(
           break;
         }
         case 'session-restart':
-          await sessionManager.restartByLabel(targetLabel);
+          await sessionManager.runtimeRestartByLabel(targetLabel);
           result = { ok: true, message: 'Director 已重启' };
           break;
         case 'detach': {
-          const entry = await sessionManager.detachByLabel(targetLabel);
+          const entry = await sessionManager.runtimeDetachByLabel(targetLabel);
           result = {
             ok: true,
             message: 'Director 已 Detach，底层进程未主动关闭',
@@ -3002,7 +3002,7 @@ export function startConsole(
               } else if (workspaceDefaultSessionId && sessionManager) {
                 targetChatId = sessionManager.getChatIdBySessionId(workspaceDefaultSessionId);
               } else if (legacySourceDirector && legacySourceDirector !== 'main' && sessionManager) {
-                targetChatId = sessionManager.getChatIdByLabel(legacySourceDirector);
+                targetChatId = sessionManager.runtimeGetChatIdByLabel(legacySourceDirector);
               }
               if (!targetChatId) {
                 targetChatId = messaging?.getLastChatId() ?? null;
@@ -3021,7 +3021,7 @@ export function startConsole(
               } else if (workspaceDefaultSessionId && sessionManager) {
                 replyMessageId = sessionManager.getProcessingMessageIdBySessionId(workspaceDefaultSessionId);
               } else if (legacySourceDirector && legacySourceDirector !== 'main' && sessionManager) {
-                replyMessageId = sessionManager.getProcessingMessageIdByLabel(legacySourceDirector);
+                replyMessageId = sessionManager.runtimeGetProcessingMessageIdByLabel(legacySourceDirector);
               } else {
                 const peeked = queue.peek();
                 replyMessageId = peeked?.messageId ?? null;
@@ -3130,7 +3130,7 @@ export function startConsole(
               writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'session manager unavailable' });
               return Response.json({ ok: false, error: 'director session manager unavailable' }, { status: 503 });
             }
-            const cancelled = await sessionManager.cancelQueuedByLabel(directorLabel, correlationId);
+            const cancelled = await sessionManager.runtimeCancelQueuedByLabel(directorLabel, correlationId);
             if (!cancelled) {
               writeAuditEntry('queue.cancel', false, { target: directorLabel, correlationId, error: 'queue item not found or already cancelled' });
               return Response.json({ ok: false, error: 'queue item not found or already cancelled' }, { status: 404 });

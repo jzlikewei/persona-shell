@@ -293,7 +293,7 @@ describe('smoke:workspace-routing', () => {
     const entry = manager.getRuntimeEntryBySessionId(session.sessionId);
     expect(entry).not.toBeNull();
 
-    await manager.detachByLabel(entry!.bridge.label);
+    await manager.runtimeDetachByLabel(entry!.bridge.label);
     expect(manager.getSession(session.sessionId)).toBeNull();
 
     const revived = await manager.reviveSession(session.sessionId, { feishuChatId: 'web-console' });
