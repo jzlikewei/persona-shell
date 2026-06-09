@@ -917,7 +917,7 @@ export class SessionBridge extends EventEmitter {
         type: 'user',
         message: { role: 'user', content },
         timestamp: new Date().toISOString(),
-        director: this.label,
+        agentLabel: this.label,
         session_id: this.sessionId ?? undefined,
       }) + '\n';
       appendFileSync(this.inputLogPath, logPayload);
@@ -1064,12 +1064,12 @@ export class SessionBridge extends EventEmitter {
 
   private emitTurnEvent(
     turn: PendingType | undefined,
-    patch: Omit<AssistantTurnEvent, 'director' | 'sessionId' | 'turnId' | 'timestamp'> & { timestamp?: string },
+    patch: Omit<AssistantTurnEvent, 'agentLabel' | 'sessionId' | 'turnId' | 'timestamp'> & { timestamp?: string },
   ): void {
     if (!this.isVisibleTurn(turn)) return;
     const event: AssistantTurnEvent = {
       ...patch,
-      director: this.label,
+      agentLabel: this.label,
       sessionId: this.sessionId,
       turnId: turn.turnId,
       messageId: turn.type === 'system-reply' ? turn.replyToMessageId : turn.type === 'user' ? turn.correlationId : undefined,

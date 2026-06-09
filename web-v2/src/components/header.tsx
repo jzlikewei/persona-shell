@@ -56,7 +56,7 @@ export function Header({
       <div>Browse <strong className="font-mono text-[#bac2de]">{mode === 'projects' ? 'Projects' : 'Workspaces'}</strong></div>
       <div className="ml-auto flex items-center gap-1.5">
         <Bot className="size-3 text-[#7f849c]" />
-        Director <strong className="font-mono text-[#bac2de]">{alive ? 'Alive +3' : 'Waiting'}</strong>
+        Agent <strong className="font-mono text-[#bac2de]">{alive ? 'Alive +3' : 'Waiting'}</strong>
       </div>
     </header>
   )

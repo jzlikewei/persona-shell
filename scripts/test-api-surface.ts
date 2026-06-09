@@ -85,10 +85,10 @@ async function testStatusSnapshotStructure(): Promise<void> {
   const system = data.system as Record<string, unknown>;
   assert(!!system, 'missing data.system');
   assertField(system, 'status', 'system');
-  assertField(system, 'directorAlive', 'system');
-  assertField(system, 'directorAgentName', 'system');
-  assertField(system, 'directorAgentType', 'system');
-  assertField(system, 'directorAgentModel', 'system');
+  assertField(system, 'alive', 'system');
+  assertField(system, 'agentName', 'system');
+  assertField(system, 'agentType', 'system');
+  assertField(system, 'agentModel', 'system');
   assertField(system, 'sessionId', 'system');
   assertField(system, 'personaRole', 'system');
 
@@ -106,10 +106,10 @@ async function testStatusSnapshotStructure(): Promise<void> {
   if (pool.length > 0) {
     const entry = pool[0];
     assertField(entry, 'routingKey', 'pool[0]');
-    assertField(entry, 'groupName', 'pool[0]');
+    assertField(entry, 'workspaceName', 'pool[0]');
     assertField(entry, 'label', 'pool[0]');
     assertField(entry, 'alive', 'pool[0]');
-    assertField(entry, 'directorAgentName', 'pool[0]');
+    assertField(entry, 'agentName', 'pool[0]');
   }
 
   // runtime.pool should mirror pool
@@ -154,10 +154,10 @@ async function testSessionsStructure(): Promise<void> {
 // ── Director runtime APIs (current paths, will move to /api/runtime/) ─
 
 async function testDirectorsQueueCancel(): Promise<void> {
-  const res = await fetch(`${baseUrl}/api/directors/queue/cancel`, {
+  const res = await fetch(`${baseUrl}/api/runtime/queue/cancel`, {
     method: 'POST',
     headers: jsonHeaders(),
-    body: JSON.stringify({ director_label: 'main', correlation_id: 'nonexistent' }),
+    body: JSON.stringify({ runtime_label: 'main', correlation_id: 'nonexistent' }),
   });
   // May return 404 (no such item) or 200 — we just check it responds and has expected fields
   const body = await res.json() as Record<string, unknown>;
@@ -165,34 +165,34 @@ async function testDirectorsQueueCancel(): Promise<void> {
 }
 
 async function testDirectorsSwitchAgent(): Promise<void> {
-  const res = await fetch(`${baseUrl}/api/directors/switch-agent`, {
+  const res = await fetch(`${baseUrl}/api/runtime/switch-agent`, {
     method: 'POST',
     headers: jsonHeaders(),
-    body: JSON.stringify({ director_label: 'main', agent: 'claude' }),
+    body: JSON.stringify({ runtime_label: 'main', agent: 'claude' }),
   });
   assert(res.status === 200, `expected 200, got ${res.status}`);
   const body = await res.json() as Record<string, unknown>;
   assertField(body, 'ok', 'switch-agent response');
-  assertField(body, 'director_label', 'switch-agent response');
+  assertField(body, 'runtime_label', 'switch-agent response');
   assertField(body, 'agent', 'switch-agent response');
 }
 
 async function testDirectorsCommand(): Promise<void> {
   // Use 'esc' which is safe — just cancels current processing
-  const res = await fetch(`${baseUrl}/api/directors/command`, {
+  const res = await fetch(`${baseUrl}/api/runtime/command`, {
     method: 'POST',
     headers: jsonHeaders(),
-    body: JSON.stringify({ director_label: 'main', command: 'esc' }),
+    body: JSON.stringify({ runtime_label: 'main', command: 'esc' }),
   });
   assert(res.status === 200, `expected 200, got ${res.status}`);
   const body = await res.json() as Record<string, unknown>;
   assertField(body, 'ok', 'command response');
-  assertField(body, 'director_label', 'command response');
+  assertField(body, 'runtime_label', 'command response');
   assertField(body, 'command', 'command response');
 }
 
-// Note: /api/directors/shutdown requires a non-main label, skip in smoke test.
-// Note: /api/directors/switch-persona requires valid persona, skip.
+// Note: /api/runtime/shutdown requires a non-main label, skip in smoke test.
+// Note: /api/runtime/switch-persona requires valid persona, skip.
 
 // ── Config summary ───────────────────────────────────────────────────
 
@@ -208,12 +208,12 @@ async function testConfigSummary(): Promise<void> {
 console.log(`\n[test-api-surface] target: ${baseUrl}\n`);
 console.log('  Testing API field structures (pre-refactor freeze)...\n');
 
-await runTest('Status snapshot: system fields (directorAlive, directorAgentName, etc.)', testStatusSnapshotStructure);
+await runTest('Status snapshot: system fields (alive, agentName, etc.)', testStatusSnapshotStructure);
 await runTest('Work context: workspace structure', testWorkContextStructure);
 await runTest('Sessions: list structure', testSessionsStructure);
-await runTest('Directors API: queue/cancel (current path /api/directors/)', testDirectorsQueueCancel);
-await runTest('Directors API: switch-agent (current path, response has director_label)', testDirectorsSwitchAgent);
-await runTest('Directors API: command (current path, response has director_label)', testDirectorsCommand);
+await runTest('Directors API: queue/cancel (current path /api/runtime/)', testDirectorsQueueCancel);
+await runTest('Directors API: switch-agent (current path, response has runtime_label)', testDirectorsSwitchAgent);
+await runTest('Directors API: command (current path, response has runtime_label)', testDirectorsCommand);
 await runTest('Config summary', testConfigSummary);
 
 // ── summary ──────────────────────────────────────────────────────────

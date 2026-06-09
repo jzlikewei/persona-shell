@@ -12,7 +12,7 @@ export interface ChatMessage {
   content: string
   timestamp: string
   sessionId?: string
-  director?: string
+  agentLabel?: string
   tools?: ChatToolCall[]
   attachments?: string[]
   model?: string
@@ -31,7 +31,7 @@ interface ApiConversationMessage {
 
 interface AssistantTurnEvent {
   type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted'
-  director: string
+  agentLabel: string
   sessionId?: string | null
   turnId: string
   messageId?: string
@@ -331,7 +331,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
               role: 'assistant',
               content: text,
               timestamp: event.timestamp || new Date().toISOString(),
-              director: event.director,
+              agentLabel: event.agentLabel,
               sessionId: event.sessionId ?? undefined,
               tools: tools.length ? tools : undefined,
             }
@@ -353,7 +353,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
             role: 'assistant',
             content: event.error ? `处理失败：${event.error}` : '处理失败，请稍后重试',
             timestamp: event.timestamp || new Date().toISOString(),
-            director: event.director,
+            agentLabel: event.agentLabel,
             sessionId: event.sessionId ?? undefined,
           }
           setMessages(prev => [...prev, msg])
