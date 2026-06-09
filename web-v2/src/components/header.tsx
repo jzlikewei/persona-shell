@@ -41,7 +41,7 @@ export function Header({
 }) {
   const status = useStatus()
   const { status: wsStatus } = useWebSocket()
-  const alive = status?.system?.directorAlive ?? false
+  const alive = status?.system?.alive ?? false
 
   return (
     <header className="flex h-[34px] shrink-0 items-center gap-4 border-b border-[#313244] bg-[#181825] px-3 text-xs text-[#7f849c]">

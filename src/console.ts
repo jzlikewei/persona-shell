@@ -575,8 +575,8 @@ export function startConsole(
         ? getSessionRecord(entry.directorStatus.sessionId)?.archived === 1
         : false,
       agentName: entry.agentName ?? entry.directorStatus?.agentName ?? null,
-      directorAgentType: entry.directorStatus?.agentType ?? null,
-      directorAgentModel: entry.directorStatus?.agentModel ?? null,
+      agentType: entry.directorStatus?.agentType ?? null,
+      agentModel: entry.directorStatus?.agentModel ?? null,
       personaRole: entry.personaRole ?? entry.directorStatus?.personaRole ?? null,
       restartCount: entry.directorStatus?.restartCount ?? 0,
       recentRestartCount: entry.directorStatus?.recentRestartCount ?? 0,
@@ -612,8 +612,8 @@ export function startConsole(
           status: systemStatus,
           uptime: now - startedAt,
           messaging: messagingStatus,
-          directorAlive: ds.alive,
-          directorPid: ds.pid,
+          alive: ds.alive,
+          pid: ds.pid,
           sessionId: ds.sessionId,
           sessionName: ds.sessionName,
           // 把"当前 live session 是否已 archived"暴露给前端。
@@ -622,8 +622,8 @@ export function startConsole(
           // 但前端 hook 又 unshift 回来,UI 永远看不到归档生效。
           liveSessionArchived: ds.sessionId ? getSessionRecord(ds.sessionId)?.archived === 1 : false,
           agentName: ds.agentName,
-          directorAgentType: ds.agentType,
-          directorAgentModel: ds.agentModel,
+          agentType: ds.agentType,
+          agentModel: ds.agentModel,
           personaRole: ds.personaRole,
           restartCount: ds.restartCount,
           recentRestartCount: ds.recentRestartCount,
@@ -1852,7 +1852,7 @@ export function startConsole(
       if (!ok) throw new Error(`failed to switch main Director to ${agentName}`);
       return {
         ok: true,
-        director_label: 'main',
+        runtime_label: 'main',
         agent: director.getAgentName(),
         agent_type: director.getDirectorAgentType(),
       };
@@ -1865,7 +1865,7 @@ export function startConsole(
     const entry = await sessionManager.runtimeSwitchAgentByLabel(targetLabel, agentName.trim());
     return {
       ok: true,
-      director_label: entry.bridge.label,
+      runtime_label: entry.bridge.label,
       agent: entry.bridge.getAgentName(),
       agent_type: entry.bridge.getDirectorAgentType(),
     };
@@ -1884,7 +1884,7 @@ export function startConsole(
     if (targetLabel === 'main') {
       const ok = await director.switchPersona(role);
       if (!ok) throw new Error(`failed to switch main Director persona to ${role}`);
-      return { ok: true, director_label: 'main', role: director.getPersonaRole() };
+      return { ok: true, runtime_label: 'main', role: director.getPersonaRole() };
     }
     if (!sessionManager) {
       const err = new Error('Director session manager is not available') as Error & { status?: number };
@@ -1892,7 +1892,7 @@ export function startConsole(
       throw err;
     }
     const entry = await sessionManager.runtimeSwitchPersonaByLabel(targetLabel, role);
-    return { ok: true, director_label: entry.bridge.label, role: entry.bridge.getPersonaRole() };
+    return { ok: true, runtime_label: entry.bridge.label, role: entry.bridge.getPersonaRole() };
   }
 
   type RuntimeDirectorCommand = 'flush' | 'clear' | 'esc' | 'session-restart' | 'detach';
@@ -1923,7 +1923,7 @@ export function startConsole(
         throw err;
       }
       const result = await handleCommand(normalized);
-      return { ...result, director_label: 'main', command: normalized };
+      return { ...result, runtime_label: 'main', command: normalized };
     }
     if (!sessionManager) {
       const err = new Error('Director session manager is not available') as Error & { status?: number };
@@ -1990,7 +1990,7 @@ export function startConsole(
       message: result.message,
       ...(result.detail ?? {}),
     });
-    return { ok: result.ok, director_label: targetLabel, command: normalized, message: result.message, ...(result.detail ?? {}) };
+    return { ok: result.ok, runtime_label: targetLabel, command: normalized, message: result.message, ...(result.detail ?? {}) };
   }
 
   function stateFilePath(kind: 'state' | 'todo'): string {
@@ -3118,7 +3118,7 @@ export function startConsole(
             writeAuditEntry('queue.clear', true, { target: 'main', cleared: cleared.length });
             return Response.json({ ok: true, cleared: cleared.length });
           }
-          if (url.pathname === '/api/directors/queue/cancel' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/queue/cancel' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; director?: string; correlation_id?: string; correlationId?: string };
             const directorLabel = (body.director_label ?? body.director ?? '').trim();
             const correlationId = (body.correlation_id ?? body.correlationId ?? '').trim();
@@ -3144,7 +3144,7 @@ export function startConsole(
             return Response.json({
               ok: true,
               item: {
-                director_label: cancelled.label,
+                runtime_label: cancelled.label,
                 workspaceName: cancelled.workspaceName,
                 correlationId,
                 messageId: cancelled.item.messageId,
@@ -3502,7 +3502,7 @@ export function startConsole(
             writeAuditEntry('persona.session_link.delete', true, { target: key, channel, externalId });
             return Response.json({ ok: true, deleted: true, key });
           }
-          if (url.pathname === '/api/directors/switch-agent' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/switch-agent' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; agent?: string };
             try {
               const result = await switchDirectorAgent(body.director_label ?? 'main', body.agent ?? '');
@@ -3514,7 +3514,7 @@ export function startConsole(
               return Response.json({ ok: false, error: error.message || String(error) }, { status: error.status ?? 500 });
             }
           }
-          if (url.pathname === '/api/directors/switch-persona' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/switch-persona' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; role?: string };
             try {
               const result = await switchDirectorPersona(body.director_label ?? 'main', body.role ?? '');
@@ -3526,7 +3526,7 @@ export function startConsole(
               return Response.json({ ok: false, error: error.message || String(error) }, { status: error.status ?? 500 });
             }
           }
-          if (url.pathname === '/api/directors/command' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/command' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; command?: string };
             try {
               const result = await runRuntimeDirectorCommand(body.director_label ?? 'main', body.command ?? '');
@@ -3547,7 +3547,7 @@ export function startConsole(
               return Response.json({ ok: false, error: error.message || String(error) }, { status: error.status ?? 500 });
             }
           }
-          if (url.pathname === '/api/directors/shutdown' && req.method === 'POST') {
+          if (url.pathname === '/api/runtime/shutdown' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string };
             const targetLabel = (body.director_label ?? '').trim();
             try {
@@ -3574,7 +3574,7 @@ export function startConsole(
               }
               await sessionManager.getRuntime().shutdown(target.routingKey);
               writeAuditEntry('director.shutdown', true, { target: targetLabel, routingKey: target.routingKey, workspaceName: target.workspaceName ?? null });
-              return Response.json({ ok: true, director_label: targetLabel, routing_key: target.routingKey });
+              return Response.json({ ok: true, runtime_label: targetLabel, runtime_routing_key: target.routingKey });
             } catch (err) {
               const error = err as Error & { status?: number };
               writeAuditEntry('director.shutdown', false, { target: targetLabel || null, error: error.message || String(error) });
