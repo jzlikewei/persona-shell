@@ -1377,7 +1377,7 @@ async function main() {
       directorText = `${quotePrefix}${text}`;
     }
 
-    // Routing: 小群 → DirectorPool, 私聊 → 主 Director
+    // Routing: 小群/话题群 → workspace default session, 私聊 → main workspace runtime
     // (routingKey was computed above, before slash command handling)
     if (routingKey) {
       log.debug(`[shell] Routing key: ${routingKey} (threadId=${msg.threadId ?? 'N/A'})`);
@@ -1403,13 +1403,13 @@ async function main() {
         if (String(err).includes('flushing')) {
           await messaging.reply(messageId, '正在刷新上下文，请稍后重试').catch(() => {});
         } else {
-          console.error(`[shell] pool send failed:`, err);
-          metrics.addError(`Pool send failed: ${String(err).slice(0, 200)}`);
+          console.error(`[shell] workspace session send failed:`, err);
+          metrics.addError(`Workspace session send failed: ${String(err).slice(0, 200)}`);
           await messaging.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
         }
       }
     } else {
-      // 私聊 → 主 Director
+      // 私聊 → main workspace runtime
       if (director.getStatus().pendingCount > 0) {
         try {
           director.promoteActiveTurnToUser();

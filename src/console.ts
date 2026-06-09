@@ -687,8 +687,6 @@ export function startConsole(
     taskAgent?: string | null;
     sourceSessionId?: string | null;
     workspace?: string | null;
-    /** @deprecated legacy task source field. */
-    sourceDirector?: string | null;
     taskCreatedAt?: string;
     taskCompletedAt?: string | null;
     taskParentSessionId?: string;
@@ -839,7 +837,6 @@ export function startConsole(
     file.taskAgent = task.agent;
     file.sourceSessionId = task.source_session_id;
     file.workspace = task.workspace;
-    file.sourceDirector = task.source_director;
     file.taskCreatedAt = task.created_at;
     file.taskCompletedAt = task.completed_at;
     file.taskParentSessionId = taskExtraString(task, 'parent_session_id') ?? taskExtraString(task, 'parent_codex_thread_id');
@@ -1076,7 +1073,6 @@ export function startConsole(
         task.result_file ?? '',
         task.workspace ?? '',
         task.source_session_id ?? '',
-        task.source_director ?? '',
       ].join('\n');
       const score = searchScore(fields, q);
       if (score <= 0) continue;
@@ -1087,7 +1083,6 @@ export function startConsole(
         timestamp: Date.parse(task.completed_at || task.started_at || task.created_at),
         workspace: task.workspace ?? undefined,
         sessionId: task.source_session_id ?? undefined,
-        director: task.source_director ?? undefined,
         taskId: task.id,
         status: task.status,
         score: score + 3,
