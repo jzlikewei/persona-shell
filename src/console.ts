@@ -12,7 +12,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, buildTaskParentMetadata } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, buildTaskParentMetadata, type TaskExtra } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
@@ -1458,7 +1458,7 @@ export function startConsole(
       cronRuns.set(job.id, { id: job.id, name: job.name, total: 0, completed: 0, failed: 0, running: 0, lastRunAt: job.last_run_at });
     }
     for (const task of tasks) {
-      const cronJobId = (task.extra as Record<string, unknown> | null)?.cronJobId as string | undefined;
+      const cronJobId = task.extra?.cronJobId;
       if (!cronJobId) continue;
       const job = cronRuns.get(cronJobId) ?? { id: cronJobId, name: cronJobId, total: 0, completed: 0, failed: 0, running: 0, lastRunAt: null };
       job.total += 1;
@@ -1678,7 +1678,7 @@ export function startConsole(
 
   function runCreatedTask(task: ReturnType<typeof createTask>): void {
     if (!taskRunner) return;
-    const extra = (task.extra ?? {}) as Record<string, unknown>;
+    const extra: TaskExtra = task.extra ?? {};
     const sourceSessionId = task.source_session_id ?? null;
     const workspace = task.workspace ?? null;
     const liveEntry = sourceSessionId && sessionManager ? sessionManager.getSession(sourceSessionId) : null;
@@ -1696,10 +1696,10 @@ export function startConsole(
       taskId: task.id,
       role: task.role,
       agent: task.agent ?? undefined,
-      model: extra.model as string | undefined,
+      model: extra.model,
       prompt: task.prompt,
       description: task.description,
-      projectDir: extra.project_dir as string | undefined,
+      projectDir: extra.project_dir,
       timeoutMs: task.timeout_ms ?? undefined,
     });
   }
@@ -1714,7 +1714,7 @@ export function startConsole(
       const active = [
         ...listTasks({ status: 'running', limit: 200 }),
         ...listTasks({ status: 'dispatched', limit: 200 }),
-      ].some((task) => task.type === 'cron' && (task.extra as Record<string, unknown> | null)?.cronJobId === job.id);
+      ].some((task) => task.type === 'cron' && task.extra?.cronJobId === job.id);
       if (active) {
         const err = new Error('previous cron run is still active') as Error & { status?: number };
         err.status = 409;
@@ -3697,16 +3697,16 @@ export function startConsole(
               writeAuditEntry('task.retry', false, { target: taskId, error: 'task not found' });
               return Response.json({ ok: false, taskId, error: `task not found: ${taskId}` }, { status: 404 });
             }
-            const extra: Record<string, unknown> = { ...((original.extra ?? {}) as Record<string, unknown>), retried_from: original.id };
+            const extra: TaskExtra = { ...(original.extra ?? {}), retried_from: original.id };
             const task = createTask(normalizeTaskSource({
               type: (original.type === 'cron' ? 'cron' : 'role') as CreateTaskInput['type'],
               role: original.role,
               agent: original.agent ?? undefined,
-              model: extra.model as string | undefined,
+              model: extra.model,
               description: `Retry: ${original.description}`,
               prompt: original.prompt,
               max_retry: original.max_retry,
-              project_dir: extra.project_dir as string | undefined,
+              project_dir: extra.project_dir,
               timeout_ms: original.timeout_ms ?? undefined,
               source_session_id: original.source_session_id ?? undefined,
               workspace: original.workspace ?? undefined,

@@ -17,6 +17,60 @@ export function localNow(): string {
   return local.toISOString().replace('Z', `${sign}${hh}:${mm}`);
 }
 
+// ---------------------------------------------------------------------------
+// TaskExtra — typed shape for the JSON `extra` column
+// ---------------------------------------------------------------------------
+
+export interface CodexCallback {
+  type: 'codex_thread';
+  thread_id: string;
+  cwd?: string;
+}
+
+export interface TaskExtra {
+  // --- spawn / process ---
+  spawnArgs?: string[];
+  pid?: number;
+
+  // --- model / project ---
+  model?: string;
+  project_dir?: string;
+
+  // --- codex integration ---
+  codex_thread_id?: string;
+  codex_callback?: CodexCallback;
+
+  // --- parent session metadata (set by buildTaskParentMetadata) ---
+  parent_workspace?: string | null;
+  parent_session_id?: string | null;
+  parent_runtime_label?: string | null;
+  parent_session_status?: string | null;
+  parent_session_name?: string | null;
+  parent_agent?: string;
+  parent_agent_type?: string;
+  parent_persona_role?: string;
+  parent_pid?: number | null;
+  parent_codex_thread_id?: string;
+
+  // --- persona / delegate ---
+  persona_role?: string;
+  persona_session_id?: string;
+
+  // --- channel routing ---
+  channel?: string;
+  external_id?: string;
+
+  // --- cron ---
+  cronJobId?: string;
+  manualRun?: boolean;
+
+  // --- retry ---
+  retried_from?: string;
+
+  // --- extensible: legacy or ad-hoc fields ---
+  [key: string]: unknown;
+}
+
 export interface CreateTaskInput {
   type: 'role' | 'cron';
   role: string;
@@ -26,7 +80,7 @@ export interface CreateTaskInput {
   prompt: string;
   max_retry?: number;
   project_dir?: string;
-  extra?: Record<string, unknown>;
+  extra?: TaskExtra;
   /** 任务超时时间（毫秒）；为空时使用 config 默认值 */
   timeout_ms?: number;
   /** 发起方 sessionId，用于任务回调路由 */
@@ -54,7 +108,7 @@ export interface Task {
   max_retry: number;
   cost_usd: number | null;
   duration_ms: number | null;
-  extra: Record<string, unknown> | null;
+  extra: TaskExtra | null;
   /** 任务超时时间（毫秒）；null 表示使用 config 默认值 */
   timeout_ms: number | null;
   /** 发起方 sessionId，用于任务回调路由 */
@@ -313,7 +367,7 @@ function migrateSessionsTable(db: Database): void {
 function rowToTask(row: Record<string, unknown>): Task {
   return {
     ...row,
-    extra: row.extra ? JSON.parse(row.extra as string) : null,
+    extra: row.extra ? JSON.parse(row.extra as string) as TaskExtra : null,
   } as Task;
 }
 
@@ -337,7 +391,7 @@ export function createTask(input: CreateTaskInput): Task {
   const d = getDb();
   const id = generateTaskId(d);
   const now = localNow();
-  const extraObj = { ...input.extra };
+  const extraObj: TaskExtra = { ...input.extra };
   if (input.project_dir) extraObj.project_dir = input.project_dir;
   if (input.model) extraObj.model = input.model;
   const extra = Object.keys(extraObj).length > 0 ? JSON.stringify(extraObj) : null;
@@ -917,8 +971,8 @@ export interface TaskParentSourceInput {
 export function buildTaskParentMetadata(
   source: TaskParentSourceInput,
   status: TaskParentStatusInput | null | undefined,
-): Record<string, unknown> {
-  const meta: Record<string, unknown> = {
+): TaskExtra {
+  const meta: TaskExtra = {
     parent_workspace: source.workspace ?? null,
     parent_session_id: source.sourceSessionId ?? status?.sessionId ?? null,
     parent_runtime_label: source.runtimeLabel ?? null,
@@ -931,7 +985,7 @@ export function buildTaskParentMetadata(
   meta.parent_persona_role = status.personaRole;
   meta.parent_pid = status.pid;
   if (status.agentType === 'codex-app-server') {
-    meta.parent_codex_thread_id = status.sessionId;
+    meta.parent_codex_thread_id = status.sessionId ?? undefined;
   }
   return meta;
 }

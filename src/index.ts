@@ -15,7 +15,7 @@ import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
 import { isBashAction, extractBashCommand, runBashAction } from './task/shell-bash.js';
 import { resolveCronMessage } from './prompt-loader.js';
-import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow, getSessionRecord } from './task/task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, initTaskStore, localNow, getSessionRecord, type TaskExtra } from './task/task-store.js';
 import { writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
@@ -407,7 +407,7 @@ async function main() {
 
   // Startup: clean up orphan tasks from previous crash/restart
   const orphanRecovered = taskRunner.cleanupOrphanTasks(
-    (filter) => listTasks(filter) as Array<{ id: string; created_at: string; started_at: string | null; extra: unknown; description: string }>,
+    (filter) => listTasks(filter) as Array<{ id: string; created_at: string; started_at: string | null; extra: TaskExtra | null; description: string }>,
     (id, data) => updateTask(id, data),
   );
 
@@ -514,7 +514,7 @@ async function main() {
     return null;
   }
 
-  function mergeTaskExtra(taskId: string, patch: Record<string, unknown>): void {
+  function mergeTaskExtra(taskId: string, patch: TaskExtra): void {
     const current = getTask(taskId);
     const cleanPatch = Object.fromEntries(
       Object.entries(patch).filter(([, value]) => value !== undefined && value !== null),
@@ -535,10 +535,10 @@ async function main() {
     return entry ? { kind: 'pool' as const, sessionId, entry } : null;
   }
 
-  function codexCallbackFromTask(task: { extra?: unknown } | null | undefined): { threadId: string; cwd?: string } | null {
-    const extra = task?.extra && typeof task.extra === 'object' ? task.extra as Record<string, unknown> : {};
+  function codexCallbackFromTask(task: { extra?: TaskExtra | null } | null | undefined): { threadId: string; cwd?: string } | null {
+    const extra: TaskExtra = task?.extra && typeof task.extra === 'object' ? task.extra : {};
     const callback = extra.codex_callback && typeof extra.codex_callback === 'object'
-      ? extra.codex_callback as Record<string, unknown>
+      ? extra.codex_callback
       : null;
     if (!callback || callback.type !== 'codex_thread') return null;
     const threadId = typeof callback.thread_id === 'string' ? callback.thread_id.trim() : '';
@@ -654,7 +654,7 @@ async function main() {
     if (task && task.retry_count < task.max_retry && result.error !== 'cancelled') {
       updateTask(result.taskId, { retry_count: task.retry_count + 1, status: 'dispatched' });
       console.log(`[shell] Retrying task ${result.taskId} (attempt ${task.retry_count + 1}/${task.max_retry})`);
-      taskRunner.runTask({ taskId: result.taskId, role: task.role, agent: task.agent ?? undefined, model: (task.extra as Record<string, unknown>)?.model as string | undefined, prompt: task.prompt, description: task.description, projectDir: (task.extra as Record<string, unknown>)?.project_dir as string | undefined });
+      taskRunner.runTask({ taskId: result.taskId, role: task.role, agent: task.agent ?? undefined, model: task.extra?.model, prompt: task.prompt, description: task.description, projectDir: task.extra?.project_dir });
       return;
     }
 
@@ -765,14 +765,14 @@ async function main() {
           source_session_id: defaultEntry?.sessionId,
         });
         mergeTaskExtra(task.id, { parent_workspace: workspace, parent_session_id: defaultEntry?.sessionId });
-        taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, model: (task.extra as Record<string, unknown>)?.model as string | undefined, prompt: task.prompt, description: task.description, timeoutMs: task.timeout_ms ?? undefined });
+        taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, model: task.extra?.model, prompt: task.prompt, description: task.description, timeoutMs: task.timeout_ms ?? undefined });
         return task.id;
       },
       isOverlapping: (jobId, _role) => {
         const active = listTasks({ status: 'running' });
         const dispatched = listTasks({ status: 'dispatched' });
         return [...active, ...dispatched].some(
-          (t) => t.type === 'cron' && (t.extra as Record<string, unknown>)?.cronJobId === jobId,
+          (t) => t.type === 'cron' && t.extra?.cronJobId === jobId,
         );
       },
       markJobRun: (jobId) => {

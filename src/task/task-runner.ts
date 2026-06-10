@@ -7,7 +7,7 @@ import { spawnPersona } from '../persona-process.js';
 import { resolveAgentProvider, isCodexFamily, loadConfig, type Config } from '../config.js';
 import { loadPrompt } from '../prompt-loader.js';
 import { getLogDir } from '../logger.js';
-import { localNow, getTaskTimeouts } from './task-store.js';
+import { localNow, getTaskTimeouts, type TaskExtra } from './task-store.js';
 import { CodexAppServerRuntime, type CodexAppServerRuntimeHooks } from '../director-runtime/codex-app-server.js';
 
 export interface TaskRunnerConfig {
@@ -543,7 +543,7 @@ export class TaskRunner extends EventEmitter {
 
   /** Startup cleanup: scan DB for tasks stuck in 'running'/'dispatched' and resolve them. */
   cleanupOrphanTasks(
-    listTasksFn: (filter: { status: string }) => Array<{ id: string; created_at: string; started_at: string | null; extra: unknown; description: string }>,
+    listTasksFn: (filter: { status: string }) => Array<{ id: string; created_at: string; started_at: string | null; extra: TaskExtra | null; description: string }>,
     updateTaskFn: (id: string, data: Record<string, unknown>) => void,
   ): Array<{ id: string; status: string; description: string }> {
     const recovered: Array<{ id: string; status: string; description: string }> = [];
@@ -555,8 +555,8 @@ export class TaskRunner extends EventEmitter {
     }
 
     for (const task of running) {
-      const extra = task.extra as Record<string, unknown> | null;
-      const pid = extra?.pid as number | undefined;
+      const extra = task.extra;
+      const pid = extra?.pid;
 
       if (!pid) {
         updateTaskFn(task.id, { status: 'failed', completed_at: localNow(), error: 'orphaned (shell restarted, no PID)' });
