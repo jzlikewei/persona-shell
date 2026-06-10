@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useApi } from './use-api'
 import { useWebSocket } from './use-websocket'
+import { useToast } from '@/components/toast'
 
 const ACTIVE_SESSION_KEY = 'persona-shell:v2:active-session-id'
 export const ACTIVE_SESSION_EVENT = 'persona-shell:v2:active-session-change'
@@ -49,6 +50,7 @@ export function useSessions(workspace?: string) {
   const { get } = useApi()
   const requestSeq = useRef(0)
   const { on } = useWebSocket()
+  const { toast } = useToast()
 
   const setActiveSession = useCallback((id: string | undefined) => {
     if (id) {
@@ -100,10 +102,11 @@ export function useSessions(workspace?: string) {
       })
     } catch (e) {
       console.error('Failed to load sessions:', e)
+      toast({ title: '加载 Session 列表失败', description: e instanceof Error ? e.message : String(e), tone: 'error' })
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [wsKey, get, storageKey])
+  }, [wsKey, get, storageKey, toast])
 
   useEffect(() => {
     loadSessions()

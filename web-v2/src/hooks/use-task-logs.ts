@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useApi } from '@/hooks/use-api'
+import { useToast } from '@/components/toast'
 
 /* ── types ────────────────────────────────────── */
 
@@ -21,6 +22,7 @@ type TaskStatus = 'dispatched' | 'running' | 'completed' | 'failed'
 
 export function useTaskLogs(taskId: string | null, taskStatus: TaskStatus | undefined) {
   const { get } = useApi()
+  const { toast } = useToast()
   const [logs, setLogs] = useState<TaskLogEntry[]>([])
   const [totalLines, setTotalLines] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -43,10 +45,12 @@ export function useTaskLogs(taskId: string | null, taskStatus: TaskStatus | unde
       setTotalLines(data.totalLines)
       totalRef.current = data.totalLines
       setLoading(false)
-    } catch {
+    } catch (e) {
+      console.error('Failed to load task logs:', e)
+      toast({ title: '加载任务日志失败', description: e instanceof Error ? e.message : String(e), tone: 'error' })
       setLoading(false)
     }
-  }, [get])
+  }, [get, toast])
 
   useEffect(() => {
     if (!taskId) return

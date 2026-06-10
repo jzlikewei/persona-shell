@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useApi } from './use-api'
 import { useWebSocket } from './use-websocket'
+import { useToast } from '@/components/toast'
 
 export interface AgentProvider {
   type: string
@@ -30,6 +31,7 @@ interface ConfigSummary {
 export function useAgents() {
   const { get } = useApi()
   const { on } = useWebSocket()
+  const { toast } = useToast()
   const [agents, setAgents] = useState<Record<string, AgentProvider>>({})
   const [loading, setLoading] = useState(true)
 
@@ -39,10 +41,11 @@ export function useAgents() {
       setAgents(res.agents.providers)
     } catch (e) {
       console.error('useAgents: failed to load config-summary:', e)
+      toast({ title: '加载 Agent 配置失败', description: e instanceof Error ? e.message : String(e), tone: 'error' })
     } finally {
       setLoading(false)
     }
-  }, [get])
+  }, [get, toast])
 
   useEffect(() => {
     reload()

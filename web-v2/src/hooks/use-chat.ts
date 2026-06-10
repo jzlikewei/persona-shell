@@ -1,6 +1,7 @@
 import { startTransition, useState, useCallback, useEffect, useRef } from 'react'
 import { useApi } from './use-api'
 import { useWebSocket } from './use-websocket'
+import { useToast } from '@/components/toast'
 import { mergeChatToolCall, type ChatToolCall } from './chat-tools'
 import { uuid } from '@/lib/utils'
 
@@ -84,6 +85,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set())
   const { get, post } = useApi()
   const { on, status } = useWebSocket()
+  const { toast } = useToast()
   const sessionIdRef = useRef(sessionId)
   const liveSessionRef = useRef(liveSession)
   const requestSeq = useRef(0)
@@ -151,10 +153,11 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       }
     } catch (e) {
       console.error('Failed to load messages:', e)
+      toast({ title: '加载消息失败', description: e instanceof Error ? e.message : String(e), tone: 'error' })
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [get, sessionId, workspace, limit])
+  }, [get, sessionId, workspace, limit, toast])
 
   // "Load earlier" 只能调大 limit 重新拉窗口
   const loadMore = useCallback(() => {
@@ -234,6 +237,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       }
     } catch (e) {
       console.error('Failed to create session:', e)
+      toast({ title: '新建 Session 失败', description: e instanceof Error ? e.message : String(e), tone: 'error' })
       setMessages(prev => [...prev, {
         id: uuid(),
         role: 'assistant',
@@ -261,6 +265,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       })
     } catch (e) {
       console.error('Failed to send message:', e)
+      toast({ title: '消息发送失败', description: e instanceof Error ? e.message : String(e), tone: 'error' })
       const errMsg: ChatMessage = {
         id: uuid(),
         role: 'assistant',
@@ -272,7 +277,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     } finally {
       setSending(false)
     }
-  }, [post, sessionId, workspace, flushStreaming])
+  }, [post, sessionId, workspace, flushStreaming, toast])
 
   useEffect(() => {
     const unsubs = [
