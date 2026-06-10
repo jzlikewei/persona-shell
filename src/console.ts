@@ -6,6 +6,7 @@ import { homedir } from 'os';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { parseConversationLog, parseConversationLogFiles, parseTaskLog } from './log-parser.js';
+import { parseClaudeTranscript } from './claude-transcript-reader.js';
 
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
@@ -1571,59 +1572,6 @@ export function startConsole(
     return entries.reverse().slice(0, Math.max(1, Math.min(limit, 300)));
   }
 
-  // 处理客户端命令
-  async function handleCommand(
-    command: string,
-  ): Promise<{ ok: boolean; message: string }> {
-    try {
-      let result: { ok: boolean; message: string };
-      switch (command) {
-        case 'flush': {
-          const success = await director.flush();
-          result = {
-            ok: success,
-            message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）',
-          };
-          writeAuditEntry('director.flush', result.ok, { command, target: 'main', message: result.message });
-          return result;
-        }
-        case 'clear': {
-          const success = await director.clearContext();
-          result = {
-            ok: success,
-            message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）',
-          };
-          writeAuditEntry('director.clear', result.ok, { command, target: 'main', message: result.message });
-          return result;
-        }
-        case 'esc': {
-          const cancelled = queue.cancelOldest();
-          if (cancelled) {
-            await director.interrupt();
-            result = { ok: true, message: `已取消: "${cancelled.text.slice(0, 30)}..."` };
-            writeAuditEntry('director.esc', true, { command, target: 'main', messageId: cancelled.messageId });
-            return result;
-          }
-          result = { ok: false, message: '队列为空，没有可取消的消息' };
-          writeAuditEntry('director.esc', false, { command, target: 'main', reason: 'empty queue' });
-          return result;
-        }
-        case 'session-restart': {
-          await director.restartProcess();
-          result = { ok: true, message: 'Director 已重启' };
-          writeAuditEntry('director.restart', true, { command, target: 'main' });
-          return result;
-        }
-        default:
-          result = { ok: false, message: `未知命令: ${command}` };
-          writeAuditEntry('director.command_unknown', false, { command });
-          return result;
-      }
-    } catch (err) {
-      writeAuditEntry('director.command_error', false, { command, error: String(err) });
-      return { ok: false, message: String(err) };
-    }
-  }
 
   // 每秒向所有客户端推送状态
   const statusInterval = setInterval(() => {
@@ -1913,84 +1861,105 @@ export function startConsole(
     return `director.${command}`;
   }
 
-  async function runRuntimeDirectorCommand(label: string, command: string): Promise<Record<string, unknown>> {
+  /**
+   * Unified handler for Director commands (flush / clear / esc / session-restart / detach).
+   * Routes to main Director or a runtime session based on label.
+   */
+  async function executeDirectorCommand(label: string, command: string): Promise<Record<string, unknown>> {
     const targetLabel = label.trim() || 'main';
     const normalized = normalizeRuntimeDirectorCommand(command);
+
+    let result: { ok: boolean; message: string; detail?: Record<string, unknown> };
+
     if (targetLabel === 'main') {
       if (normalized === 'detach') {
         const err = new Error('main Director detach is not supported from web console') as Error & { status?: number };
         err.status = 400;
         throw err;
       }
-      const result = await handleCommand(normalized);
-      return { ...result, runtime_label: 'main', command: normalized };
-    }
-    if (!sessionManager) {
-      const err = new Error('Director session manager is not available') as Error & { status?: number };
-      err.status = 503;
-      throw err;
-    }
-
-    let result: { ok: boolean; message: string; detail?: Record<string, unknown> };
-    try {
-      switch (normalized) {
-        case 'flush': {
-          const success = await sessionManager.runtimeFlushByLabel(targetLabel);
-          result = {
-            ok: success,
-            message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）',
-          };
-          break;
-        }
-        case 'clear': {
-          const success = await sessionManager.runtimeClearContextByLabel(targetLabel);
-          result = {
-            ok: success,
-            message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）',
-          };
-          break;
-        }
-        case 'esc': {
-          const cancelled = await sessionManager.runtimeInterruptOldestByLabel(targetLabel);
-          result = cancelled
-            ? {
-              ok: true,
-              message: `已取消: "${cancelled.text.slice(0, 30)}..."`,
-              detail: { messageId: cancelled.messageId, correlationId: cancelled.correlationId },
+      try {
+        switch (normalized) {
+          case 'flush': {
+            const success = await director.flush();
+            result = { ok: success, message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）' };
+            break;
+          }
+          case 'clear': {
+            const success = await director.clearContext();
+            result = { ok: success, message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）' };
+            break;
+          }
+          case 'esc': {
+            const cancelled = queue.cancelOldest();
+            if (cancelled) {
+              await director.interrupt();
+              result = { ok: true, message: `已取消: "${cancelled.text.slice(0, 30)}..."`, detail: { messageId: cancelled.messageId } };
+            } else {
+              result = { ok: false, message: '队列为空，没有可取消的消息' };
             }
-            : { ok: false, message: '队列为空，没有可取消的消息' };
-          break;
+            break;
+          }
+          case 'session-restart':
+            await director.restartProcess();
+            result = { ok: true, message: 'Director 已重启' };
+            break;
         }
-        case 'session-restart':
-          await sessionManager.runtimeRestartByLabel(targetLabel);
-          result = { ok: true, message: 'Director 已重启' };
-          break;
-        case 'detach': {
-          const entry = await sessionManager.runtimeDetachByLabel(targetLabel);
-          result = {
-            ok: true,
-            message: 'Director 已 Detach，底层进程未主动关闭',
-            detail: { routingKey: entry.routingKey, workspaceName: entry.workspaceName },
-          };
-          break;
+      } catch (err) {
+        writeAuditEntry('director.command_error', false, { command: normalized, target: 'main', error: String(err) });
+        return { ok: false, message: String(err), runtime_label: 'main', command: normalized };
+      }
+    } else {
+      if (!sessionManager) {
+        const err = new Error('Director session manager is not available') as Error & { status?: number };
+        err.status = 503;
+        throw err;
+      }
+      try {
+        switch (normalized) {
+          case 'flush': {
+            const success = await sessionManager.runtimeFlushByLabel(targetLabel);
+            result = { ok: success, message: success ? 'Flush 完成' : 'Flush 未能完成（超时或正在进行中）' };
+            break;
+          }
+          case 'clear': {
+            const success = await sessionManager.runtimeClearContextByLabel(targetLabel);
+            result = { ok: success, message: success ? 'Clear 完成，上下文已清空' : 'Clear 未能完成（正在进行中）' };
+            break;
+          }
+          case 'esc': {
+            const cancelled = await sessionManager.runtimeInterruptOldestByLabel(targetLabel);
+            result = cancelled
+              ? { ok: true, message: `已取消: "${cancelled.text.slice(0, 30)}..."`, detail: { messageId: cancelled.messageId, correlationId: cancelled.correlationId } }
+              : { ok: false, message: '队列为空，没有可取消的消息' };
+            break;
+          }
+          case 'session-restart':
+            await sessionManager.runtimeRestartByLabel(targetLabel);
+            result = { ok: true, message: 'Director 已重启' };
+            break;
+          case 'detach': {
+            const entry = await sessionManager.runtimeDetachByLabel(targetLabel);
+            result = { ok: true, message: 'Director 已 Detach，底层进程未主动关闭', detail: { routingKey: entry.routingKey, workspaceName: entry.workspaceName } };
+            break;
+          }
         }
+      } catch (err) {
+        if ((err as Error).message.startsWith('Director label not found:')) {
+          const notFound = new Error((err as Error).message) as Error & { status?: number };
+          notFound.status = 404;
+          throw notFound;
+        }
+        throw err;
       }
-    } catch (err) {
-      if ((err as Error).message.startsWith('Director label not found:')) {
-        const notFound = new Error((err as Error).message) as Error & { status?: number };
-        notFound.status = 404;
-        throw notFound;
-      }
-      throw err;
     }
 
-    writeAuditEntry(runtimeDirectorAuditAction(normalized), result.ok, {
+    writeAuditEntry(runtimeDirectorAuditAction(normalized), result!.ok, {
       command: normalized,
       target: targetLabel,
-      message: result.message,
-      ...(result.detail ?? {}),
+      message: result!.message,
+      ...(result!.detail ?? {}),
     });
-    return { ok: result.ok, runtime_label: targetLabel, command: normalized, message: result.message, ...(result.detail ?? {}) };
+    return { ok: result!.ok, runtime_label: targetLabel, command: normalized, message: result!.message, ...(result!.detail ?? {}) };
   }
 
   function stateFilePath(kind: 'state' | 'todo'): string {
@@ -3091,11 +3060,11 @@ export function startConsole(
           }
 
           if (url.pathname === '/api/flush' && req.method === 'POST') {
-            const result = await handleCommand('flush');
+            const result = await executeDirectorCommand('main', 'flush');
             return Response.json(result);
           }
           if (url.pathname === '/api/clear' && req.method === 'POST') {
-            const result = await handleCommand('clear');
+            const result = await executeDirectorCommand('main', 'clear');
             return Response.json(result);
           }
           if (url.pathname === '/api/esc' && req.method === 'POST') {
@@ -3113,11 +3082,11 @@ export function startConsole(
                 return Response.json({ ok: false, message: '队列为空，没有可取消的消息' });
               }
             }
-            const result = await handleCommand('esc');
+            const result = await executeDirectorCommand('main', 'esc');
             return Response.json(result);
           }
           if (url.pathname === '/api/session-restart' && req.method === 'POST') {
-            const result = await handleCommand('session-restart');
+            const result = await executeDirectorCommand('main', 'session-restart');
             return Response.json(result);
           }
           if (url.pathname.startsWith('/api/queue/') && url.pathname.endsWith('/cancel') && req.method === 'POST') {
@@ -3267,6 +3236,19 @@ export function startConsole(
             const limit = Number(url.searchParams.get('limit') ?? 100);
             const sessionId = parseMessagesSessionId(url);
             if (!sessionId) return Response.json({ error: 'sessionId is required' }, { status: 400 });
+
+            // Try agent-native transcript for Claude Code sessions
+            const record = getSessionRecord(sessionId);
+            if (!record?.agent_type || record.agent_type === 'claude') {
+              const cwd = sessionManager?.getSession(sessionId)?.bridge.getWorkspaceCwd()
+                ?? record?.cwd ?? undefined;
+              if (cwd) {
+                const nativeMessages = parseClaudeTranscript(sessionId, cwd, limit);
+                if (nativeMessages) return Response.json(nativeMessages);
+              }
+            }
+
+            // Fallback to pShell captured logs
             const target = resolveSessionLogTarget(sessionId, director, sessionManager);
             return Response.json(parseConversationLogFiles(target.inputLogs, target.outputLogs, limit, sessionId));
           }
@@ -3545,7 +3527,7 @@ export function startConsole(
           if (url.pathname === '/api/runtime/command' && req.method === 'POST') {
             const body = await req.json() as { director_label?: string; command?: string };
             try {
-              const result = await runRuntimeDirectorCommand(body.director_label ?? 'main', body.command ?? '');
+              const result = await executeDirectorCommand(body.director_label ?? 'main', body.command ?? '');
               return Response.json(result);
             } catch (err) {
               const error = err as Error & { status?: number };
@@ -3952,7 +3934,7 @@ export function startConsole(
             return `[引用上文]\n${truncated.split('\n').map((line) => `> ${line}`).join('\n')}\n\n`;
           };
           if (msg.type === 'command' && msg.command) {
-            const result = await handleCommand(msg.command);
+            const result = await executeDirectorCommand('main', msg.command);
             ws.send(JSON.stringify({
               type: 'command_result',
               command: msg.command,
