@@ -4,31 +4,31 @@
 
 > 把你最顺手的 agent 当虾养。
 
-你精心维护的 prompt 才是核心资产。Persona Shell 不造 agent，只让现成的 agent（Claude Code、Codex）用你的 prompt 来干活——接入 IM、7×24 替你在线。你只需要把 Markdown 写好。
+你精心维护的 prompt 才是核心资产。Persona Shell 不造 agent，只让现成的 agent（Claude Code、Codex）用你的 prompt 来干活——接入 IM、7x24 替你在线。你只需要把 Markdown 写好。
 
 不知道怎么用？clone 下来，让你的 agent 来读。
 
-> **⚠️ 早期项目**：仅在 macOS (Apple Silicon) 上开发和日常使用。Linux 理论可用但未验证，Windows 不支持（依赖 named pipe / mkfifo）。
+> **Warning**: 仅在 macOS (Apple Silicon) 上开发和日常使用。Linux 理论可用但未验证，Windows 不支持（依赖 named pipe / mkfifo）。
 
-> **⚠️ 安全提示**：Persona Shell 以 `--dangerously-skip-permissions` 模式运行 Claude Code，即 AI 可以无需确认地执行 shell 命令、读写文件。仅在你信任的机器上运行，不要暴露到公网。详见 [安装指南](docs/setup.md)。
+> **Warning**: Persona Shell 以 `--dangerously-skip-permissions` 模式运行 Claude Code，即 AI 可以无需确认地执行 shell 命令、读写文件。仅在你信任的机器上运行，不要暴露到公网。详见 [安装指南](docs/setup.md)。
 
 ## TL;DR
 
-外挂IM，让Agent用你精心维护的prompt干活、并行干，后台干、定时干、用不同身份干。
+外挂 IM，让 Agent 用你精心维护的 prompt 干活、并行干、后台干、定时干、用不同身份干。
 
 ## 设计理念
 
 - **不重复造轮子** — agent 的推理、工具调用、代码能力已经被 Claude Code / Codex 做好了，Persona Shell 不重新实现这些，只做编排和消息转发
 - **Prompt 是你的核心资产** — soul.md（人格）、personas/（角色）、prompts/（系统行为模板）、memory/（记忆）—— 全部是 Markdown，你用 git 管理、精心迭代，这才是你的 AI 分身区别于别人的地方
 - **持久运行，自动刷新** — daemon 模式 + 自动上下文刷新（FLUSH），你维护的 prompt 和记忆会被持久保存，跨会话生效，不怕 context window 耗尽
-- **多 workspace / session，多后端** — main workspace + 群聊 workspace，可并行会话、后台任务、定时任务；同一套 prompt 可以被不同 agent 后端使用
+- **多 Workspace / 多 Session / 多后端** — 每个群聊或项目是一个 workspace，每个 workspace 支持多个并行 session，可使用不同 agent 后端；后台任务、定时任务独立运行
 
 ## 支持的 Agent 后端
 
-| Agent | 状态 |
-|-------|------|
-| [Codex](https://github.com/openai/codex) | ✅ 主力后端 |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ 长驻 Director + 后台任务 |
+| Agent | 状态 | 说明 |
+|-------|------|------|
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ 默认后端 | 长驻 Director + 后台任务 + 全功能 |
+| [Codex](https://github.com/openai/codex) | ✅ App Server 模式 | 长文写作、book-* 角色 |
 
 完整功能矩阵和详细用法见 [使用指南](docs/usage.md)。
 
@@ -71,8 +71,9 @@ bun run dev
 ├── personas/            # 角色 — 不同场景下的行为模式
 ├── prompts/             # 系统行为模板 — 编排指令
 ├── memory/              # 记忆 — 跨会话持久保存
+├── workspaces/          # 工作空间 — 每个群聊/项目的上下文
+├── outbox/              # 产出收件箱 — 后台任务的结构化输出
 ├── daily/               # 日报与工作记忆
-├── TODO.md              # 待办事项
 └── config.yaml          # 运行配置
 ```
 
@@ -80,12 +81,13 @@ bun run dev
 
 ```
 IM / Web 消息 → TS Shell → WorkspaceRegistry → SessionManager → Session → Agent Runtime
-                                      │              │
-                                      │              └─ SessionBridge / Adapter ← Claude / Codex 协议适配
-                                      │
-                                      └─ workspace.defaultSessionId（飞书群聊 / Cron fallback）
+                                    │              │
+                                    │              └─ SessionBridge / Adapter ← Claude / Codex 协议适配
+                                    │
+                                    └─ workspace.defaultSessionId（群聊 / Cron fallback）
 
-DirectorPool 只在 SessionManager 下方承载 runtime entry、队列、streaming 和进程恢复；不是业务路由实体。
+AgentRuntimePool 在 SessionManager 下方承载 runtime entry、队列、streaming 和进程恢复；不是业务路由实体。
+消息历史从各 agent 的原生 transcript 读取（Claude: ~/.claude/projects/、Codex: ~/.codex/sessions/）。
 ```
 
 技术细节见 [架构文档](docs/architecture.md)。
@@ -97,7 +99,6 @@ DirectorPool 只在 SessionManager 下方承载 runtime entry、队列、streami
 | [安装与配置](docs/setup.md) | 飞书应用创建、配置文件、服务化、身份仓库 |
 | [使用指南](docs/usage.md) | 命令、群聊策略、任务、Cron、Web 控制台、人格自定义 |
 | [技术架构](docs/architecture.md) | 三层架构、通讯层、消息路由、FLUSH、进程容灾 |
-| [Agent 后端](docs/agent-backends.md) | Claude Code / Codex 启动机制、协议、参数、会话恢复 |
 | [运维速查](docs/ops-reference.md) | 命令、日志路径、运行时文件 |
 
 ## License
