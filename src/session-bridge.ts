@@ -1758,6 +1758,9 @@ export class SessionBridge extends EventEmitter {
       if (parsed.type !== 'stream_event') {
         parsed._ts = new Date().toISOString();
         parsed._director = this.label;
+        if (!parsed.session_id && this.sessionId) {
+          parsed.session_id = this.sessionId;
+        }
         appendFileSync(this.outputLogPath, JSON.stringify(parsed) + '\n');
       }
     } catch {

@@ -326,6 +326,7 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
           sessionMarkers.push({ director: evtDirector, sessionId: evtSession, timestamp: evtTs, ms: evtMs });
         }
         if (evt.type === 'assistant' && evt.message?.content) {
+          if (evt.session_id) lastSessionId = evt.session_id;
           const content = evt.message.content;
           if (typeof content === 'string') {
             pendingText += content;
