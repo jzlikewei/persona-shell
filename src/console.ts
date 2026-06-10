@@ -145,7 +145,7 @@ function resolveDirectorLogTarget(label: string | null | undefined, director: Se
 
 function resolveSessionLogTarget(sessionId: string, director: SessionBridge, sessionMgr?: SessionManager): DirectorLogTarget {
   const liveSession = sessionMgr?.getSession(sessionId);
-  if (liveSession) {
+  if (liveSession && liveSession.workspace) {
     const inputLogs = listDirectorLogs(liveSession.workspace, 'input');
     const outputLogs = listDirectorLogs(liveSession.workspace, 'output');
     return {
@@ -2847,6 +2847,8 @@ export function startConsole(
             const payload = parseSendApiPayload(await req.json());
             if (!payload.ok) return Response.json({ ok: false, message: payload.message }, { status: payload.status });
             const { sessionId, text } = payload;
+            const mainSessionId = director.getStatus().sessionId;
+            console.log(`[web-api] POST /api/send sessionId=${sessionId} mainSessionId=${mainSessionId} match=${sessionId === mainSessionId} text="${text.slice(0, 50)}..."`);
 
             // Route all messages (including slash commands) through chatHandlers,
             // so index.ts' unified slash command handling applies to web messages too.
@@ -3101,7 +3103,7 @@ export function startConsole(
             try { body = await req.json() as { sessionId?: string }; } catch { /* no body = main */ }
             const sid = body.sessionId?.trim();
             if (sid && sessionManager) {
-              const poolEntry = sessionManager.getPoolEntryBySessionId(sid);
+              const poolEntry = sessionManager.getRuntimeEntryBySessionId(sid);
               if (poolEntry) {
                 const cancelled = poolEntry.queue.cancelOldest();
                 if (cancelled) {

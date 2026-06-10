@@ -19,6 +19,10 @@ interface PersistedRuntimeEntry {
   label: string;
   lastActiveAt: number;
   agentName?: string;
+  /** @deprecated legacy field name, migrated to workspaceName on restore */
+  groupName?: string;
+  /** @deprecated legacy field name, migrated to agentName on restore */
+  directorAgentName?: string;
 }
 
 export interface PoolConfig {
@@ -55,6 +59,10 @@ interface ClosedRuntimeEntry {
   closedAt: number;
   closedReason?: 'shutdown' | 'detached' | 'closed';
   agentName?: string;
+  /** @deprecated legacy field name, migrated to workspaceName on restore */
+  groupName?: string;
+  /** @deprecated legacy field name, migrated to agentName on restore */
+  directorAgentName?: string;
 }
 
 const MIN_MESSAGES_FOR_FLUSH = 5;
@@ -108,8 +116,35 @@ export class AgentRuntimePool extends EventEmitter {
     // Restore closed entries from SQLite
     const savedClosed = getState<ClosedRuntimeEntry[]>('pool:closed');
     if (savedClosed) {
+      let migrated = false;
       for (const entry of savedClosed) {
+        // [MIGRATION] 0ad1d3f renamed groupName→workspaceName, directorAgentName→agentName.
+        // Persisted data may still use old field names, or workspaceName may be missing entirely.
+        // Safe to remove once all running instances have restarted at least once after 2026-06-10.
+        // entry may carry deprecated groupName / directorAgentName from old persisted data
+        if (!entry.workspaceName && entry.groupName) {
+          entry.workspaceName = entry.groupName;
+          delete entry.groupName;
+          migrated = true;
+        }
+        if (!entry.workspaceName) {
+          entry.workspaceName = entry.routingKey.startsWith('web-workspace:')
+            ? entry.routingKey.slice('web-workspace:'.length)
+            : entry.routingKey.startsWith('web-session:')
+              ? entry.routingKey.slice('web-session:'.length)
+              : entry.routingKey.slice(0, 8);
+          migrated = true;
+        }
+        if (!entry.agentName && entry.directorAgentName) {
+          entry.agentName = entry.directorAgentName;
+          delete entry.directorAgentName;
+          migrated = true;
+        }
         this.closedEntries.set(entry.routingKey, entry);
+      }
+      if (migrated) {
+        setState('pool:closed', [...this.closedEntries.values()]);
+        console.log('[pool] Migrated pool:closed entries from legacy field names (groupName→workspaceName)');
       }
     }
 
@@ -828,6 +863,29 @@ export class AgentRuntimePool extends EventEmitter {
   async restoreEntries(): Promise<void> {
     const saved = getState<PersistedRuntimeEntry[]>('pool:entries');
     if (!saved || saved.length === 0) return;
+
+    // [MIGRATION] 0ad1d3f renamed groupName→workspaceName, directorAgentName→agentName.
+    // Persisted data may still use old field names, or workspaceName may be missing entirely
+    // (written as undefined after a prior restore from legacy data). Migrate in-place.
+    // Safe to remove once all running instances have restarted at least once after 2026-06-10.
+    for (const item of saved) {
+      if (!item.workspaceName && item.groupName) {
+        item.workspaceName = item.groupName;
+        delete item.groupName;
+      }
+      // workspaceName still missing — derive from routingKey (e.g. "web-workspace:p.sh维修" → "p.sh维修")
+      if (!item.workspaceName) {
+        item.workspaceName = item.routingKey.startsWith('web-workspace:')
+          ? item.routingKey.slice('web-workspace:'.length)
+          : item.routingKey.startsWith('web-session:')
+            ? item.routingKey.slice('web-session:'.length)
+            : item.routingKey.slice(0, 8);
+      }
+      if (!item.agentName && item.directorAgentName) {
+        item.agentName = item.directorAgentName;
+        delete item.directorAgentName;
+      }
+    }
 
     const pipeBaseDir = this.directorConfig.pipe_dir;
     let restored = 0;
