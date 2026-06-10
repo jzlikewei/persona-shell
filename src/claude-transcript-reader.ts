@@ -24,7 +24,8 @@ export function encodeProjectPath(cwd: string): string {
 
 function resolveTranscriptPath(sessionId: string, cwd: string): string {
   const encoded = encodeProjectPath(cwd);
-  return join(homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+  const home = process.env.HOME ?? homedir();
+  return join(home, '.claude', 'projects', encoded, `${sessionId}.jsonl`);
 }
 
 // ---------------------------------------------------------------------------
@@ -228,44 +229,11 @@ export function parseClaudeTranscript(
     });
   }
 
-  // Phase 3: Merge consecutive assistant turns into single messages.
-  // Claude Code's multi-turn mode produces separate msg.id for each turn,
-  // but turns between user text messages belong to the same logical response.
+  // Phase 3: Sort all messages chronologically.
+  // Each assistant turn is already grouped by msg.id in Phase 1, so no
+  // cross-turn merging is needed — separate API turns stay separate.
   const all = [...userMessages, ...assistantMessages];
   all.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
 
-  const merged: ConversationMessage[] = [];
-  for (const msg of all) {
-    const prev = merged[merged.length - 1];
-    if (
-      msg.direction === 'out' && prev?.direction === 'out'
-    ) {
-      // Merge text
-      if (msg.content && msg.content !== '(tool use only)') {
-        prev.content = prev.content === '(tool use only)'
-          ? msg.content
-          : prev.content + '\n\n' + msg.content;
-      }
-      // Merge tools
-      if (msg.tools?.length) {
-        prev.tools = [...(prev.tools ?? []), ...msg.tools];
-      }
-      // Keep latest model/timestamp
-      if (msg.model) prev.model = msg.model;
-      if (msg.timestamp && (!prev.timestamp || msg.timestamp > prev.timestamp)) {
-        prev.timestamp = msg.timestamp;
-      }
-    } else {
-      merged.push({ ...msg });
-    }
-  }
-
-  // Clean up any remaining "(tool use only)" that now has tools attached
-  for (const msg of merged) {
-    if (msg.direction === 'out' && msg.content === '(tool use only)' && msg.tools?.length) {
-      msg.content = '';
-    }
-  }
-
-  return merged.slice(-limit).reverse();
+  return all.slice(-limit).reverse();
 }
