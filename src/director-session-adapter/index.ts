@@ -41,8 +41,20 @@ export interface DirectorDynamicToolResult {
   text: string;
 }
 
+export interface AssistantWorkflowStep {
+  step?: string;
+  status?: string;
+}
+
+export interface AssistantWorkflowGoal {
+  objective?: string;
+  status?: string;
+  tokensUsed?: number;
+  timeUsedSeconds?: number;
+}
+
 export interface AssistantTurnEvent {
-  type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted';
+  type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted' | 'goal_updated' | 'plan_updated';
   agentLabel: string;
   sessionId?: string | null;
   turnId: string;
@@ -51,6 +63,9 @@ export interface AssistantTurnEvent {
   text?: string;
   content?: string;
   tool?: DirectorToolCall;
+  goal?: AssistantWorkflowGoal;
+  plan?: AssistantWorkflowStep[];
+  explanation?: string | null;
   durationMs?: number | null;
   error?: string;
 }
@@ -74,6 +89,7 @@ export interface DirectorSessionAdapterHooks {
   onToolCall(toolName?: string, tool?: DirectorToolCall): void;
   onMetrics(update: DirectorSessionMetricsUpdate): void;
   onPartialAgentMessage(text: string): void;
+  onWorkflowEvent?(event: Omit<AssistantTurnEvent, 'agentLabel' | 'sessionId' | 'timestamp'> & { timestamp?: string }): void;
   onTurnComplete(result: DirectorTurnResult): void;
   onTurnFailure(message: string): void;
   onRuntimeClosed(): Promise<void> | void;

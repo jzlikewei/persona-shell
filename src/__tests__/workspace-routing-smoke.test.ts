@@ -23,6 +23,7 @@ import {
   getSessionRecord,
   getWorkspace,
   initTaskStore,
+  setDefaultSession,
 } from '../task/task-store.js';
 import { WorkspaceRegistry } from '../workspace-registry.js';
 
@@ -284,6 +285,43 @@ describe('smoke:workspace-routing', () => {
     expect(getWorkspace('archive-smoke')?.default_session_id).toBe(second.sessionId);
     expect(getSessionRecord(second.sessionId)?.workspace).toBe('archive-smoke');
     expect(SmokeAdapter.instances.at(-1)?.sent.some((line) => line.includes('second'))).toBe(true);
+  });
+
+  test('feishu workspace message routes to explicit default session, not chat runtime label', async () => {
+    const manager = createManager();
+    const first = await manager.createNewSession('default-smoke', { feishuChatId: 'web-console', agentName: 'fake' });
+    const second = await manager.createNewSession('default-smoke', { feishuChatId: 'web-console', agentName: 'fake' });
+    setDefaultSession('default-smoke', second.sessionId);
+
+    await manager.sendToWorkspaceDefaultSession('default-smoke', {
+      feishuChatId: 'oc_default_smoke',
+      workspaceName: 'default-smoke',
+      agentName: 'fake',
+      text: 'from feishu',
+      messageId: 'msg-default-smoke',
+    });
+
+    expect(first.sessionId).not.toBe(second.sessionId);
+    expect(getWorkspace('default-smoke')?.default_session_id).toBe(second.sessionId);
+    expect(manager.getSession(first.sessionId)?.bridge.getStatus().sessionId).toBe(first.sessionId);
+    expect(manager.getSession(second.sessionId)?.bridge.getStatus().sessionId).toBe(second.sessionId);
+    expect(SmokeAdapter.instances.find((adapter) => adapter.sessionId === first.sessionId)?.sent.some((line) => line.includes('from feishu'))).toBe(false);
+    expect(SmokeAdapter.instances.find((adapter) => adapter.sessionId === second.sessionId)?.sent.some((line) => line.includes('from feishu'))).toBe(true);
+  });
+
+  test('workspace with multiple active sessions and no default refuses to guess', async () => {
+    const manager = createManager();
+    await manager.createNewSession('ambiguous-smoke', { feishuChatId: 'web-console', agentName: 'fake' });
+    await manager.createNewSession('ambiguous-smoke', { feishuChatId: 'web-console', agentName: 'fake' });
+    setDefaultSession('ambiguous-smoke', null);
+
+    await expect(manager.sendToWorkspaceDefaultSession('ambiguous-smoke', {
+      feishuChatId: 'oc_ambiguous_smoke',
+      workspaceName: 'ambiguous-smoke',
+      agentName: 'fake',
+      text: 'should not route',
+      messageId: 'msg-ambiguous-smoke',
+    })).rejects.toThrow('active sessions but no default_session_id');
   });
 
   test('missing runtime entry revives the same concrete session instead of switching workspace session', async () => {

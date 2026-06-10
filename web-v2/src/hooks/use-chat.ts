@@ -7,6 +7,26 @@ import { uuid } from '@/lib/utils'
 
 export { mergeChatToolCall, type ChatToolCall } from './chat-tools'
 
+export interface ChatWorkflowStep {
+  step?: string
+  status?: string
+}
+
+export interface ChatWorkflowGoal {
+  objective?: string
+  status?: string
+  tokensUsed?: number
+  timeUsedSeconds?: number
+}
+
+export interface ChatWorkflow {
+  turnId: string
+  goal?: ChatWorkflowGoal
+  plan?: ChatWorkflowStep[]
+  explanation?: string | null
+  turnStatus?: 'running' | 'completed' | 'failed' | 'aborted'
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -15,6 +35,7 @@ export interface ChatMessage {
   sessionId?: string
   agentLabel?: string
   tools?: ChatToolCall[]
+  workflow?: ChatWorkflow
   attachments?: string[]
   model?: string
 }
@@ -31,7 +52,7 @@ interface ApiConversationMessage {
 }
 
 interface AssistantTurnEvent {
-  type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted'
+  type: 'turn_started' | 'assistant_delta' | 'tool_started' | 'tool_completed' | 'turn_completed' | 'turn_failed' | 'turn_aborted' | 'goal_updated' | 'plan_updated'
   agentLabel: string
   sessionId?: string | null
   turnId: string
@@ -40,9 +61,19 @@ interface AssistantTurnEvent {
   text?: string
   content?: string
   tool?: ChatToolCall
+  goal?: ChatWorkflowGoal
+  plan?: ChatWorkflowStep[]
+  explanation?: string | null
   durationMs?: number | null
   error?: string
 }
+
+interface ApiSessionWorkflow {
+  workflow?: ChatWorkflow | null
+  tools?: ChatToolCall[]
+  phase?: 'thinking' | 'tool_running' | null
+}
+
 
 function normalizeReplyText(text: string) {
   return text
@@ -74,6 +105,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [streaming, setStreaming] = useState('')
   const [streamingTools, setStreamingTools] = useState<ChatToolCall[]>([])
+  const [workflow, setWorkflow] = useState<ChatWorkflow | null>(null)
   const [activity, setActivity] = useState<string | null>(null)
   const [turnPhase, setTurnPhase] = useState<TurnPhase>(null)
   const [loading, setLoading] = useState(false)
@@ -91,8 +123,11 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const requestSeq = useRef(0)
   const streamingRef = useRef('')
   const liveToolsRef = useRef<ChatToolCall[]>([])
+  const liveWorkflowRef = useRef<ChatWorkflow | null>(null)
   const liveTurnIdRef = useRef<string | null>(null)
   const usingTurnEventsRef = useRef(false)
+  const messageCacheRef = useRef(new Map<string, { at: number; messages: ChatMessage[] }>())
+  const prevHistoryKeyRef = useRef<string | undefined>(undefined)
   sessionIdRef.current = sessionId
   liveSessionRef.current = liveSession
 
@@ -133,23 +168,63 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     return true
   }, [])
 
+  const loadWorkflowSnapshot = useCallback(async (targetSessionId: string, seq: number) => {
+    try {
+      const live = await get<ApiSessionWorkflow>('/api/session-workflow', { sessionId: targetSessionId })
+      if (seq !== requestSeq.current) return
+      const liveTools = live.tools ?? []
+      if (live.workflow || live.phase || liveTools.length > 0) {
+        liveWorkflowRef.current = live.workflow ?? null
+        liveToolsRef.current = live.tools ?? []
+        setWorkflow(live.workflow ?? null)
+        setStreamingTools(liveTools)
+        setTurnPhase(live.phase ?? 'thinking')
+      } else {
+        liveWorkflowRef.current = null
+        liveToolsRef.current = []
+        setWorkflow(null)
+        setStreamingTools([])
+        setTurnPhase(null)
+      }
+    } catch {
+      // 老后端或非 live session 没有 workflow snapshot 时忽略。
+    }
+  }, [get])
+
   const loadMessages = useCallback(async () => {
     if (!sessionId) {
       setMessages([])
       setLoading(false)
       return
     }
+
     const seq = requestSeq.current + 1
     requestSeq.current = seq
+    const cacheKey = `${workspace ?? ''}:${sessionId}:${limit}`
+    const cached = messageCacheRef.current.get(cacheKey)
+    if (cached) {
+      startTransition(() => setMessages(cached.messages))
+      // 切换 session 时最卡的是后端重复解析原生 transcript。短 TTL 内直接复用
+      // 已解析窗口；实时消息会由 websocket 继续补齐。
+      if (Date.now() - cached.at < 15_000) {
+        await loadWorkflowSnapshot(sessionId, seq)
+        setLoading(false)
+        return
+      }
+    }
+
     setLoading(true)
     try {
       const params: Record<string, string> = { limit: String(limit), sessionId }
       if (workspace) params.workspace = workspace
       const data = await get<ApiConversationMessage[]>('/api/messages', params)
       if (seq === requestSeq.current) {
+        const next = data.map(mapMessage).reverse()
+        messageCacheRef.current.set(cacheKey, { at: Date.now(), messages: next })
         // 大列表 + 同步 markdown 渲染会堵主线程,startTransition 让它走低优先级,
         // 不阻塞 loading spinner 绘制和后续用户输入(比如再点别的 session)
-        startTransition(() => setMessages(data.map(mapMessage).reverse()))
+        startTransition(() => setMessages(next))
+        await loadWorkflowSnapshot(sessionId, seq)
       }
     } catch (e) {
       console.error('Failed to load messages:', e)
@@ -157,7 +232,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     } finally {
       if (seq === requestSeq.current) setLoading(false)
     }
-  }, [get, sessionId, workspace, limit, toast])
+  }, [get, loadWorkflowSnapshot, sessionId, workspace, limit, toast])
 
   // "Load earlier" 只能调大 limit 重新拉窗口
   const loadMore = useCallback(() => {
@@ -212,7 +287,9 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const clearLiveTurn = useCallback(() => {
     liveTurnIdRef.current = null
     liveToolsRef.current = []
+    liveWorkflowRef.current = null
     setStreamingTools([])
+    setWorkflow(null)
     updateStreaming('')
     setActivity(null)
     setTurnPhase(null)
@@ -289,7 +366,9 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
         if (event.type === 'turn_started') {
           liveTurnIdRef.current = event.turnId
           liveToolsRef.current = []
+          liveWorkflowRef.current = { turnId: event.turnId, turnStatus: 'running' }
           setStreamingTools([])
+          setWorkflow(liveWorkflowRef.current)
           updateStreaming('')
           setActivity(null)
           setTurnPhase('thinking')
@@ -302,7 +381,38 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
           streamingRef.current = ''
           setStreaming('')
           liveToolsRef.current = []
+          liveWorkflowRef.current = { turnId: event.turnId, turnStatus: 'running' }
           setStreamingTools([])
+          setWorkflow(liveWorkflowRef.current)
+        }
+
+        if (event.type === 'goal_updated') {
+          const next: ChatWorkflow = {
+            ...(liveWorkflowRef.current ?? { turnId: event.turnId }),
+            turnId: event.turnId,
+            goal: event.goal,
+            turnStatus: 'running',
+          }
+          liveWorkflowRef.current = next
+          setWorkflow(next)
+          setTurnPhase(prev => prev ?? 'thinking')
+          armTurnPhaseTimeout()
+          return
+        }
+
+        if (event.type === 'plan_updated') {
+          const next: ChatWorkflow = {
+            ...(liveWorkflowRef.current ?? { turnId: event.turnId }),
+            turnId: event.turnId,
+            plan: event.plan,
+            explanation: event.explanation,
+            turnStatus: 'running',
+          }
+          liveWorkflowRef.current = next
+          setWorkflow(next)
+          setTurnPhase(prev => prev ?? 'thinking')
+          armTurnPhaseTimeout()
+          return
         }
 
         if (event.type === 'assistant_delta') {
@@ -315,7 +425,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
         if (event.type === 'tool_started') {
           if (event.tool) upsertLiveTool(event.tool)
           setTurnPhase('tool_running')
-          clearTurnPhaseTimeout()
+          armTurnPhaseTimeout()
           return
         }
 
@@ -330,7 +440,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
           const tools = liveToolsRef.current.map(t =>
             t.status === 'running' ? { ...t, status: 'completed' as const } : t
           )
-          if (text || tools.length) {
+          if (text || tools.length || liveWorkflowRef.current) {
             const msg: ChatMessage = {
               id: event.messageId || event.turnId,
               role: 'assistant',
@@ -339,6 +449,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
               agentLabel: event.agentLabel,
               sessionId: event.sessionId ?? undefined,
               tools: tools.length ? tools : undefined,
+              workflow: liveWorkflowRef.current ? { ...liveWorkflowRef.current, turnStatus: 'completed' } : undefined,
             }
             setMessages(prev => {
               const last = prev[prev.length - 1]
@@ -360,6 +471,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
             timestamp: event.timestamp || new Date().toISOString(),
             agentLabel: event.agentLabel,
             sessionId: event.sessionId ?? undefined,
+            workflow: liveWorkflowRef.current ? { ...liveWorkflowRef.current, turnStatus: 'failed' } : undefined,
           }
           setMessages(prev => [...prev, msg])
           clearLiveTurn()
@@ -441,21 +553,24 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   }, [clearTurnPhaseTimeout])
 
   useEffect(() => {
-    if (status === 'connected') loadMessages()
-  }, [status, loadMessages])
+    const historyKey = `${workspace ?? ''}:${sessionId ?? ''}`
+    const switchedHistory = prevHistoryKeyRef.current !== historyKey
+    prevHistoryKeyRef.current = historyKey
 
-  useEffect(() => {
-    setMessages([])
-    updateStreaming('')
-    setActivity(null)
-    setTurnPhase(null)
-    clearTurnPhaseTimeout()
-    liveToolsRef.current = []
-    setStreamingTools([])
-    liveTurnIdRef.current = null
-    usingTurnEventsRef.current = false
-    if (status === 'connected') loadMessages()
-  }, [sessionId, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
+    if (switchedHistory) {
+      setMessages([])
+      updateStreaming('')
+      setActivity(null)
+      setTurnPhase(null)
+      clearTurnPhaseTimeout()
+      liveToolsRef.current = []
+      setStreamingTools([])
+      liveTurnIdRef.current = null
+      usingTurnEventsRef.current = false
+    }
 
-  return { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden }
+    if (status === 'connected') loadMessages()
+  }, [sessionId, workspace, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
+
+  return { messages, streaming, streamingTools, workflow, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden }
 }

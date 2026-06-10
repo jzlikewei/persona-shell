@@ -251,6 +251,7 @@ describe('SessionManager', () => {
     const manager = new SessionManager(pool, registry);
 
     registry.getOrCreate('ws1');
+    createSessionRecord({ sessionId: 'sess-default', workspace: 'ws1' });
     setDefaultSession('ws1', 'sess-default');
     expect(manager.resolveDefaultSession('ws1')).toBe('sess-default');
   });
@@ -320,6 +321,22 @@ describe('SessionManager', () => {
     const newDefault = getWorkspace('b2-ws')!.default_session_id;
     expect(newDefault).toBe('middle');
     expect(newDefault).not.toBe('old-default');
+  });
+
+  test('markArchived (default session, multiple remaining) clears default instead of guessing', async () => {
+    const pool = createTestPool();
+    const registry = new WorkspaceRegistry();
+    const manager = new SessionManager(pool, registry);
+
+    registry.getOrCreate('multi-ws');
+    createSessionRecord({ sessionId: 'old-default', workspace: 'multi-ws' });
+    createSessionRecord({ sessionId: 'candidate-a', workspace: 'multi-ws' });
+    createSessionRecord({ sessionId: 'candidate-b', workspace: 'multi-ws' });
+    setDefaultSession('multi-ws', 'old-default');
+
+    await manager.markArchived('old-default');
+
+    expect(getWorkspace('multi-ws')!.default_session_id).toBeNull();
   });
 
   test('markArchived (default session, no remaining) sets default to null', async () => {

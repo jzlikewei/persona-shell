@@ -1022,7 +1022,7 @@ export class AgentRuntimePool extends EventEmitter {
 
   /** Wire SessionBridge events for a group chat */
   private wireEvents(bridge: SessionBridge, queue: MessageQueue, routingKey: string, feishuChatId: string, workspaceName: string): void {
-    const isWeb = routingKey.startsWith('web-');
+    const isWeb = routingKey.startsWith('web-') || feishuChatId === 'web-console';
 
     // response → resolve oldest queue item → reply to feishu (or web)
     bridge.on('response', async (reply: string, durationMs?: number) => {
@@ -1036,7 +1036,8 @@ export class AgentRuntimePool extends EventEmitter {
         ? durationMs
         : Date.now() - item.timestamp;
       const elapsedSec = (elapsedMs / 1000).toFixed(1);
-      const replyWithTiming = `${reply}\n\n(耗时 ${elapsedSec}s)`;
+      const displayReply = reply.trim() || '仅执行工具调用，无文本输出';
+      const replyWithTiming = `${displayReply}\n\n(耗时 ${elapsedSec}s)`;
 
       const webOnly = isWeb || item.chatId === 'web-console';
       if (webOnly) {

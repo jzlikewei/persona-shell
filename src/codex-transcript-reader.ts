@@ -13,6 +13,16 @@ import type { ConversationMessage, ConversationToolCall } from './log-parser.js'
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024; // 4MB
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
 
+type TranscriptCacheEntry = {
+  filePath: string;
+  size: number;
+  mtimeMs: number;
+  messages: ConversationMessage[];
+};
+
+const transcriptPathCache = new Map<string, string | null>();
+const transcriptParseCache = new Map<string, TranscriptCacheEntry>();
+
 // ---------------------------------------------------------------------------
 // File discovery — find the transcript file for a given sessionId (thread-id)
 // ---------------------------------------------------------------------------
@@ -22,6 +32,13 @@ const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
  * the given sessionId (which is the Codex thread-id embedded in the filename).
  */
 function findTranscriptFile(sessionId: string, sessionsDir = CODEX_SESSIONS_DIR): string | null {
+  const cacheKey = `${sessionsDir}:${sessionId}`;
+  if (transcriptPathCache.has(cacheKey)) {
+    const cached = transcriptPathCache.get(cacheKey) ?? null;
+    if (!cached || existsSync(cached)) return cached;
+    transcriptPathCache.delete(cacheKey);
+  }
+
   if (!existsSync(sessionsDir)) return null;
 
   // Walk YYYY/MM/DD directories
@@ -37,7 +54,9 @@ function findTranscriptFile(sessionId: string, sessionsDir = CODEX_SESSIONS_DIR)
           if (!statSync(dayDir).isDirectory()) continue;
           for (const file of readdirSync(dayDir)) {
             if (file.endsWith('.jsonl') && file.includes(sessionId)) {
-              return join(dayDir, file);
+              const found = join(dayDir, file);
+              transcriptPathCache.set(cacheKey, found);
+              return found;
             }
           }
         }
@@ -46,6 +65,7 @@ function findTranscriptFile(sessionId: string, sessionsDir = CODEX_SESSIONS_DIR)
   } catch {
     // Permission errors, etc.
   }
+  transcriptPathCache.set(cacheKey, null);
   return null;
 }
 
@@ -113,6 +133,13 @@ export function parseCodexTranscript(
 ): ConversationMessage[] | null {
   const filePath = findTranscriptFile(sessionId, sessionsDir);
   if (!filePath) return null;
+
+  const stat = statSync(filePath);
+  const cacheKey = `${sessionId}:${filePath}`;
+  const cached = transcriptParseCache.get(cacheKey);
+  if (cached && cached.filePath === filePath && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return cached.messages.length ? cached.messages.slice(-limit).reverse() : null;
+  }
 
   const raw = readTail(filePath, MAX_TRANSCRIPT_BYTES);
   if (!raw.trim()) return null;
@@ -298,5 +325,11 @@ export function parseCodexTranscript(
     }
   }
 
+  transcriptParseCache.set(`${sessionId}:${filePath}`, {
+    filePath,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    messages,
+  });
   return messages.length ? messages.slice(-limit).reverse() : null;
 }

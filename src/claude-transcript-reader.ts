@@ -12,6 +12,15 @@ import type { ConversationMessage, ConversationToolCall } from './log-parser.js'
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024; // 4MB
 
+type TranscriptCacheEntry = {
+  filePath: string;
+  size: number;
+  mtimeMs: number;
+  messages: ConversationMessage[];
+};
+
+const transcriptParseCache = new Map<string, TranscriptCacheEntry>();
+
 // ---------------------------------------------------------------------------
 // Path encoding
 // ---------------------------------------------------------------------------
@@ -102,6 +111,13 @@ export function parseClaudeTranscript(
 ): ConversationMessage[] | null {
   const filePath = resolveTranscriptPath(sessionId, cwd);
   if (!existsSync(filePath)) return null;
+
+  const stat = statSync(filePath);
+  const cacheKey = `${sessionId}:${cwd}:${filePath}`;
+  const cached = transcriptParseCache.get(cacheKey);
+  if (cached && cached.filePath === filePath && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    return cached.messages.slice(-limit).reverse();
+  }
 
   const raw = readTail(filePath, MAX_TRANSCRIPT_BYTES);
   if (!raw.trim()) return null;
@@ -235,5 +251,11 @@ export function parseClaudeTranscript(
   const all = [...userMessages, ...assistantMessages];
   all.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
 
+  transcriptParseCache.set(`${sessionId}:${cwd}:${filePath}`, {
+    filePath,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    messages: all,
+  });
   return all.slice(-limit).reverse();
 }

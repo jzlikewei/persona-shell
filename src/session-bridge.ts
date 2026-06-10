@@ -124,6 +124,8 @@ export class SessionBridge extends EventEmitter {
   private discardNextResponse = false;
   private personaRole: string = 'director';
   private partialSystemReplyText: string | null = null;
+  private liveWorkflow: Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: 'running' | 'completed' | 'failed' | 'aborted' } | null = null;
+  private liveTools: DirectorToolCall[] = [];
   private readonly dynamicToolHandler?: SessionBridgeOptions['dynamicToolHandler'];
 
   private static readonly PIPE_OPEN_TIMEOUT = 30_000;
@@ -1085,6 +1087,10 @@ export class SessionBridge extends EventEmitter {
     patch: Omit<AssistantTurnEvent, 'agentLabel' | 'sessionId' | 'turnId' | 'timestamp'> & { timestamp?: string },
   ): void {
     if (!this.isVisibleTurn(turn)) return;
+    if (patch.type === 'turn_started') {
+      this.liveWorkflow = null;
+      this.liveTools = [];
+    }
     const event: AssistantTurnEvent = {
       ...patch,
       agentLabel: this.label,
@@ -1171,6 +1177,19 @@ export class SessionBridge extends EventEmitter {
     await this.adapter.restartTransport();
   }
 
+  getLiveWorkflowState(): { workflow: (Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: 'running' | 'completed' | 'failed' | 'aborted' }) | null; tools: DirectorToolCall[]; phase: 'thinking' | 'tool_running' | null } {
+    const hasActiveVisibleTurn = this.pendingTurns.some((turn) => this.isVisibleTurn(turn));
+    if (!hasActiveVisibleTurn) {
+      return { workflow: null, tools: [], phase: null };
+    }
+    const hasRunningTool = this.liveTools.some((tool) => tool.status === 'running');
+    return {
+      workflow: this.liveWorkflow,
+      tools: this.liveTools,
+      phase: hasRunningTool ? 'tool_running' : this.liveWorkflow || hasActiveVisibleTurn ? 'thinking' : null,
+    };
+  }
+
   private buildAdapterHooks(): DirectorSessionAdapterHooks {
     return {
       restorePersistedSession: () => this.restorePersistedSession(),
@@ -1185,6 +1204,7 @@ export class SessionBridge extends EventEmitter {
       onChunk: (text) => this.handleStreamChunk(text),
       onToolCall: (toolName, tool) => this.handleToolCall(toolName, tool),
       onPartialAgentMessage: (text) => this.handlePartialAgentMessage(text),
+      onWorkflowEvent: (event) => this.handleWorkflowEvent(event),
       onMetrics: (update) => this.handleMetricsUpdate(update),
       onTurnComplete: (result) => this.handleTurnComplete(result),
       onTurnFailure: (message) => this.handleTurnFailure(message),
@@ -1413,6 +1433,47 @@ export class SessionBridge extends EventEmitter {
     return msg;
   }
 
+  private mergeLiveTool(current: DirectorToolCall[], tool: DirectorToolCall): DirectorToolCall[] {
+    const tools = [...current];
+    let index = tool.id ? tools.findIndex((item) => item.id === tool.id) : -1;
+    if (index < 0) {
+      for (let i = tools.length - 1; i >= 0; i -= 1) {
+        if (tools[i].name === tool.name && tools[i].status === 'running') {
+          index = i;
+          break;
+        }
+      }
+    }
+    if (index >= 0) tools[index] = { ...tools[index], ...tool };
+    else tools.push(tool);
+    return tools;
+  }
+
+  private handleWorkflowEvent(event: Omit<AssistantTurnEvent, 'agentLabel' | 'sessionId' | 'timestamp'> & { timestamp?: string }): void {
+    if (!event.turnId) return;
+    const visibleTurn = this.pendingTurns.find((turn) => this.isVisibleTurn(turn));
+    const visibleTurnId = visibleTurn?.turnId ?? event.turnId;
+    const sameTurn = this.liveWorkflow?.turnId === visibleTurnId;
+    const base = sameTurn ? this.liveWorkflow : { turnId: visibleTurnId };
+    this.liveWorkflow = {
+      ...base,
+      turnId: visibleTurnId,
+      goal: event.goal ?? (sameTurn ? this.liveWorkflow?.goal : undefined),
+      plan: event.plan ?? (sameTurn ? this.liveWorkflow?.plan : undefined),
+      explanation: 'explanation' in event ? event.explanation : (sameTurn ? this.liveWorkflow?.explanation : undefined),
+      turnStatus: 'running',
+    };
+    const visibleEvent: AssistantTurnEvent = {
+      ...event,
+      agentLabel: this.label,
+      sessionId: this.sessionId,
+      turnId: visibleTurnId,
+      messageId: visibleTurn?.type === 'system-reply' ? visibleTurn.replyToMessageId : visibleTurn?.type === 'user' ? visibleTurn.correlationId : undefined,
+      timestamp: event.timestamp ?? new Date().toISOString(),
+    };
+    this.emit('turn-event', visibleEvent);
+  }
+
   private handleStreamChunk(text: string): void {
     const head = this.pendingTurns[0];
     const shouldStream = !this.flushing && !this.bootstrapping && !this.discardNextResponse;
@@ -1432,11 +1493,12 @@ export class SessionBridge extends EventEmitter {
     const eventTool: DirectorToolCall = {
       ...(tool ?? { name: toolName ?? 'tool' }),
       name: tool?.name ?? toolName ?? 'tool',
-      status: tool?.result !== undefined || tool?.isError !== undefined
+      status: tool?.status ?? (tool?.result !== undefined || tool?.isError !== undefined
         ? (tool?.isError ? 'failed' : 'completed')
-        : (tool?.status ?? 'running'),
+        : 'running'),
     };
     const eventType = eventTool.status === 'completed' || eventTool.status === 'failed' ? 'tool_completed' : 'tool_started';
+    this.liveTools = this.mergeLiveTool(this.liveTools, eventTool);
     if (shouldStream && head?.type === 'user') {
       this.emit('tool-call', toolName, eventTool);
       this.emitTurnEvent(head, { type: eventType, tool: eventTool });
@@ -1516,6 +1578,7 @@ export class SessionBridge extends EventEmitter {
       resolvedTurnType = 'bootstrap';
     } else {
       if (!pending || pending.type === 'user') {
+        if (this.liveWorkflow) this.liveWorkflow = { ...this.liveWorkflow, turnStatus: 'completed' };
         this.emitTurnEvent(pending, {
           type: 'turn_completed',
           content: responseText,
@@ -1523,8 +1586,8 @@ export class SessionBridge extends EventEmitter {
         });
         if (responseText) {
           this.messagesProcessedToday++;
-          this.emit('response', responseText, result.durationMs ?? undefined);
         }
+        this.emit('response', responseText, result.durationMs ?? undefined);
         resolvedTurnType = 'user';
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
@@ -1586,11 +1649,13 @@ export class SessionBridge extends EventEmitter {
     } else {
       if (!pending || pending.type === 'user') {
         this.messagesProcessedToday++;
+        if (this.liveWorkflow) this.liveWorkflow = { ...this.liveWorkflow, turnStatus: 'failed' };
         this.emitTurnEvent(pending, { type: 'turn_failed', error: message });
         this.emit('response', '处理失败，请稍后重试');
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
         this.partialSystemReplyText = null;
+        if (this.liveWorkflow) this.liveWorkflow = { ...this.liveWorkflow, turnStatus: 'failed' };
         this.emitTurnEvent(pending, { type: 'turn_failed', error: message });
         this.emit('system-stream-abort', pending.replyToMessageId, 'Director 调用失败');
       }

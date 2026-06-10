@@ -1383,11 +1383,9 @@ async function main() {
       // 小群/话题群 → workspace default session
       try {
         const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
-        const agentName = sessionManager.runtimeGetAgentName(routingKey);
         const session = await sessionManager.sendToWorkspaceDefaultSession(workspaceName, {
           workspaceName,
           feishuChatId: chatId,
-          agentName,
           text: directorText,
           messageId,
         });
@@ -1398,7 +1396,11 @@ async function main() {
         } else {
           console.error(`[shell] workspace session send failed:`, err);
           metrics.addError(`Workspace session send failed: ${String(err).slice(0, 200)}`);
-          await messaging.reply(messageId, '消息发送失败，请稍后重试').catch(() => {});
+          const msg = String(err);
+          const reply = msg.includes('active sessions but no default_session_id')
+            ? '该工作区有多个 session，但尚未设置 default session。请先在 Web 控制台选择一个 session 设为 default。'
+            : '消息发送失败，请稍后重试';
+          await messaging.reply(messageId, reply).catch(() => {});
         }
       }
     } else {

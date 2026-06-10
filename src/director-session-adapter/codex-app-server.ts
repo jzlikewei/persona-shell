@@ -31,6 +31,7 @@ export class CodexAppServerSessionAdapter implements DirectorSessionAdapter {
         onChunk: (text) => this.hooks.onChunk(text),
         onToolCall: (toolName, tool) => this.hooks.onToolCall(toolName, tool),
         onPartialAgentMessage: (text) => this.hooks.onPartialAgentMessage(text),
+        onWorkflowEvent: (event) => this.hooks.onWorkflowEvent?.(event),
         onMetrics: (update) => this.hooks.onMetrics(update),
         onTurnComplete: (result) => this.hooks.onTurnComplete(result),
         onTurnFailure: (message) => this.hooks.onTurnFailure(message),

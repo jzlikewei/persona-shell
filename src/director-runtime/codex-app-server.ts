@@ -63,6 +63,7 @@ export interface CodexAppServerRuntimeHooks {
   onChunk(text: string): void;
   onToolCall(toolName?: string, tool?: RuntimeToolCall): void;
   onPartialAgentMessage(text: string): void;
+  onWorkflowEvent?(event: RuntimeWorkflowEvent): void;
   onMetrics(update: { lastInputTokens?: number; contextTokens?: number; contextWindow?: number }): void;
   onTurnComplete(result: { responseText: string; durationMs: number | null }): void;
   onTurnFailure(message: string): void;
@@ -84,7 +85,12 @@ export interface RuntimeToolCall {
   result?: string;
   isError?: boolean;
   timestamp?: number;
+  status?: 'running' | 'completed' | 'failed';
 }
+
+export type RuntimeWorkflowEvent =
+  | { type: 'goal_updated'; turnId: string; goal: { objective?: string; status?: string; tokensUsed?: number; timeUsedSeconds?: number }; timestamp?: string }
+  | { type: 'plan_updated'; turnId: string; plan: Array<{ step?: string; status?: string }>; explanation?: string | null; timestamp?: string };
 
 export interface CodexAppServerRuntimeOptions {
   label: string;
@@ -107,6 +113,7 @@ export class CodexAppServerRuntime {
   private activeResponse = '';
   private activeDeltaCount = 0;
   private currentTurnStartedAt: number | null = null;
+  private liveToolOutputs = new Map<string, string>();
   private starting: Promise<boolean> | null = null;
 
   constructor(
@@ -408,7 +415,7 @@ export class CodexAppServerRuntime {
 
   private handleNotification(msg: JsonRpcNotification): void {
     const params = this.asRecord(msg.params);
-    if (this.isToolLikeMethod(msg.method)) {
+    if (this.isToolLikeMethod(msg.method) && msg.method !== 'item/commandExecution/outputDelta') {
       this.hooks.onToolCall(this.extractToolName(params) ?? this.extractToolNameFromMethod(msg.method));
     }
     switch (msg.method) {
@@ -423,8 +430,23 @@ export class CodexAppServerRuntime {
           this.activeTurnId = turnId;
           this.activeDeltaCount = 0;
           this.currentTurnStartedAt = Date.now();
+          this.liveToolOutputs.clear();
           console.log(`[codex-live:${this.options.label}] turn started id=${turnId}`);
         }
+        break;
+      }
+      case 'item/started': {
+        const item = this.asRecord(params.item);
+        if (this.isToolLikeItem(item)) {
+          const tool = this.extractToolCall(item, msg._ts);
+          if (tool?.id) this.liveToolOutputs.set(tool.id, '');
+          this.hooks.onToolCall(tool?.name ?? this.extractToolName(item), tool ? { ...tool, status: 'running', result: undefined, isError: undefined } : undefined);
+        }
+        break;
+      }
+      case 'item/commandExecution/outputDelta': {
+        const tool = this.extractCommandExecutionDelta(params, msg._ts);
+        if (tool) this.hooks.onToolCall(tool.name, tool);
         break;
       }
       case 'item/agentMessage/delta': {
@@ -446,12 +468,23 @@ export class CodexAppServerRuntime {
           this.hooks.onPartialAgentMessage(item.text);
         } else if (this.isToolLikeItem(item)) {
           const tool = this.extractToolCall(item, msg._ts);
+          if (tool?.id) this.liveToolOutputs.delete(tool.id);
           this.hooks.onToolCall(tool?.name ?? this.extractToolName(item), tool);
         }
         break;
       }
       case 'turn/completed': {
         this.handleTurnCompleted(params);
+        break;
+      }
+      case 'thread/goal/updated': {
+        const event = this.extractGoalEvent(params, msg._ts);
+        if (event) this.hooks.onWorkflowEvent?.(event);
+        break;
+      }
+      case 'turn/plan/updated': {
+        const event = this.extractPlanEvent(params, msg._ts);
+        if (event) this.hooks.onWorkflowEvent?.(event);
         break;
       }
       case 'thread/tokenUsage/updated': {
@@ -464,6 +497,7 @@ export class CodexAppServerRuntime {
         this.activeResponse = '';
         this.activeDeltaCount = 0;
         this.currentTurnStartedAt = null;
+        this.liveToolOutputs.clear();
         break;
       }
       default:
@@ -746,12 +780,14 @@ export class CodexAppServerRuntime {
 
   private getThreadId(value: unknown): string | null {
     const record = this.asRecord(value);
+    if (typeof record.threadId === 'string') return record.threadId;
     const thread = this.asRecord(record.thread);
     return typeof thread.id === 'string' ? thread.id : null;
   }
 
   private getTurnId(value: unknown): string | null {
     const record = this.asRecord(value);
+    if (typeof record.turnId === 'string') return record.turnId;
     const turn = this.asRecord(record.turn);
     return typeof turn.id === 'string' ? turn.id : null;
   }
@@ -801,6 +837,67 @@ export class CodexAppServerRuntime {
     return Number.isFinite(ms) ? ms : undefined;
   }
 
+  private workflowEventId(params: Record<string, unknown>, nested?: Record<string, unknown>): string | null {
+    return this.getTurnId(params)
+      ?? (nested ? this.stringField(nested, 'turnId', 'turn_id') : undefined)
+      ?? this.activeTurnId
+      ?? this.getThreadId(params)
+      ?? (nested ? this.stringField(nested, 'threadId', 'thread_id') : undefined)
+      ?? null;
+  }
+
+  private extractGoalEvent(params: Record<string, unknown>, timestamp?: unknown): RuntimeWorkflowEvent | undefined {
+    const goalRecord = this.asRecord(params.goal);
+    const turnId = this.workflowEventId(params, goalRecord);
+    if (!turnId) return undefined;
+    return {
+      type: 'goal_updated',
+      turnId,
+      goal: {
+        objective: this.stringField(goalRecord, 'objective'),
+        status: this.stringField(goalRecord, 'status'),
+        tokensUsed: typeof goalRecord.tokensUsed === 'number' ? goalRecord.tokensUsed : undefined,
+        timeUsedSeconds: typeof goalRecord.timeUsedSeconds === 'number' ? goalRecord.timeUsedSeconds : undefined,
+      },
+      timestamp: typeof timestamp === 'string' ? timestamp : undefined,
+    };
+  }
+
+  private extractPlanEvent(params: Record<string, unknown>, timestamp?: unknown): RuntimeWorkflowEvent | undefined {
+    const turnId = this.workflowEventId(params);
+    if (!turnId) return undefined;
+    const rawPlan = Array.isArray(params.plan) ? params.plan : [];
+    const plan = rawPlan.map((item) => {
+      const record = this.asRecord(item);
+      return {
+        step: this.stringField(record, 'step'),
+        status: this.stringField(record, 'status'),
+      };
+    });
+    return {
+      type: 'plan_updated',
+      turnId,
+      plan,
+      explanation: typeof params.explanation === 'string' ? params.explanation : null,
+      timestamp: typeof timestamp === 'string' ? timestamp : undefined,
+    };
+  }
+
+  private extractCommandExecutionDelta(params: Record<string, unknown>, timestamp?: unknown): RuntimeToolCall | undefined {
+    const itemId = this.stringField(params, 'itemId', 'item_id', 'id');
+    const delta = typeof params.delta === 'string' ? params.delta : '';
+    if (!itemId || !delta) return undefined;
+    const next = (this.liveToolOutputs.get(itemId) ?? '') + delta;
+    this.liveToolOutputs.set(itemId, next);
+    return {
+      id: itemId,
+      name: 'Bash',
+      result: this.stringifyPreview(next, 4000),
+      status: 'running',
+      timestamp: this.timestampMs(timestamp),
+    };
+  }
+
   private extractToolCall(item: Record<string, unknown>, timestamp?: unknown): RuntimeToolCall | undefined {
     const type = this.stringField(item, 'type');
     if (type === 'commandExecution' || type === 'command_execution') {
@@ -819,6 +916,7 @@ export class CodexAppServerRuntime {
           ...(output ? { output } : {}),
         }, 1200),
         isError: typeof exitCode === 'number' ? exitCode !== 0 : status === 'failed',
+        status: typeof exitCode === 'number' ? (exitCode === 0 ? 'completed' : 'failed') : (status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : undefined),
         timestamp: this.timestampMs(timestamp),
       };
     }
@@ -832,6 +930,7 @@ export class CodexAppServerRuntime {
         input: this.stringifyPreview(changes),
         result: this.stringifyPreview({ status }),
         isError: status === 'failed',
+        status: status === 'failed' ? 'failed' : status === 'completed' ? 'completed' : undefined,
         timestamp: this.timestampMs(timestamp),
       };
     }

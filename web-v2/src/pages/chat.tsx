@@ -8,11 +8,10 @@ import { CheckCircle2, Loader2, Paperclip, Terminal, XCircle } from 'lucide-reac
 import { CodeBlock } from '@/components/code-block'
 import { DocumentPanel, extractFilePaths } from '@/components/document-panel'
 import { StopOrSend } from '@/components/stop-button'
-import { MessageSearch } from '@/components/message-search'
 import { MessagePagination } from '@/components/message-pagination'
 import { DateSeparator } from '@/components/date-separator'
 import { useApi } from '@/hooks/use-api'
-import { useChat, type ChatMessage, type ChatToolCall } from '@/hooks/use-chat'
+import { useChat, type ChatMessage, type ChatToolCall, type ChatWorkflow } from '@/hooks/use-chat'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
 
@@ -161,6 +160,47 @@ const ToolDetail = memo(function ToolDetail({ tool, index }: { tool: ChatToolCal
   )
 })
 
+function statusTone(status?: string) {
+  if (!status) return 'text-[#a6adc8]'
+  if (['completed', 'complete', 'done'].includes(status)) return 'text-[#a6e3a1]'
+  if (['failed', 'error', 'blocked'].includes(status)) return 'text-[#f38ba8]'
+  if (['in_progress', 'inProgress', 'running', 'active'].includes(status)) return 'text-[#89b4fa]'
+  return 'text-[#a6adc8]'
+}
+
+const WorkflowPanel = memo(function WorkflowPanel({ workflow }: { workflow?: ChatWorkflow | null }) {
+  if (!workflow) return null
+  const goal = workflow.goal
+  const plan = workflow.plan ?? []
+  const workflowStatus = workflow.turnStatus ?? goal?.status
+  return (
+    <div className="mt-2 rounded-md border border-[#45475a] bg-[#181825] p-2 font-mono text-[11px] text-[#a6adc8]">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="font-bold text-[#cdd6f4]">Goal workflow</span>
+        {workflowStatus && <span className={cn('ml-auto font-bold', statusTone(workflowStatus))}>{workflowStatus}</span>}
+      </div>
+      {goal?.objective && <div className="mb-2 whitespace-pre-wrap text-[#bac2de]">{goal.objective}</div>}
+      {(goal?.tokensUsed != null || goal?.timeUsedSeconds != null) && (
+        <div className="mb-2 flex flex-wrap gap-2 text-[10px] text-[#7f849c]">
+          {goal.tokensUsed != null && <span>tokens {goal.tokensUsed}</span>}
+          {goal.timeUsedSeconds != null && <span>time {goal.timeUsedSeconds}s</span>}
+        </div>
+      )}
+      {workflow.explanation && <div className="mb-2 text-[#7f849c]">{workflow.explanation}</div>}
+      {plan.length > 0 && (
+        <ol className="space-y-1">
+          {plan.map((item, index) => (
+            <li key={`${item.step ?? 'step'}-${index}`} className="flex gap-2">
+              <span className={cn('w-[82px] shrink-0 font-bold', statusTone(item.status))}>{item.status ?? '-'}</span>
+              <span className="min-w-0 flex-1 whitespace-pre-wrap text-[#bac2de]">{item.step ?? '(unnamed step)'}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+})
+
 const ToolCalls = memo(function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
   // 外层 Tools 折叠组也 lazy,默认收起时不 mount 任何 ToolDetail
   const [opened, setOpened] = useState(false)
@@ -214,7 +254,7 @@ const MessageBlock = memo(function MessageBlock({
     <article
       className={cn('group relative mb-3 flex w-full overflow-hidden px-4', isUser ? 'justify-end' : 'justify-start')}
     >
-      <div className={cn('flex flex-col overflow-hidden', isUser ? 'max-w-[min(72%,760px)] items-end' : 'max-w-[min(76%,780px)] items-start')}>
+      <div className={cn('flex flex-col overflow-hidden', isUser ? 'max-w-[min(68%,720px)] items-end' : 'max-w-[min(76%,780px)] items-start')}>
         <div className={cn('mb-1 flex items-center gap-2', isUser && 'justify-end')}>
           <span className={cn(
             'font-mono text-[11px] font-extrabold uppercase tracking-[.05em]',
@@ -230,16 +270,19 @@ const MessageBlock = memo(function MessageBlock({
         <div className={cn(
           'max-w-full rounded-md px-3 py-2 text-sm leading-relaxed [overflow-wrap:anywhere]',
           isUser
-            ? 'border-r-[3px] border-[#89b4fa] bg-[#89b4fa]/[.08] text-right text-[#cdd6f4]'
+            ? 'border-r-[3px] border-[#89b4fa] bg-[#89b4fa]/[.08] text-left text-[#cdd6f4]'
             : 'border-l-[3px] border-[#a6e3a1] bg-[#313244] text-[#bac2de]'
         )}>
           {isUser
             ? (hasMarkdown
                 ? <MarkdownContent content={message.content} onFileClick={onFileClick} />
                 : <div className="whitespace-pre-wrap text-left">{message.content}</div>)
-            : <MarkdownContent content={message.content} onFileClick={onFileClick} />}
+            : (message.content.trim()
+                ? <MarkdownContent content={message.content} onFileClick={onFileClick} />
+                : <div className="font-mono text-xs text-[#7f849c]">仅执行工具调用，无文本输出</div>)}
+          {!isUser && <WorkflowPanel workflow={message.workflow} />}
+          {!isUser && <ToolCalls tools={message.tools} />}
         </div>
-        {!isUser && <ToolCalls tools={message.tools} />}
         {filePaths.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
             {filePaths.slice(0, 5).map(path => (
@@ -252,17 +295,18 @@ const MessageBlock = memo(function MessageBlock({
   )
 })
 
-function StreamingBlock({ phase, text, tools }: { phase: 'thinking' | 'streaming' | 'tool_running'; text: string; tools?: ChatToolCall[] }) {
+function StreamingBlock({ phase, text, tools, workflow }: { phase: 'thinking' | 'streaming' | 'tool_running'; text: string; tools?: ChatToolCall[]; workflow?: ChatWorkflow | null }) {
   const statusLabel = phase === 'thinking' ? 'thinking' : phase === 'streaming' ? 'streaming' : 'working'
   const lastRunningTool = tools?.filter(t => t.status === 'running').slice(-1)[0]
+  const hasTools = !!tools?.length
   return (
     <article className="mb-3 flex justify-start px-4">
-      <div className="flex max-w-[min(76%,780px)] flex-col items-start">
+      <div className="flex max-w-[min(76%,780px)] flex-col items-start overflow-hidden">
         <div className="mb-1 flex items-center gap-2">
           <span className="font-mono text-[11px] font-extrabold uppercase tracking-[.05em] text-[#a6e3a1]">Agent</span>
           <span className="font-mono text-[10px] text-[#6c7086]">{statusLabel}</span>
         </div>
-        <div className="w-fit rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
+        <div className="max-w-full rounded-md border-l-[3px] border-[#a6e3a1] bg-[#313244] px-3 py-2 text-sm leading-relaxed text-[#bac2de]">
           {text ? (
             <>
               <MarkdownContent content={text} />
@@ -282,9 +326,8 @@ function StreamingBlock({ phase, text, tools }: { phase: 'thinking' | 'streaming
               {phase === 'tool_running' && <span>执行 {lastRunningTool?.name ?? 'tool'}…</span>}
             </div>
           )}
-        </div>
-        <div className="w-full max-w-[min(76vw,780px)]">
-          <ToolCalls tools={tools} />
+          <WorkflowPanel workflow={workflow} />
+          {hasTools && <ToolCalls tools={tools} />}
         </div>
       </div>
     </article>
@@ -341,11 +384,9 @@ export function ChatPage() {
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, activity, turnPhase, loading, sending, sendMessage, loadMore } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, workflow, activity, turnPhase, loading, sending, sendMessage, loadMore } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
-  const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0
-  // 搜索状态在 ChatPage 内管,不污染 use-chat 抽象
-  const [searchQuery, setSearchQuery] = useState('')
+  const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0 || workflow !== null
   const draftKey = activeSession ? `persona-shell:v2:draft:${activeSession}` : null
   const [input, setInput] = useState(() => {
     if (!draftKey) return ''
@@ -377,17 +418,27 @@ export function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   // Virtuoso 自带 followOutput / atBottom 检测,不需要手写 scrollRef/handleScroll/userScrolled
   const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const pendingInitialBottomSessionRef = useRef<string | null>(null)
   // 用户是否已贴底:决定流式新内容是平滑滚动还是停滞(尊重用户上滑阅读历史)
   const atBottomRef = useRef(true)
-  const filteredMessages = useMemo(() => {
-    let result = visibleMessages(messages)
-    // 搜索过滤:substring 大小写不敏感
-    const q = searchQuery.trim().toLowerCase()
-    if (q) {
-      result = result.filter(m => m.content.toLowerCase().includes(q))
-    }
-    return result
-  }, [messages, searchQuery])
+  const visibleChatMessages = useMemo(() => visibleMessages(messages), [messages])
+
+  useEffect(() => {
+    pendingInitialBottomSessionRef.current = activeSession ?? null
+    atBottomRef.current = true
+  }, [activeSession])
+
+  useEffect(() => {
+    if (!activeSession || pendingInitialBottomSessionRef.current !== activeSession) return
+    if (loading || visibleChatMessages.length === 0) return
+
+    // Virtuoso remount 时 data 先是 loading/empty，真正历史消息异步到达后
+    // initialTopMostItemIndex 已经错过时机。显式在首批历史渲染后贴到底部。
+    requestAnimationFrame(() => {
+      virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' })
+      pendingInitialBottomSessionRef.current = null
+    })
+  }, [activeSession, visibleChatMessages.length, loading])
 
   const attachmentText = useCallback((files: UploadedAttachment[]) => {
     if (files.length === 0) return ''
@@ -475,34 +526,30 @@ export function ChatPage() {
   type VirtuosoItem = ChatMessage | StreamingTail | LoadingTail | EmptyTail | DateSeparatorTail
 
   const virtuosoItems = useMemo<VirtuosoItem[]>(() => {
-    // 在相邻消息日期变化处插入 DateSeparator;搜索过滤时不插入,以免污染过滤视图
+    // 在相邻消息日期变化处插入 DateSeparator。聊天页不做本地搜索过滤，
+    // 避免给用户一个只能搜当前窗口的“假搜索模式”。
     const items: VirtuosoItem[] = []
-    if (searchQuery) {
-      // 搜索模式:直接铺平,不插日期分隔
-      items.push(...filteredMessages)
-    } else {
-      let prevDate: string | null = null
-      for (const msg of filteredMessages) {
-        const msgDate = msg.timestamp.slice(0, 10) // YYYY-MM-DD
-        if (msgDate !== prevDate) {
-          items.push({ __kind: 'date', date: msg.timestamp })
-          prevDate = msgDate
-        }
-        items.push(msg)
+    let prevDate: string | null = null
+    for (const msg of visibleChatMessages) {
+      const msgDate = msg.timestamp.slice(0, 10) // YYYY-MM-DD
+      if (msgDate !== prevDate) {
+        items.push({ __kind: 'date', date: msg.timestamp })
+        prevDate = msgDate
       }
+      items.push(msg)
     }
-    if (loading && filteredMessages.length === 0) {
+    if (loading && visibleChatMessages.length === 0) {
       items.push({ __kind: 'loading' })
-    } else if (filteredMessages.length === 0 && !streaming && !activity && !turnPhase && !searchQuery) {
+    } else if (visibleChatMessages.length === 0 && !streaming && !activity && !turnPhase) {
       items.push({ __kind: 'empty' })
     }
     if (turnPhase) {
       items.push({ __kind: 'streaming', phase: turnPhase })
-    } else if (streaming || activity || streamingTools.length > 0) {
+    } else if (streaming || activity || streamingTools.length > 0 || workflow) {
       items.push({ __kind: 'streaming', phase: streaming ? 'streaming' : 'tool_running' })
     }
     return items
-  }, [filteredMessages, loading, streaming, activity, turnPhase, streamingTools.length, searchQuery])
+  }, [visibleChatMessages, loading, streaming, activity, turnPhase, streamingTools.length, workflow])
 
   const renderItem = useCallback((_index: number, item: VirtuosoItem) => {
     if ('__kind' in item) {
@@ -517,7 +564,7 @@ export function ChatPage() {
       if (item.__kind === 'empty') return <EmptyConversation />
       if (item.__kind === 'date') return <DateSeparator date={item.date} />
       // streaming
-      return <StreamingBlock phase={item.phase} text={streaming} tools={streamingTools} />
+      return <StreamingBlock phase={item.phase} text={streaming} tools={streamingTools} workflow={workflow} />
     }
     return (
       <MessageBlock
@@ -525,7 +572,7 @@ export function ChatPage() {
         onFileClick={setPreviewPath}
       />
     )
-  }, [streaming, streamingTools])
+  }, [streaming, streamingTools, workflow])
 
   const renderHeader = useCallback(() => (
     <WorkspaceSummary
@@ -538,10 +585,9 @@ export function ChatPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
-      <MessageSearch value={searchQuery} onChange={setSearchQuery} matchCount={filteredMessages.length} />
       <MessagePagination
         loading={loading}
-        loadedCount={filteredMessages.length}
+        loadedCount={visibleChatMessages.length}
         onLoadMore={loadMore}
       />
       <Virtuoso

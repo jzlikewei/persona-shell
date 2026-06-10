@@ -6,7 +6,7 @@ import type { MessageQueue, QueueItem, PendingAttachment } from './queue.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import type { CardAction } from './messaging/messaging.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
-import { createSessionRecord, getSessionRecord, archiveSession as archiveSessionInDb, listSessionRecords, type SessionRow } from './task/task-store.js';
+import { createSessionRecord, getSessionRecord, archiveSession as archiveSessionInDb, listSessionRecords, setDefaultSession, type SessionRow } from './task/task-store.js';
 
 export interface SessionEntry {
   sessionId: string;
@@ -150,14 +150,12 @@ export class SessionManager extends EventEmitter {
   }
 
   private deriveReviveRoutingKey(sessionId: string, record: SessionRow): string | null {
-    // Codex app-server sessions are durable by threadId. Even if Shell restart
-    // lost the runtime sessionId→routingKey map and pool:entries no longer
-    // contains this concrete session, we can create a fresh runtime entry and
-    // let the Codex adapter call thread/resume(sessionId).
-    if (record.agent_type === 'codex-app-server') {
-      return `web-session:${sessionId}`;
-    }
-    return null;
+    // Session routing must be independent from channel/runtime labels.  When a
+    // runtime map is gone, create a fresh internal routing key and let the
+    // adapter resume from initialSessionId.  The prefix is intentionally
+    // channel-neutral: Feishu/Web must both route through workspace.default_session_id.
+    void record;
+    return `session:${sessionId}`;
   }
 
   async sendToWorkspaceDefaultSession(workspaceName: string, opts: {
@@ -168,17 +166,58 @@ export class SessionManager extends EventEmitter {
     messageId: string;
     sendOptions?: { webOnly?: boolean };
   }): Promise<SessionEntry> {
-    const session = await this.getOrCreateForWorkspace(workspaceName, opts);
-    if (session.sessionId) {
-      await this.send(session.sessionId, opts.text, opts.messageId, opts.sendOptions);
-      return session;
+    const session = await this.resolveWorkspaceDefaultSession(workspaceName, {
+      feishuChatId: opts.feishuChatId,
+      agentName: opts.agentName,
+    });
+    await this.send(session.sessionId, opts.text, opts.messageId, opts.sendOptions);
+    return session;
+  }
+
+  /**
+   * Resolve the business-level default session for a workspace.
+   *
+   * Rules:
+   * - valid workspace.default_session_id wins;
+   * - if no valid default and exactly one active session remains, promote it;
+   * - if no active session exists, create a new session and make it default;
+   * - if multiple active sessions exist without an explicit default, refuse to guess.
+   */
+  async resolveWorkspaceDefaultSession(workspaceName: string, opts: {
+    feishuChatId: string;
+    agentName?: string;
+  }): Promise<SessionEntry> {
+    this.workspaceRegistry.getOrCreate(workspaceName);
+    const defaultId = this.normalizeWorkspaceDefault(workspaceName);
+    if (defaultId) {
+      const live = this.getSession(defaultId);
+      if (live) return live;
+
+      const record = getSessionRecord(defaultId);
+      const revived = await this.reviveSession(defaultId, {
+        feishuChatId: opts.feishuChatId,
+        agentName: record?.agent_name ?? opts.agentName,
+      });
+      if (revived?.sessionId) return revived;
+      throw new Error(`default session cannot be revived: ${defaultId}`);
     }
 
-    const routingKey = opts.feishuChatId === 'web-console'
-      ? `web-workspace:${workspaceName}`
-      : opts.feishuChatId;
-    await this.pool.send(routingKey, opts.text, opts.messageId, opts.sendOptions);
-    return session;
+    const active = listSessionRecords(workspaceName);
+    if (active.length === 0) {
+      return this.createNewSession(workspaceName, opts);
+    }
+
+    throw new Error(`workspace "${workspaceName}" has ${active.length} active sessions but no default_session_id`);
+  }
+
+  /** Set a workspace default session explicitly. */
+  setWorkspaceDefaultSession(sessionId: string): SessionRow {
+    const record = getSessionRecord(sessionId);
+    if (!record) throw new Error(`session not found: ${sessionId}`);
+    if (record.archived === 1) throw new Error(`cannot set archived session as default: ${sessionId}`);
+    this.workspaceRegistry.getOrCreate(record.workspace);
+    this.workspaceRegistry.setDefaultSession(record.workspace, sessionId);
+    return record;
   }
 
   /** Create a brand-new session for a workspace (always spawns a new Agent) */
@@ -250,11 +289,7 @@ export class SessionManager extends EventEmitter {
     if (archived) {
       const record = getSessionRecord(sessionId);
       if (record) {
-        const ws = this.workspaceRegistry.get(record.workspace);
-        if (ws && ws.default_session_id === sessionId) {
-          const remaining = listSessionRecords(record.workspace).filter(s => s.session_id !== sessionId);
-          this.workspaceRegistry.setDefaultSession(record.workspace, remaining[0]?.session_id ?? null);
-        }
+        this.normalizeWorkspaceDefault(record.workspace);
       }
     }
     return archived;
@@ -273,12 +308,7 @@ export class SessionManager extends EventEmitter {
     if (archived) {
       const record = getSessionRecord(sessionId);
       if (record) {
-        const ws = this.workspaceRegistry.get(record.workspace);
-        if (ws && ws.default_session_id === sessionId) {
-          // 跟 archiveSession 一致:默认 filter archived=0(只选非归档的做新 default)
-          const remaining = listSessionRecords(record.workspace).filter(s => s.session_id !== sessionId);
-          this.workspaceRegistry.setDefaultSession(record.workspace, remaining[0]?.session_id ?? null);
-        }
+        this.normalizeWorkspaceDefault(record.workspace);
       }
     }
     return archived;
@@ -291,7 +321,20 @@ export class SessionManager extends EventEmitter {
 
   /** Resolve workspace default sessionId (for feishu path) */
   resolveDefaultSession(workspaceName: string): string | null {
-    return this.workspaceRegistry.resolveDefaultSession(workspaceName);
+    return this.normalizeWorkspaceDefault(workspaceName);
+  }
+
+  private normalizeWorkspaceDefault(workspaceName: string): string | null {
+    const ws = this.workspaceRegistry.getOrCreate(workspaceName);
+    const current = ws.default_session_id ? getSessionRecord(ws.default_session_id) : null;
+    if (current && current.workspace === workspaceName && current.archived !== 1) {
+      return current.session_id;
+    }
+
+    const active = listSessionRecords(workspaceName);
+    const nextDefault = active.length === 1 ? active[0].session_id : null;
+    setDefaultSession(workspaceName, nextDefault);
+    return nextDefault;
   }
 
   // --- Runtime operations ---

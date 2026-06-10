@@ -354,7 +354,7 @@ describe('SessionBridge', () => {
     expect(bridge.getStatus().pendingCount).toBe(0);
   });
 
-  test('empty response text does not emit response event', async () => {
+  test('empty user response text still emits response event to release queues', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances[0]!;
     const onEmit = spyOn(bridge, 'emit');
@@ -363,10 +363,10 @@ describe('SessionBridge', () => {
     await bridge.send('hello');
     adapter.completeTurn({ responseText: '', durationMs: 5 });
 
-    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+    expect(onEmit).toHaveBeenCalledWith('response', '', 5);
   });
 
-  test('whitespace-only response text does not emit response event', async () => {
+  test('whitespace-only user response text still emits response event to release queues', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances[0]!;
     const onEmit = spyOn(bridge, 'emit');
@@ -375,7 +375,7 @@ describe('SessionBridge', () => {
     await bridge.send('hello');
     adapter.completeTurn({ responseText: '   \n  ', durationMs: 5 });
 
-    expect(onEmit.mock.calls.some((call) => call[0] === 'response')).toBe(false);
+    expect(onEmit).toHaveBeenCalledWith('response', '', 5);
   });
 
   test('getStatus returns correct activity states', async () => {
@@ -605,6 +605,19 @@ describe('SessionBridge', () => {
     adapter.completeTurn({ responseText: 'done', durationMs: 1 });
   });
 
+  test('live workflow snapshot reports thinking immediately after turn_started', async () => {
+    const bridge = createBridge();
+
+    await bridge.start();
+    await bridge.send('hello');
+
+    expect(bridge.getLiveWorkflowState()).toMatchObject({
+      workflow: null,
+      tools: [],
+      phase: 'thinking',
+    });
+  });
+
   test('handleToolCall emits tool-call event with tool name for user turn', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;
@@ -663,6 +676,83 @@ describe('SessionBridge', () => {
       content: 'I will inspect it.\nDone.',
       durationMs: 12,
     });
+  });
+
+  test('workflow events update live snapshot only for the active turn', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    await bridge.send('work on goal', { correlationId: 'msg-1' });
+    const turnId = events.find(event => event.type === 'turn_started')?.turnId;
+    expect(turnId).toBeTruthy();
+
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'goal_updated',
+      turnId: 'runtime-turn-1',
+      goal: { objective: 'ship workflow UI', status: 'active', tokensUsed: 10, timeUsedSeconds: 2 },
+    });
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'plan_updated',
+      turnId: 'runtime-turn-1',
+      plan: [{ step: 'wire events', status: 'inProgress' }],
+      explanation: 'working',
+    });
+    adapter.hooks.onToolCall('Bash', { id: 'tool-1', name: 'Bash', status: 'running', result: 'hello' });
+
+    expect(bridge.getLiveWorkflowState()).toMatchObject({
+      workflow: {
+        turnId,
+        goal: { objective: 'ship workflow UI', status: 'active', tokensUsed: 10, timeUsedSeconds: 2 },
+        plan: [{ step: 'wire events', status: 'inProgress' }],
+        explanation: 'working',
+        turnStatus: 'running',
+      },
+      tools: [{ id: 'tool-1', name: 'Bash', status: 'running', result: 'hello' }],
+      phase: 'tool_running',
+    });
+
+    adapter.completeTurn({ responseText: 'done', durationMs: 12 });
+    expect(bridge.getLiveWorkflowState()).toEqual({ workflow: null, tools: [], phase: null });
+  });
+
+  test('workflow events for a new turn do not inherit previous goal fields', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    await bridge.send('first');
+    const firstTurnId = events.find(event => event.type === 'turn_started')?.turnId;
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'goal_updated',
+      turnId: 'runtime-turn-a',
+      goal: { objective: 'old goal', status: 'active' },
+    });
+    expect(bridge.getLiveWorkflowState().workflow?.turnId).toBe(firstTurnId);
+    adapter.completeTurn({ responseText: 'done', durationMs: 1 });
+
+    await bridge.send('second');
+    const secondTurnId = events.filter(event => event.type === 'turn_started').at(-1)?.turnId;
+    expect(secondTurnId).toBeTruthy();
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'plan_updated',
+      turnId: 'runtime-turn-b',
+      plan: [{ step: 'new plan only', status: 'inProgress' }],
+      explanation: null,
+    });
+
+    expect(bridge.getLiveWorkflowState().workflow).toEqual({
+      turnId: secondTurnId!,
+      goal: undefined,
+      plan: [{ step: 'new plan only', status: 'inProgress' }],
+      explanation: null,
+      turnStatus: 'running',
+    });
+    adapter.completeTurn({ responseText: 'done', durationMs: 1 });
   });
 
   test('system reply turn emits unified turn events with tool structure', async () => {

@@ -34,6 +34,7 @@ describe('CodexAppServerRuntime', () => {
         onChunk: () => {},
         onToolCall: () => {},
         onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
         onMetrics: (update) => metrics.push(update),
         onTurnComplete: () => {},
         onTurnFailure: () => {},
@@ -113,6 +114,7 @@ describe('CodexAppServerRuntime', () => {
         onChunk: () => {},
         onToolCall: () => {},
         onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
         onMetrics: () => {},
         onTurnComplete: () => {},
         onTurnFailure: () => {},
@@ -169,6 +171,7 @@ describe('CodexAppServerRuntime', () => {
         onChunk: () => {},
         onToolCall: () => {},
         onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
         onMetrics: () => {},
         onTurnComplete: () => {},
         onTurnFailure: () => {},
@@ -215,6 +218,7 @@ describe('CodexAppServerRuntime', () => {
         onChunk: () => {},
         onToolCall: () => {},
         onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
         onMetrics: () => {},
         onTurnComplete: () => {},
         onTurnFailure: () => {},
@@ -259,6 +263,7 @@ describe('CodexAppServerRuntime', () => {
         onChunk: () => {},
         onToolCall: () => {},
         onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
         onMetrics: () => {},
         onTurnComplete: () => {},
         onTurnFailure: () => {},
@@ -347,6 +352,7 @@ describe('CodexAppServerRuntime', () => {
         onChunk: () => {},
         onToolCall: () => {},
         onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
         onMetrics: () => {},
         onTurnComplete: () => {},
         onTurnFailure: () => {},
@@ -369,4 +375,160 @@ describe('CodexAppServerRuntime', () => {
 
     rmSync(personaDir, { recursive: true, force: true });
   });
+
+  test('streams commandExecution outputDelta as a running Bash tool', () => {
+    const tools: Array<{ name?: string; tool?: unknown }> = [];
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: 'test',
+        logDir: '/tmp/persona-test/logs',
+        config: {
+          persona_dir: '/tmp/persona-test',
+          pipe_dir: '/tmp/persona-test',
+          pid_file: '/tmp/persona-test/test.pid',
+          time_sync_interval_ms: 999999,
+          flush_context_limit: 999999,
+          flush_interval_ms: 999999,
+          quote_max_length: 32,
+        },
+        agent: { type: 'codex-app-server', command: 'codex', name: 'codex-live' },
+        personaRole: 'director',
+      },
+      {
+        getSessionId: () => 'thread-1',
+        getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
+        setSessionName: () => {},
+        buildSessionName: () => 'session-1',
+        persistSession: () => {},
+        clearSession: () => {},
+        logOutput: () => {},
+        onChunk: () => {},
+        onToolCall: (name, tool) => tools.push({ name, tool }),
+        onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
+        onMetrics: () => {},
+        onTurnComplete: () => {},
+        onTurnFailure: () => {},
+        onRuntimeClosed: () => {},
+      },
+    );
+    const runtimePrivate = runtime as unknown as {
+      handleNotification(msg: { method: string; params: Record<string, unknown>; _ts?: string }): void;
+    };
+
+    runtimePrivate.handleNotification({
+      method: 'item/started',
+      _ts: '2026-06-10T15:44:00.000Z',
+      params: { item: { type: 'commandExecution', id: 'call-1', command: 'echo hi', cwd: '/tmp', status: 'inProgress' } },
+    });
+    runtimePrivate.handleNotification({
+      method: 'item/commandExecution/outputDelta',
+      _ts: '2026-06-10T15:44:01.000Z',
+      params: { itemId: 'call-1', delta: 'hello' },
+    });
+    runtimePrivate.handleNotification({
+      method: 'item/commandExecution/outputDelta',
+      _ts: '2026-06-10T15:44:02.000Z',
+      params: { itemId: 'call-1', delta: '\nworld' },
+    });
+    runtimePrivate.handleNotification({
+      method: 'item/completed',
+      _ts: '2026-06-10T15:44:03.000Z',
+      params: { item: { type: 'commandExecution', id: 'call-1', command: 'echo hi', cwd: '/tmp', status: 'completed', exitCode: 0, aggregatedOutput: 'hello\nworld' } },
+    });
+
+    expect(tools).toHaveLength(4);
+    expect(tools[0].tool).toMatchObject({ id: 'call-1', name: 'Bash', status: 'running', input: '{\n  "command": "echo hi",\n  "cwd": "/tmp"\n}' });
+    expect(tools[1].tool).toMatchObject({ id: 'call-1', name: 'Bash', status: 'running', result: 'hello' });
+    expect(tools[2].tool).toMatchObject({ id: 'call-1', name: 'Bash', status: 'running', result: 'hello\nworld' });
+    expect(tools[3].tool).toMatchObject({ id: 'call-1', name: 'Bash', status: 'completed', isError: false });
+  });
+
+
+  test('emits goal and plan workflow updates from app-server notifications', () => {
+    const workflowEvents: unknown[] = [];
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: 'test',
+        logDir: '/tmp/persona-test/logs',
+        config: {
+          persona_dir: '/tmp/persona-test',
+          pipe_dir: '/tmp/persona-test',
+          pid_file: '/tmp/persona-test/test.pid',
+          time_sync_interval_ms: 999999,
+          flush_context_limit: 999999,
+          flush_interval_ms: 999999,
+          quote_max_length: 32,
+        },
+        agent: { type: 'codex-app-server', command: 'codex', name: 'codex-live' },
+        personaRole: 'director',
+      },
+      {
+        getSessionId: () => 'thread-1',
+        getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
+        setSessionName: () => {},
+        buildSessionName: () => 'session-1',
+        persistSession: () => {},
+        clearSession: () => {},
+        logOutput: () => {},
+        onChunk: () => {},
+        onToolCall: () => {},
+        onPartialAgentMessage: () => {},
+        onWorkflowEvent: (event) => workflowEvents.push(event),
+        onMetrics: () => {},
+        onTurnComplete: () => {},
+        onTurnFailure: () => {},
+        onRuntimeClosed: () => {},
+      },
+    );
+    const runtimePrivate = runtime as unknown as {
+      handleNotification(msg: { method: string; params: Record<string, unknown>; _ts?: string }): void;
+    };
+
+    runtimePrivate.handleNotification({
+      method: 'thread/goal/updated',
+      _ts: '2026-06-11T00:00:00.000Z',
+      params: { turnId: 'turn-1', goal: { objective: 'ship workflow UI', status: 'active', tokensUsed: 12, timeUsedSeconds: 3 } },
+    });
+    runtimePrivate.handleNotification({
+      method: 'turn/plan/updated',
+      _ts: '2026-06-11T00:00:01.000Z',
+      params: { turnId: 'turn-1', explanation: 'working', plan: [{ step: 'wire backend', status: 'completed' }, { step: 'render frontend', status: 'in_progress' }] },
+    });
+    runtimePrivate.handleNotification({
+      method: 'turn/started',
+      _ts: '2026-06-11T00:00:01.500Z',
+      params: { turnId: 'turn-2' },
+    });
+    runtimePrivate.handleNotification({
+      method: 'thread/goal/updated',
+      _ts: '2026-06-11T00:00:02.000Z',
+      params: { threadId: 'thread-1', turnId: null, goal: { threadId: 'thread-1', objective: 'ship workflow UI', status: 'complete', tokensUsed: 99, timeUsedSeconds: 10 } },
+    });
+
+    expect(workflowEvents).toEqual([
+      {
+        type: 'goal_updated',
+        turnId: 'turn-1',
+        goal: { objective: 'ship workflow UI', status: 'active', tokensUsed: 12, timeUsedSeconds: 3 },
+        timestamp: '2026-06-11T00:00:00.000Z',
+      },
+      {
+        type: 'plan_updated',
+        turnId: 'turn-1',
+        plan: [{ step: 'wire backend', status: 'completed' }, { step: 'render frontend', status: 'in_progress' }],
+        explanation: 'working',
+        timestamp: '2026-06-11T00:00:01.000Z',
+      },
+      {
+        type: 'goal_updated',
+        turnId: 'turn-2',
+        goal: { objective: 'ship workflow UI', status: 'complete', tokensUsed: 99, timeUsedSeconds: 10 },
+        timestamp: '2026-06-11T00:00:02.000Z',
+      },
+    ]);
+  });
+
 });

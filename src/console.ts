@@ -3249,6 +3249,13 @@ export function startConsole(
             }
           }
           // Message history and session APIs
+          if (url.pathname === '/api/session-workflow' && req.method === 'GET') {
+            const sessionId = parseMessagesSessionId(url);
+            if (!sessionId) return Response.json({ error: 'sessionId is required' }, { status: 400 });
+            const liveBridge = sessionManager?.getSession(sessionId)?.bridge
+              ?? (director.getStatus().sessionId === sessionId ? director : null);
+            return Response.json(liveBridge?.getLiveWorkflowState() ?? { workflow: null, tools: [], phase: null });
+          }
           if (url.pathname === '/api/messages' && req.method === 'GET') {
             const limit = Number(url.searchParams.get('limit') ?? 100);
             const sessionId = parseMessagesSessionId(url);
@@ -3284,6 +3291,7 @@ export function startConsole(
               workspace: r.workspace,
               sessionName: r.session_name ?? undefined,
               archived: r.archived === 1,
+              isDefault: getWorkspace(r.workspace)?.default_session_id === r.session_id,
               role: r.role ?? undefined,
               cwd: r.cwd ?? undefined,
               alive: r.alive === 1,
@@ -3318,6 +3326,7 @@ export function startConsole(
                   workspace: wsName,
                   sessionName: mainStatus.sessionName ?? undefined,
                   archived: false,
+                  isDefault: getWorkspace(wsName)?.default_session_id === mainStatus.sessionId,
                   role: mainStatus.personaRole,
                   cwd: director.getWorkspaceCwd(),
                   alive: true,
@@ -3866,6 +3875,24 @@ export function startConsole(
               });
             } catch (err) {
               writeAuditEntry('session.create', false, { error: String(err) });
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
+          }
+          // POST /api/sessions/{id}/default — set workspace.default_session_id
+          if (url.pathname.startsWith('/api/sessions/') && url.pathname.endsWith('/default') && req.method === 'POST') {
+            const sessionId = decodeURIComponent(url.pathname.slice('/api/sessions/'.length, -'/default'.length));
+            if (!sessionId) return Response.json({ ok: false, error: 'session_id is required' }, { status: 400 });
+            try {
+              const record = getSessionRecord(sessionId);
+              if (!record) return Response.json({ ok: false, error: 'session not found' }, { status: 404 });
+              if (record.archived === 1) return Response.json({ ok: false, error: 'cannot set archived session as default' }, { status: 409 });
+              if (sessionManager) sessionManager.setWorkspaceDefaultSession(sessionId);
+              else if (workspaceRegistry) workspaceRegistry.setDefaultSession(record.workspace, sessionId);
+              else return Response.json({ ok: false, error: 'workspace registry not available' }, { status: 503 });
+              writeAuditEntry('session.default.set', true, { target: sessionId, workspace: record.workspace });
+              return Response.json({ ok: true, sessionId, workspace: record.workspace });
+            } catch (err) {
+              writeAuditEntry('session.default.set', false, { target: sessionId, error: String(err) });
               return Response.json({ ok: false, error: String(err) }, { status: 500 });
             }
           }
