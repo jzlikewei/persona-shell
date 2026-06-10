@@ -222,7 +222,7 @@ export class SessionBridge extends EventEmitter {
   promoteActiveTurnToUser(): void {
     const active = this.pendingTurns[0];
     if (active && active.type !== 'user') {
-      (active as any).type = 'user';
+      this.pendingTurns[0] = { type: 'user', turnId: active.turnId };
     }
   }
 
