@@ -2,31 +2,31 @@
 
 ## 功能矩阵
 
-| 能力 | Claude Code | Codex | Kimi | 说明 |
-|------|:-----------:|:-----:|:----:|------|
-| **IM 接入** | | | | |
-| 飞书私聊 | ✅ | — | ✅ | main workspace 的 default session |
-| 飞书群聊（小群） | ✅ | ✅ | ✅ | 群名映射为 workspace，default session 接收消息 |
-| 飞书群聊（大群） | ✅ | — | ✅ | One-shot 无状态响应 |
-| Web 控制台 | ✅ | — | ✅ | localhost:3000，浏览器直接对话 |
-| **会话管理** | | | | |
-| 流式响应 | ✅ | ✅ | ⚠️ | Claude 实时 chunk 推送；飞书用 interactive 卡片原地更新；Kimi 整段 JSON 行 |
-| 上下文保持 | ✅ daemon | ✅ app-server thread | ✅ daemon | Claude/Kimi 常驻进程；Codex 使用 App Server thread |
-| FLUSH（上下文刷新） | ✅ | ✅ | ✅ | checkpoint → kill → bootstrap |
-| /esc（取消请求） | ✅ | ✅ | ✅ | SIGINT 中断当前处理 |
-| **多角色系统** | | | | |
-| 后台任务（create_task） | ✅ | ✅ | ✅ | Agent 派发，子角色独立执行；Claude 走 MCP，Codex 默认走 App Server dynamic tools |
-| Cron 定时任务 | ✅ | ✅ | ✅ | spawn_role / director_msg / shell_action |
-| 人格定义（personas/） | ✅ | ✅ | ✅ | Claude Code agent frontmatter 格式 |
-| 技能插件（skills/） | ✅ | ✅ | ✅ | Claude `.claude/skills`；Codex `.agents/skills`；Kimi `--skills-dir` |
-| **记忆与持久化** | | | | |
-| 身份仓库（~/.persona） | ✅ | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
-| 日报自动生成 | ✅ | — | — | main workspace 当前 session 的 Agent runtime 写入 daily/YYYY-MM-DD.md |
-| 工作记忆（state.md） | ✅ | ✅ | ✅ | FLUSH checkpoint + bootstrap 恢复 |
-| Pool 状态持久化 | ✅ | ✅ | ✅ | SQLite，重启后自动恢复 |
-| **附件** | | | | |
-| 接收图片/文件/语音 | ✅ | ✅ | ✅ | 通讯层下载，路径传给 Director |
-| 发送图片/文件 | ✅ | ✅ | ✅ | MCP send_attachment |
+| 能力 | Claude Code | Codex | 说明 |
+|------|:-----------:|:-----:|------|
+| **IM 接入** | | | |
+| 飞书私聊 | ✅ | — | main workspace 的 default session |
+| 飞书群聊（小群） | ✅ | ✅ | 群名映射为 workspace，default session 接收消息 |
+| 飞书群聊（大群） | ✅ | — | One-shot 无状态响应 |
+| Web 控制台 | ✅ | — | localhost:3000，浏览器直接对话 |
+| **会话管理** | | | |
+| 流式响应 | ✅ | ✅ | Claude 实时 chunk 推送；飞书用 interactive 卡片原地更新 |
+| 上下文保持 | ✅ daemon | ✅ app-server thread | Claude 常驻进程；Codex 使用 App Server thread |
+| FLUSH（上下文刷新） | ✅ | ✅ | checkpoint → kill → bootstrap |
+| /esc（取消请求） | ✅ | ✅ | SIGINT 中断当前处理 |
+| **多角色系统** | | | |
+| 后台任务（create_task） | ✅ | ✅ | Agent 派发，子角色独立执行；Claude 走 MCP，Codex 默认走 App Server dynamic tools |
+| Cron 定时任务 | ✅ | ✅ | spawn_role / director_msg / shell_action |
+| 人格定义（personas/） | ✅ | ✅ | Claude Code agent frontmatter 格式 |
+| 技能插件（skills/） | ✅ | ✅ | Claude `.claude/skills`；Codex `.agents/skills` |
+| **记忆与持久化** | | | |
+| 身份仓库（~/.persona） | ✅ | ✅ | soul / personas / memory / daily，git 管理 |
+| 日报自动生成 | ✅ | — | main workspace 当前 session 的 Agent runtime 写入 daily/YYYY-MM-DD.md |
+| 工作记忆（state.md） | ✅ | ✅ | FLUSH checkpoint + bootstrap 恢复 |
+| Pool 状态持久化 | ✅ | ✅ | SQLite，重启后自动恢复 |
+| **附件** | | | |
+| 接收图片/文件/语音 | ✅ | ✅ | 通讯层下载，路径传给 Director |
+| 发送图片/文件 | ✅ | ✅ | MCP send_attachment |
 
 ## 基本对话
 
@@ -158,7 +158,7 @@ bash 命令使用当前用户的 shell 执行（`$SHELL`，默认 `/bin/bash`）
 
 ## 多后端切换
 
-Persona Shell 支持 Claude Code、Codex 和 Kimi 三个 agent 后端。
+Persona Shell 支持 Claude Code 和 Codex 两个 agent 后端。
 
 ### 全局配置
 
@@ -176,17 +176,17 @@ agents:
 
 在任意当前会话里发 `/switch-agent <agent>`，可把该会话切到指定 Director agent。切换前会先 flush，让旧 agent 把上下文写入状态文件；切换后新 agent 会自动读取并恢复。这个选择会按会话持久化，不会只跟随全局默认值。
 
-快捷命令：`/start-with-codex` 等价于 `/switch-agent codex`，`/start-with-claude` 等价于 `/switch-agent claude`，`/start-with-kimi` 等价于 `/switch-agent kimi`。
+快捷命令：`/start-with-codex` 等价于 `/switch-agent codex`，`/start-with-claude` 等价于 `/switch-agent claude`。
 
-### Claude vs Codex vs Kimi 的区别
+### Claude vs Codex 的区别
 
-| | Claude Code | Codex | Kimi |
-|---|---|---|---|
-| 进程模型 | 常驻 daemon（FIFO pipe） | Director 默认 app-server/live；后台任务默认临时 App Server | 常驻 daemon（stdin/stdout pipe） |
-| 流式响应 | ✅ 实时推送 chunk | ✅ interactive 卡片原地更新 | ⚠️ 整段 JSON 行返回 |
-| 身份注入 | `--append-system-prompt-file` `--plugin-dir` | App Server instructions / Codex 原生 instructions + `.agents/skills` | `--agent-file` `--skills-dir` |
-| 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI | Kimi 原生工具 + skills |
-| 适合场景 | main workspace 当前 session 的 Agent runtime、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 | 需要 Kimi 模型能力的场景 |
+| | Claude Code | Codex |
+|---|---|---|
+| 进程模型 | 常驻 daemon（FIFO pipe） | Director 默认 app-server/live；后台任务默认临时 App Server |
+| 流式响应 | ✅ 实时推送 chunk | ✅ interactive 卡片原地更新 |
+| 身份注入 | `--append-system-prompt-file` `--plugin-dir` | App Server instructions / Codex 原生 instructions + `.agents/skills` |
+| 工具体系 | Claude Code 原生工具 + skills/plugins | Codex 原生工具 + skills + task CLI |
+| 适合场景 | main workspace 当前 session 的 Agent runtime、需要流式体验的对话 | 后台任务、Codex 模型能力、可用 skills 的场景 |
 
 ## 命令行快捷启动
 
@@ -246,7 +246,7 @@ tools: [Read, Grep, Glob, Bash]
 
 ### 技能（Skills）
 
-技能定义在 `~/.persona/skills/` 下。Claude Code 通过 `.claude/skills` 软链接发现，Codex / Codex App Server 通过 `.agents/skills` 软链接发现，Kimi 通过 `--skills-dir` 加载。Director 可以通过 `/skill-name` 调用技能。
+技能定义在 `~/.persona/skills/` 下。Claude Code 通过 `.claude/skills` 软链接发现，Codex / Codex App Server 通过 `.agents/skills` 软链接发现。Director 可以通过 `/skill-name` 调用技能。
 
 当前 Persona Shell 不给 `codex app-server` 传独立的 `--skills-dir` 参数；统一约定是让身份仓库维护软链接：
 
@@ -382,7 +382,6 @@ curl 'localhost:3000/api/sessions?workspace=main'
 | `/switch-agent <agent>` | 当前会话 | 切换当前会话的 Director agent，并持久化恢复上下文 |
 | `/start-with-codex` | 当前会话 | 快捷切到 Codex 后端 |
 | `/start-with-claude` | 当前会话 | 快捷切回 Claude 后端 |
-| `/start-with-kimi` | 当前会话 | 快捷切到 Kimi 后端 |
 | `/help` | 全局 | 显示命令列表 |
 
 🔒 仅限本体（需配置 `feishu.master_id`）。
@@ -395,7 +394,6 @@ curl 'localhost:3000/api/sessions?workspace=main'
 | Shell stderr | `logs/shell.stderr.log` | 未捕获异常 |
 | 消息队列 | `logs/queue.log` | 消息排队、处理、丢弃记录 |
 | Director stderr (Claude) | `/tmp/persona/director-stderr.log` | Claude Code CLI 的错误输出 |
-| Director stderr (Kimi) | `logs/{label}-kimi-stderr.log` | Kimi Code CLI 的错误输出 |
 | 会话输入 | `logs/{label}/input-{date}.log` | 发给 Director 的原始消息 |
 | 会话输出 | `logs/{label}/output-{date}.log` | Director 的完整 stream-json 输出 |
 

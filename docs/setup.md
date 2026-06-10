@@ -6,7 +6,6 @@
 - [Bun](https://bun.sh/) 运行时
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code)（必需）
 - [Codex CLI](https://github.com/openai/codex)（可选，用于多后端支持）
-- [Kimi Code CLI](https://moonshotai.github.io/kimi-cli/)（可选，用于多后端支持）
 
 ## 快速开始
 
@@ -95,13 +94,6 @@ agents:
       flush_context_limits:        # 可选：按 model 进一步覆盖
         gpt-5.5: 200000
       disable_auto_flush: false    # 可选：true 时禁用该 provider 的自动压缩/自动 FLUSH
-    kimi:
-      type: "kimi"
-      command: "kimi"
-      # agent_file: "kimi-agent.yaml"       # Kimi agent 规范文件（相对 persona_dir）
-      # skills_dir: "skills"                # Skills 目录（相对 persona_dir）
-      # mcp_config_file: ".mcp.json"        # MCP 配置文件（相对 persona_dir）
-
 feishu:
   master_id: "ou_xxxx"                       # 本体的飞书 open_id（可选）
   streaming_reply_enabled: false             # 是否启用飞书流式卡片回复
@@ -188,7 +180,7 @@ launchctl start com.persona.shell
 │   ├── director.md                # 主分身人格
 │   ├── explorer.md                # 研究员角色
 │   └── critic.md                  # 审查员角色
-├── skills/                      # 技能（Claude / Codex / Kimi 共用）
+├── skills/                      # 技能（Claude / Codex 共用）
 ├── prompts/                     # 系统 prompt 模板，可自定义以覆盖默认行为
 ├── memory/                      # 跨会话记忆
 ├── daily/                       # 日报 + 工作记忆
@@ -197,7 +189,31 @@ launchctl start com.persona.shell
 └── config.yaml                  # 运行配置
 ```
 
-这些文件通过 CLI 参数或后端原生发现机制注入：Claude Code 使用 `--append-system-prompt-file`、`--plugin-dir`、`--add-dir`，Codex 通过 `--cd ~/.persona` 发现 `.agents/skills`，Kimi 通过 `--agent-file` 和 `--skills-dir` 加载。详见 [`agent-backends.md`](agent-backends.md)。
+这些文件通过 CLI 参数或后端原生发现机制注入：Claude Code 使用 `--append-system-prompt-file`、`--plugin-dir`、`--add-dir`，Codex 通过 `--cd ~/.persona` 发现 `.agents/skills`。详见 [`agent-backends.md`](agent-backends.md)。
+
+
+### Model 配置说明
+
+provider 里的 `model` 是该 agent 的默认模型；role 里的 `model` 是指定角色的覆盖值。
+
+```yaml
+agents:
+  roles:
+    explorer:
+      agent: "codex"
+      model: "gpt-5.1"
+  providers:
+    claude:
+      type: "claude"
+      command: "claude"
+      model: "claude-opus-4-6"
+    codex:
+      type: "codex-app-server"
+      command: "codex"
+      model: "gpt-5.1"
+```
+
+解析优先级：`agents.roles.<role>.model` → `agents.providers.<agent>.model` → CLI 默认模型。修改 provider/model/defaults/roles 后，Web 下拉、创建会话、切换 agent 会读取最新配置。
 
 ### Agent Provider 配置说明
 
@@ -208,14 +224,6 @@ launchctl start com.persona.shell
 | `bare` | `true` 时加 `--bare` 参数，去掉默认系统提示并限制工具集为 Bash/Edit/Read；`false` 时不加，保留完整工具集（约 30 个），包括 Agent（spawn sub-agent）等高级工具。**推荐 `false`**，以获得完整能力。 |
 | `dangerously_skip_permissions` | 跳过工具执行确认 |
 | `effort` | 推理力度：`min` / `low` / `medium` / `high` / `max` |
-
-**Kimi**：
-
-| 参数 | 说明 |
-|------|------|
-| `agent_file` | Agent 规范 YAML 文件路径（相对 `persona_dir`），指定 `system_prompt_path` 等 |
-| `skills_dir` | Skills 目录路径（相对 `persona_dir`），Kimi 通过 `--skills-dir` 加载 |
-| `mcp_config_file` | MCP 配置文件路径（相对 `persona_dir`），通过 `--mcp-config-file` 传入 |
 
 > **环境变量**：子角色进程启动时会自动清除继承的 `CLAUDE_CODE_SIMPLE` 环境变量，不再受父进程的工具集限制。无需手动处理。
 

@@ -19,7 +19,7 @@ Persona Web Console 是 persona-shell 的本地 Web 操作界面。它不是新�
 ## 非目标
 
 - 不实现新的 agent runtime。
-- 不重写 Claude / Codex / Kimi 的推理或工具调用能力。
+- 不重写 Claude / Codex 的推理或工具调用能力。
 - 不做通用 agent 平台、插件市场或多用户 SaaS。
 - 不做 n8n 类节点式 workflow canvas。
 - 不把 Web Console 变成独立产品；它仍然嵌入 persona-shell 进程，服务现有后端能力。
@@ -74,7 +74,7 @@ Persona Web Console 是 persona-shell 的本地 Web 操作界面。它不是新�
 - Runtime snapshot / process / queue JSON 复制与导出
 - DirectorPool runtime 状态列表
 - 单个 runtime entry 操作：Flush、Clear、Esc、Restart、Detach / Shutdown
-- 切换后端 provider：Claude / Codex / Codex app-server / Kimi
+- 切换后端 provider：Claude / Codex / Codex app-server
 - 切换 persona role
 - 查看 session id / Codex thread id / session name
 - 查看 workspace cwd
@@ -214,7 +214,7 @@ Cron、定时任务、持续运行工作流的管理中心。
 - 导出 debug bundle，并可把导出证据汇总为排障任务草稿
 - 打开本地日志路径
 - 打开 persona 文件路径
-- 环境检查：bun、claude、codex、kimi 是否可用
+- 环境检查：bun、claude、codex 是否可用
 
 ### 8. 安全与设置
 

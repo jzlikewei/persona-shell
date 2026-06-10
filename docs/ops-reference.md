@@ -34,9 +34,40 @@ launchctl stop  com.persona.shell                                # 停止
 | 改动类型 | 所需重启 | 原因 |
 |----------|----------|------|
 | CLAUDE.md / prompts/*.md | `/flush` 或 `/restart` | Director 启动时读取 |
-| config.yaml | `/shell-restart` | Shell 启动时加载，运行期间不热更新 |
+| config.yaml: agent provider / model / defaults / roles | 无需重启 | Web 下拉、创建会话、切换 agent 时读取最新配置 |
+| config.yaml: console 端口、persona_dir、pool 等进程级参数 | `/shell-restart` | Shell 启动时绑定端口和初始化运行目录 |
 | service.env | 重启服务（launchctl stop/start） | 环境变量在进程启动时注入 |
 | 源代码（src/） | `/shell-restart` | Shell 进程需要重启加载新代码 |
+
+### Agent provider 与模型配置
+
+Web 控制台的 agent 下拉、点「+ / OK」创建会话、运行时切换 agent、后台任务的 agent 参数都读取 `~/.persona/config.yaml` 的 `agents.providers`。provider 名就是可选择的 agent 名，例如 `claude`、`codex`。
+
+```yaml
+agents:
+  defaults:
+    director: "claude"
+    explorer: "codex"
+  roles:
+    explorer:
+      agent: "codex"
+      model: "gpt-5.1"      # 角色级模型覆盖
+  providers:
+    claude:
+      type: "claude"
+      command: "claude"
+      model: "claude-opus-4-6"  # provider 默认模型，可省略走 CLI 默认
+    codex:
+      type: "codex-app-server"
+      command: "codex"
+      model: "gpt-5.1"          # provider 默认模型，可省略走 Codex 默认
+      sandbox: "danger-full-access"
+      approval: "never"
+```
+
+模型解析优先级：`agents.roles.<role>.model` → `agents.providers.<agent>.model` → CLI 默认模型。Web 会话顶部显示的 model 来自运行时状态；如果 provider 没配置 `model`，启动初期可能为空，等后端回报模型后写入 session。
+
+增删 provider、修改 provider model、修改 defaults/roles 后，重新打开下拉或点 OK 即读取最新配置。已经运行中的会话保持原 agent；切换 agent 或新建会话会使用最新 provider/model。
 
 ## 日志
 
@@ -45,7 +76,6 @@ launchctl stop  com.persona.shell                                # 停止
 | Shell stdout/stderr | `logs/shell.stdout.log` / `logs/shell.stderr.log` |
 | 消息队列 | `logs/queue.log` |
 | Director stderr (Claude) | `/tmp/persona/director-stderr.log` |
-| Director stderr (Kimi) | `logs/{label}-kimi-stderr.log` |
 | 会话输入记录 | `logs/{label}/input-{YYYYMMDD}.log` |
 | 会话输出记录 | `logs/{label}/output-{YYYYMMDD}.log` |
 
@@ -58,7 +88,6 @@ launchctl stop  com.persona.shell                                # 停止
 | FIFO 管道 | `/tmp/persona/director-in`, `director-out` |
 | Pool runtime entry（Claude） | `/tmp/persona/{label}/`（runtime 实例目录，含 session / PID / FIFO） |
 | Pool runtime entry（Codex） | `logs/{label}/` 为主要排障入口；session 文件落在 `/tmp/persona/{label}/session`；app-server stderr 在 `codex-app-server-stderr.log` |
-| Pool runtime entry（Kimi） | `logs/{label}-kimi-stderr.log`；stdin/stdout pipe，无 FIFO |
 
 Pool runtime entry / 历史文档中的 “Pool Director” 只是 DirectorPool 里的运行时实例别名，不是业务路由实体；业务路由以 workspace / sessionId 为准。当前默认 Codex pool runtime 是 app-server/live transport：Shell 为会话拉起长驻 `codex app-server --listen stdio://`；`codex-app-server` provider 的后台任务使用临时 App Server task runtime。legacy turn-based `codex exec` provider 已下线.
 

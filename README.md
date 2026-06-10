@@ -29,7 +29,6 @@
 |-------|------|
 | [Codex](https://github.com/openai/codex) | ✅ 主力后端 |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | ✅ 长驻 Director + 后台任务 |
-| [Kimi Code CLI](https://moonshotai.github.io/kimi-cli/) | ✅ 长驻 Director + 后台任务 |
 
 完整功能矩阵和详细用法见 [使用指南](docs/usage.md)。
 
