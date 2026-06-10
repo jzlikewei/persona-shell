@@ -21,13 +21,13 @@ const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
  * Recursively search ~/.codex/sessions/ for a .jsonl file whose name contains
  * the given sessionId (which is the Codex thread-id embedded in the filename).
  */
-function findTranscriptFile(sessionId: string): string | null {
-  if (!existsSync(CODEX_SESSIONS_DIR)) return null;
+function findTranscriptFile(sessionId: string, sessionsDir = CODEX_SESSIONS_DIR): string | null {
+  if (!existsSync(sessionsDir)) return null;
 
   // Walk YYYY/MM/DD directories
   try {
-    for (const year of readdirSync(CODEX_SESSIONS_DIR)) {
-      const yearDir = join(CODEX_SESSIONS_DIR, year);
+    for (const year of readdirSync(sessionsDir)) {
+      const yearDir = join(sessionsDir, year);
       if (!statSync(yearDir).isDirectory()) continue;
       for (const month of readdirSync(yearDir)) {
         const monthDir = join(yearDir, month);
@@ -109,8 +109,9 @@ type TurnAccum = {
 export function parseCodexTranscript(
   sessionId: string,
   limit: number,
+  sessionsDir?: string,
 ): ConversationMessage[] | null {
-  const filePath = findTranscriptFile(sessionId);
+  const filePath = findTranscriptFile(sessionId, sessionsDir);
   if (!filePath) return null;
 
   const raw = readTail(filePath, MAX_TRANSCRIPT_BYTES);

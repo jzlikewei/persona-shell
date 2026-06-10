@@ -1,0 +1,123 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { parseCodexTranscript } from '../codex-transcript-reader.js';
+
+const TMP_DIR = '/tmp/persona-codex-transcript-test';
+const SESSIONS_DIR = join(TMP_DIR, 'sessions');
+const SESSION_ID = 'thread-codex-fixture-001';
+const TRANSCRIPT_PATH = join(
+  SESSIONS_DIR,
+  '2026',
+  '04',
+  '14',
+  `rollout-2026-04-14T20-37-01-${SESSION_ID}.jsonl`,
+);
+
+function writeTranscript(lines: object[]): void {
+  mkdirSync(join(SESSIONS_DIR, '2026', '04', '14'), { recursive: true });
+  writeFileSync(TRANSCRIPT_PATH, lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+}
+
+beforeEach(() => {
+  rmSync(TMP_DIR, { recursive: true, force: true });
+});
+
+afterEach(() => {
+  rmSync(TMP_DIR, { recursive: true, force: true });
+});
+
+describe('parseCodexTranscript', () => {
+  test('returns null when transcript file is missing', () => {
+    expect(parseCodexTranscript(SESSION_ID, 100, SESSIONS_DIR)).toBeNull();
+  });
+
+  test('parses sanitized native Codex transcript by thread id', () => {
+    writeTranscript([
+      {
+        timestamp: '2026-04-14T12:37:02.001Z',
+        type: 'session_meta',
+        payload: {
+          id: SESSION_ID,
+          cwd: '/redacted/persona',
+          originator: 'codex_exec',
+        },
+      },
+      {
+        timestamp: '2026-04-14T12:37:02.002Z',
+        type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'turn-redacted-001' },
+      },
+      {
+        timestamp: '2026-04-14T12:37:02.002Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '<environment_context>redacted</environment_context>' }],
+        },
+      },
+      {
+        timestamp: '2026-04-14T12:37:14.250Z',
+        type: 'event_msg',
+        payload: {
+          type: 'agent_message',
+          message: 'State loaded from native transcript.',
+          phase: 'commentary',
+        },
+      },
+      {
+        timestamp: '2026-04-14T12:37:14.253Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'State loaded from native transcript.' }],
+          phase: 'commentary',
+        },
+      },
+      {
+        timestamp: '2026-04-14T12:37:14.683Z',
+        type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: 'turn-redacted-001' },
+      },
+      {
+        timestamp: '2026-04-14T12:37:44.357Z',
+        type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'turn-redacted-002' },
+      },
+      {
+        timestamp: '2026-04-14T12:37:44.358Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '[group: redacted] Report your status.' }],
+        },
+      },
+      {
+        timestamp: '2026-04-14T12:37:52.148Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Status from native transcript: ready.' }],
+          phase: 'final_answer',
+        },
+      },
+      {
+        timestamp: '2026-04-14T12:37:52.528Z',
+        type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: 'turn-redacted-002' },
+      },
+    ]);
+
+    const result = parseCodexTranscript(SESSION_ID, 100, SESSIONS_DIR);
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(3);
+    expect(result!.some((msg) => msg.direction === 'in' && msg.content.includes('Report your status'))).toBe(true);
+    expect(result!.some((msg) => msg.direction === 'out' && msg.content.includes('Status from native transcript'))).toBe(true);
+    expect(result!.some((msg) => msg.content.includes('environment_context'))).toBe(false);
+    expect(result!.every((msg) => msg.sessionId === SESSION_ID)).toBe(true);
+  });
+});
