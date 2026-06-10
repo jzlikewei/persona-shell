@@ -44,6 +44,8 @@ interface BridgePersistedState {
   lastInputTokens: number;
   contextTokens: number;
   contextWindow: number;
+  /** Model name detected from runtime modelUsage, persisted across restarts. */
+  detectedModel?: string;
 }
 
 type PendingType =
@@ -57,6 +59,7 @@ type PendingType =
 
 export interface SessionBridgeOptions {
   agents: Config['agents'];
+  agentsProvider?: () => Config['agents'];
   config: Config['director'];
   agentName?: string;
   /** Seed an existing provider session/thread id before adapter startup.
@@ -74,6 +77,7 @@ export interface SessionBridgeOptions {
 export class SessionBridge extends EventEmitter {
   private config: Config['director'];
   private agents: Config['agents'];
+  private agentsProvider?: () => Config['agents'];
   readonly label: string;
   readonly isMain: boolean;
   private _workspaceName?: string;
@@ -131,6 +135,7 @@ export class SessionBridge extends EventEmitter {
     super();
     this.config = options.config;
     this.agents = options.agents;
+    this.agentsProvider = options.agentsProvider;
     this.label = options.label;
     this.isMain = options.isMain ?? true;
     this._workspaceName = options.workspaceName;
@@ -148,8 +153,8 @@ export class SessionBridge extends EventEmitter {
       workspaceName: this.workspaceName ?? this.label,
       workspaceContextPath: this.getWorkspaceContextFilePath(),
       config: this.config,
-      agents: this.agents,
-      directorAgent: this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.agentName)),
+      agents: this.getFreshAgents(),
+      directorAgent: this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName)),
       logDir: this.logDir,
     };
 
@@ -176,9 +181,19 @@ export class SessionBridge extends EventEmitter {
     };
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
-    this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', options.agentName ?? persistedAgentName));
+    this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName ?? persistedAgentName));
     this.personaRole = this.readPersistedPersonaRole() ?? 'director';
     this.adapter = this.adapterFactory(this.directorAgent);
+  }
+
+  private getFreshAgents(): Config['agents'] {
+    if (!this.agentsProvider) return this.agents;
+    try {
+      this.agents = this.agentsProvider();
+    } catch (err) {
+      console.warn(`[bridge:${this.label}] Failed to reload agents config, using cached config:`, err);
+    }
+    return this.agents;
   }
 
   private withSessionCwd(agent: AgentRuntimeConfig): AgentRuntimeConfig {
@@ -249,6 +264,7 @@ export class SessionBridge extends EventEmitter {
     if (typeof saved.lastInputTokens === 'number') this.lastInputTokens = saved.lastInputTokens;
     if (typeof saved.contextTokens === 'number') this.contextTokens = saved.contextTokens;
     if (typeof saved.contextWindow === 'number') this.contextWindow = saved.contextWindow;
+    if (typeof saved.detectedModel === 'string') this.detectedModel = saved.detectedModel;
     return saved;
   }
 
@@ -258,6 +274,7 @@ export class SessionBridge extends EventEmitter {
       lastInputTokens: this.lastInputTokens,
       contextTokens: this.contextTokens,
       contextWindow: this.contextWindow,
+      detectedModel: this.detectedModel ?? undefined,
     });
   }
 
@@ -646,7 +663,7 @@ export class SessionBridge extends EventEmitter {
       return false;
     }
 
-    const targetAgent = this.withSessionCwd(resolveAgentProvider(this.agents, 'director', agentName));
+    const targetAgent = this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', agentName));
     if (targetAgent.name === this.directorAgent.name) {
       this.persistDirectorAgentName(targetAgent.name);
       return true;
