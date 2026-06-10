@@ -262,6 +262,13 @@ function timestampMs(ts?: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function appendAssistantText(current: string, next: string): string {
+  if (!next) return current;
+  if (!current) return next;
+  if (current.endsWith('\n') || next.startsWith('\n')) return current + next;
+  return current + '\n\n' + next;
+}
+
 function composeResultText(intermediate: string, finalResult: string): string {
   if (!intermediate) return finalResult;
   if (!finalResult) return intermediate;
@@ -376,7 +383,7 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
           lastSessionId = getCodexLiveThreadId(evt) ?? lastSessionId;
           const item = asRecord(params.item);
           const itemText = extractCodexLiveAgentTextFromItem(item);
-          if (itemText) pendingText += itemText;
+          if (itemText) pendingText = appendAssistantText(pendingText, itemText);
           pushToolCall(pendingTools, codexToolFromItem(item, evt._ts || evt.timestamp));
         } else if (evt.method === 'turn/completed') {
           const params = asRecord(evt.params);

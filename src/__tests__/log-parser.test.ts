@@ -392,6 +392,24 @@ describe('log-parser', () => {
       expect(outMsg?.sessionId).toBe('thread-live-001');
     });
 
+
+    test('codex-live JSON-RPC format separates multiple agent messages with paragraph breaks', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+
+      writeFileSync(inLog, inputLine('multi segment', 'pool-a', '2026-04-15T10:00:00+08:00') + '\n');
+      writeFileSync(outLog, [
+        codexLiveThreadStarted('thread-live-001', 'pool-a'),
+        codexLiveItemCompleted('第一段。', 'thread-live-001', 'pool-a'),
+        codexLiveItemCompleted('第二段。', 'thread-live-001', 'pool-a'),
+        codexLiveTurnCompleted('thread-live-001', '2026-04-15T10:00:02+08:00', 'pool-a'),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLog(inLog, outLog, 100);
+      const outMsg = msgs.find((m) => m.direction === 'out');
+      expect(outMsg?.content).toBe('第一段。\n\n第二段。');
+    });
+
     test('codex-live JSON-RPC format attaches commandExecution tools to assistant message', () => {
       const inLog = join(TMP_DIR, 'input.log');
       const outLog = join(TMP_DIR, 'output.log');
