@@ -7,6 +7,7 @@ import type { IncomingMessage, MessagingClient } from './messaging/messaging.js'
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { parseConversationLog, parseConversationLogFiles, parseTaskLog } from './log-parser.js';
 import { parseClaudeTranscript } from './claude-transcript-reader.js';
+import { parseCodexTranscript } from './codex-transcript-reader.js';
 
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
@@ -3262,6 +3263,12 @@ export function startConsole(
                 const nativeMessages = parseClaudeTranscript(sessionId, cwd, limit);
                 if (nativeMessages) return Response.json(nativeMessages);
               }
+            }
+
+            // Try agent-native transcript for Codex sessions
+            if (record?.agent_type === 'codex-app-server') {
+              const nativeMessages = parseCodexTranscript(sessionId, limit);
+              if (nativeMessages) return Response.json(nativeMessages);
             }
 
             // Fallback to pShell captured logs
