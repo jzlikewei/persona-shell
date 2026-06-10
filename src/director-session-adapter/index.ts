@@ -8,6 +8,8 @@ export interface DirectorSessionMetricsUpdate {
   contextTokens?: number;
   contextWindow?: number;
   costUsd?: number;
+  /** Model name detected from runtime usage (e.g. "claude-sonnet-4-20250514") */
+  model?: string;
 }
 
 export interface DirectorTurnResult {

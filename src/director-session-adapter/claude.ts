@@ -217,9 +217,12 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
           }
 
           if (event.modelUsage && typeof event.modelUsage === 'object') {
-            for (const model of Object.values(event.modelUsage) as Array<Record<string, unknown>>) {
-              if (typeof model?.contextWindow === 'number' && model.contextWindow > 0) {
-                metrics.contextWindow = model.contextWindow as number;
+            for (const [modelName, modelInfo] of Object.entries(event.modelUsage) as Array<[string, Record<string, unknown>]>) {
+              if (!metrics.model && modelName) {
+                metrics.model = modelName;
+              }
+              if (typeof modelInfo?.contextWindow === 'number' && modelInfo.contextWindow > 0) {
+                metrics.contextWindow = modelInfo.contextWindow as number;
                 break;
               }
             }

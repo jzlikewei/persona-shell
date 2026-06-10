@@ -108,6 +108,7 @@ export class SessionBridge extends EventEmitter {
   private currentCountDate: string = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
   private totalCostUsd = 0;
   private contextWindow = 0;
+  private detectedModel: string | null = null;
   private contextMetricsLive = false;
   private restartTimestamps: number[] = [];
   private restartCount = 0;
@@ -594,7 +595,7 @@ export class SessionBridge extends EventEmitter {
       pendingCount: this.pendingCount,
       agentName: this.directorAgent.name,
       agentType: this.directorAgent.type,
-      agentModel: this.directorAgent.model ?? null,
+      agentModel: this.detectedModel ?? this.directorAgent.model ?? null,
       personaRole: this.personaRole,
       lastInputTokens: this.lastInputTokens,
       contextTokens: this.contextTokens,
@@ -1458,6 +1459,10 @@ export class SessionBridge extends EventEmitter {
     }
     if (typeof update.costUsd === 'number') {
       this.totalCostUsd += update.costUsd;
+    }
+    if (update.model && this.sessionId) {
+      this.detectedModel = update.model;
+      upsertSession(this.workspaceName, this.sessionId, { model: update.model });
     }
     if (shouldPersist) this.persistState();
   }
