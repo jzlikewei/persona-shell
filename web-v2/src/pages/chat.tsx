@@ -634,7 +634,7 @@ export function ChatPage() {
             isSending={sending}
             isDisabled={!input.trim() && attachments.length === 0}
             onSend={handleSend}
-            onStop={() => { void request('/api/esc', { method: 'POST' }) }}
+            onStop={() => { void request('/api/esc', { method: 'POST', body: JSON.stringify({ sessionId: activeSession }) }) }}
           />
         </div>
       </div>

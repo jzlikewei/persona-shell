@@ -194,15 +194,19 @@ export class SessionManager extends EventEmitter {
       feishuChatId: opts.feishuChatId,
       agentName,
     });
-    const sessionId = entry.bridge.getStatus().sessionId;
+    let sessionId = entry.bridge.getStatus().sessionId;
+    if (!sessionId) {
+      // Wait for Claude process to emit system.init with session_id (typically <5s)
+      sessionId = await new Promise<string>((resolve) => {
+        const timeout = setTimeout(() => resolve(''), 15_000);
+        entry.bridge.once('session-id-ready', (sid: string) => {
+          clearTimeout(timeout);
+          resolve(sid);
+        });
+      });
+    }
     if (sessionId) {
       this.registerSession(sessionId, sessionKey, workspaceName, entry);
-    } else {
-      // sessionId not yet available (Claude process still initializing).
-      // Listen for the init event and register then.
-      entry.bridge.once('session-id-ready', (sid: string) => {
-        this.registerSession(sid, sessionKey, workspaceName, entry);
-      });
     }
     return this.toSessionEntry(entry);
   }

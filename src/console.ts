@@ -3097,6 +3097,20 @@ export function startConsole(
             return Response.json(result);
           }
           if (url.pathname === '/api/esc' && req.method === 'POST') {
+            let body: { sessionId?: string } = {};
+            try { body = await req.json() as { sessionId?: string }; } catch { /* no body = main */ }
+            const sid = body.sessionId?.trim();
+            if (sid && sessionManager) {
+              const poolEntry = sessionManager.getPoolEntryBySessionId(sid);
+              if (poolEntry) {
+                const cancelled = poolEntry.queue.cancelOldest();
+                if (cancelled) {
+                  await poolEntry.bridge.interrupt();
+                  return Response.json({ ok: true, message: `已取消: "${cancelled.text.slice(0, 30)}..."` });
+                }
+                return Response.json({ ok: false, message: '队列为空，没有可取消的消息' });
+              }
+            }
             const result = await handleCommand('esc');
             return Response.json(result);
           }
