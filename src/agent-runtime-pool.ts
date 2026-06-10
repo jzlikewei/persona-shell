@@ -272,6 +272,7 @@ export class AgentRuntimePool extends EventEmitter {
 
     const bridge = new SessionBridge({
       agents: this.getFreshAgentsConfig(),
+      agentsProvider: () => this.getFreshAgentsConfig(),
       config: this.directorConfig,
       agentName: opts.agentName,
       initialSessionId: opts.initialSessionId,
@@ -894,6 +895,7 @@ export class AgentRuntimePool extends EventEmitter {
       const workspaceCwd = getWorkspace(item.workspaceName)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${item.workspaceName}`)?.cwd;
       const bridge = new SessionBridge({
         agents: this.getFreshAgentsConfig(),
+        agentsProvider: () => this.getFreshAgentsConfig(),
         config: this.directorConfig,
         agentName: item.agentName,
         label: item.label,

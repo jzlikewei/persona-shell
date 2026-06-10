@@ -34,6 +34,8 @@ for (const method of ['log', 'warn', 'error'] as const) {
 async function main() {
   const configPath = defaultConfigPath();
   const config = loadConfig(configPath);
+  const getFreshConfig = () => loadConfig(configPath);
+  const getFreshAgents = () => getFreshConfig().agents;
   setLogLevel(config.logging.level);
   initLogDir(config.director.persona_dir);
   initTaskStore(config.director.persona_dir);
@@ -126,6 +128,7 @@ async function main() {
   }
   const director = new SessionBridge({
     agents: config.agents,
+    agentsProvider: getFreshAgents,
     config: config.director,
     label: 'main',
     isMain: true,
@@ -556,9 +559,9 @@ async function main() {
     if (!callback || !task) return;
     const codexAgent = (() => {
       try {
-        return resolveAgentProvider(config.agents, 'director', 'codex');
+        return resolveAgentProvider(getFreshAgents(), 'director', 'codex');
       } catch {
-        return config.agents.providers.codex;
+        return getFreshAgents().providers.codex;
       }
     })();
     if (!codexAgent?.command) {
@@ -713,7 +716,7 @@ async function main() {
   // 启动 Web 管理控制台（含 Task API），返回 web 渠道的 MessagingClient
   // 启动前确保 V2 前端 dist 存在且不过时(缺则自动 vite build)
   await ensureWebV2Dist();
-  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, sessionManager, workspaceRegistry);
+  const webClient = startConsole(director, queue, config, taskRunner, messaging, metrics, sessionManager, workspaceRegistry, getFreshConfig);
   messaging.addClient(webClient);
 
   async function sendQueuedAttachments(item: QueueItem): Promise<void> {
@@ -1150,9 +1153,7 @@ async function main() {
       ? 'codex'
       : text.trim() === '/start-with-claude'
         ? 'claude'
-        : text.trim() === '/start-with-kimi'
-          ? 'kimi'
-          : switchAgentMatch?.[1]?.trim();
+        : switchAgentMatch?.[1]?.trim();
     if (slashTargetAgent) {
       if (!isMaster) return;
       if (routingKey && chatType === 'group' && (msg.memberCount ?? 0) > config.pool.small_group_threshold) {
@@ -1162,7 +1163,7 @@ async function main() {
 
       let targetAgent: string;
       try {
-        targetAgent = resolveAgentProvider(config.agents, 'director', slashTargetAgent).name;
+        targetAgent = resolveAgentProvider(getFreshAgents(), 'director', slashTargetAgent).name;
       } catch (err) {
         await messaging.reply(messageId, `未知 agent: ${slashTargetAgent}`).catch(() => {});
         return;
@@ -1319,7 +1320,6 @@ async function main() {
         '/persona <name> — 切换人格角色（如 philosopher, critic 等）',
         '/start-with-codex — 将当前会话切到 Codex Director 模式',
         '/start-with-claude — 将当前会话切回 Claude Director 模式',
-        '/start-with-kimi — 将当前会话切到 Kimi Director 模式',
         '/flush — 保存上下文后刷新（checkpoint → 新 session）',
         '/clear — 清空上下文（不保存，直接重置）',
         '/esc — 取消队列中最早的消息',

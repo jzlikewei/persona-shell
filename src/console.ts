@@ -259,12 +259,23 @@ export function startConsole(
   metrics?: MetricsCollector,
   sessionManager?: SessionManager,
   workspaceRegistry?: WorkspaceRegistry,
+  getFreshConfig?: () => Config,
 ): MessagingClient {
   const port = config.console.port;
   const token = config.console.token;
   // V2 (React/Vite) is the only frontend, served at /.
   const v2Dir = resolve(import.meta.dir, '..', 'web-v2', 'dist');
   const v2HtmlPath = join(v2Dir, 'index.html');
+
+  function currentConfig(): Config {
+    if (!getFreshConfig) return config;
+    try {
+      return getFreshConfig();
+    } catch (err) {
+      console.warn('[console] Failed to reload config.yaml, using startup config:', err);
+      return config;
+    }
+  }
 
   // Web chat 消息处理
   const chatHandlers: Array<(msg: IncomingMessage) => Promise<void> | void> = [];
@@ -319,6 +330,7 @@ export function startConsole(
   }
 
   function buildWorkContext(): { projects: ConsoleProject[]; workspaces: ConsoleWorkspace[]; activeProjectId?: string; activeWorkspaceId?: string } {
+    const cfg = currentConfig();
     const projects = new Map<string, ConsoleProject>();
     const addProject = (project: ConsoleProject) => {
       const path = resolve(expandConsolePath(project.path));
@@ -332,7 +344,7 @@ export function startConsole(
       source: 'process',
     });
 
-    for (const [name, provider] of Object.entries(config.agents.providers)) {
+    for (const [name, provider] of Object.entries(cfg.agents.providers)) {
       if (!provider.cwd) continue;
       const path = resolve(expandConsolePath(provider.cwd));
       addProject({
@@ -345,8 +357,8 @@ export function startConsole(
 
     addProject({
       id: 'persona-dir',
-      name: basename(config.director.persona_dir) || 'persona',
-      path: config.director.persona_dir,
+      name: basename(cfg.director.persona_dir) || 'persona',
+      path: cfg.director.persona_dir,
       source: 'persona',
     });
 
@@ -377,7 +389,7 @@ export function startConsole(
     const workspaces: ConsoleWorkspace[] = [{
       id: 'main',
       name: 'Main',
-      path: join(config.director.persona_dir, 'daily', 'state.md'),
+      path: join(cfg.director.persona_dir, 'daily', 'state.md'),
       source: 'main',
       cwd: mainWorkspaceConfig?.cwd,
       agent: mainWorkspaceConfig?.agent,
@@ -387,7 +399,7 @@ export function startConsole(
       ...localHistoryForWorkspace('main'),
     }];
 
-    const memoryRoot = join(config.director.persona_dir, 'workspaces');
+    const memoryRoot = join(cfg.director.persona_dir, 'workspaces');
     if (existsSync(memoryRoot)) {
       const allNames = readdirSync(memoryRoot);
       const nameSet = new Set(allNames);
@@ -1135,39 +1147,40 @@ export function startConsole(
   }
 
   function buildConfigSummary() {
+    const cfg = currentConfig();
     return {
       console: {
-        enabled: config.console.enabled,
-        port: config.console.port,
-        tokenConfigured: Boolean(config.console.token),
+        enabled: cfg.console.enabled,
+        port: cfg.console.port,
+        tokenConfigured: Boolean(cfg.console.token),
         bind: '127.0.0.1',
       },
       feishu: {
-        appId: maskValue(config.feishu.app_id),
-        appSecretConfigured: Boolean(config.feishu.app_secret),
-        masterId: maskValue(config.feishu.master_id),
-        streamingReplyEnabled: config.feishu.streaming_reply_enabled,
-        streamUpdateDebounceMs: config.feishu.stream_update_debounce_ms,
-        streamMinUpdateChars: config.feishu.stream_min_update_chars,
+        appId: maskValue(cfg.feishu.app_id),
+        appSecretConfigured: Boolean(cfg.feishu.app_secret),
+        masterId: maskValue(cfg.feishu.master_id),
+        streamingReplyEnabled: cfg.feishu.streaming_reply_enabled,
+        streamUpdateDebounceMs: cfg.feishu.stream_update_debounce_ms,
+        streamMinUpdateChars: cfg.feishu.stream_min_update_chars,
       },
       director: {
-        personaDir: config.director.persona_dir,
-        pipeDir: config.director.pipe_dir,
-        pidFile: config.director.pid_file,
-        timeSyncIntervalMs: config.director.time_sync_interval_ms,
-        flushContextLimit: config.director.flush_context_limit,
-        flushIntervalMs: config.director.flush_interval_ms,
-        quoteMaxLength: config.director.quote_max_length,
+        personaDir: cfg.director.persona_dir,
+        pipeDir: cfg.director.pipe_dir,
+        pidFile: cfg.director.pid_file,
+        timeSyncIntervalMs: cfg.director.time_sync_interval_ms,
+        flushContextLimit: cfg.director.flush_context_limit,
+        flushIntervalMs: cfg.director.flush_interval_ms,
+        quoteMaxLength: cfg.director.quote_max_length,
       },
-      pool: config.pool,
-      task: config.task,
-      scheduler: config.scheduler,
-      logging: config.logging,
+      pool: cfg.pool,
+      task: cfg.task,
+      scheduler: cfg.scheduler,
+      logging: cfg.logging,
       agents: {
-        defaults: config.agents.defaults,
-        roles: config.agents.roles ?? {},
+        defaults: cfg.agents.defaults,
+        roles: cfg.agents.roles ?? {},
         providers: Object.fromEntries(
-          Object.entries(config.agents.providers).map(([name, provider]) => [
+          Object.entries(cfg.agents.providers).map(([name, provider]) => [
             name,
             {
               type: provider.type,
@@ -1191,7 +1204,7 @@ export function startConsole(
       },
       safety: {
         localOnly: true,
-        dangerousProviders: Object.entries(config.agents.providers)
+        dangerousProviders: Object.entries(cfg.agents.providers)
           .filter(([, provider]) => provider.dangerously_skip_permissions || provider.sandbox === 'danger-full-access' || provider.approval === 'never')
           .map(([name, provider]) => ({
             name,
@@ -1249,11 +1262,12 @@ export function startConsole(
   }
 
   function envCheckDefinitions(): EnvCheckDefinition[] {
+    const cfg = currentConfig();
     const byKey = new Map<string, EnvCheckDefinition>();
-    for (const name of ['bun', 'claude', 'codex', 'kimi']) {
+    for (const name of ['bun', 'claude', 'codex']) {
       byKey.set(`builtin:${name}`, { name, command: name, source: 'builtin' });
     }
-    for (const [name, provider] of Object.entries(config.agents.providers)) {
+    for (const [name, provider] of Object.entries(cfg.agents.providers)) {
       if (!provider.command) continue;
       byKey.set(`provider:${name}:${provider.command}`, {
         name: `provider:${name}`,
@@ -2157,20 +2171,21 @@ export function startConsole(
   }
 
   function collectConfigFiles() {
+    const cfg = currentConfig();
     const files = new Map<string, { label: string; path: string }>();
     const mainConfig = defaultConfigPath();
     files.set(mainConfig, { label: 'config.yaml', path: mainConfig });
-    const personaConfig = join(config.director.persona_dir, 'config.yaml');
+    const personaConfig = join(cfg.director.persona_dir, 'config.yaml');
     files.set(personaConfig, { label: 'persona/config.yaml', path: personaConfig });
-    const mcpPath = join(config.director.persona_dir, '.mcp.json');
+    const mcpPath = join(cfg.director.persona_dir, '.mcp.json');
     files.set(mcpPath, { label: 'persona/.mcp.json', path: mcpPath });
-    for (const [name, provider] of Object.entries(config.agents.providers)) {
+    for (const [name, provider] of Object.entries(cfg.agents.providers)) {
       if (provider.mcp_config_file) {
         const path = resolve(expandUserPath(provider.mcp_config_file));
         files.set(path, { label: `provider:${name} mcp`, path });
       }
       if (provider.agent_file) {
-        const path = resolve(config.director.persona_dir, provider.agent_file);
+        const path = resolve(cfg.director.persona_dir, provider.agent_file);
         files.set(path, { label: `provider:${name} agent`, path });
       }
     }
@@ -2242,9 +2257,10 @@ export function startConsole(
   }
 
   function collectSkills() {
+    const cfg = currentConfig();
     const roots = new Map<string, string>();
-    roots.set('persona', join(config.director.persona_dir, 'skills'));
-    for (const [name, provider] of Object.entries(config.agents.providers)) {
+    roots.set('persona', join(cfg.director.persona_dir, 'skills'));
+    for (const [name, provider] of Object.entries(cfg.agents.providers)) {
       if (provider.skills_dir) roots.set(`provider:${name}`, resolve(expandUserPath(provider.skills_dir)));
     }
     const skills: Array<{ source: string; name: string; description: string; path: string; mtimeMs: number; size: number }> = [];
@@ -3594,10 +3610,11 @@ export function startConsole(
               return Response.json({ error: 'thread_id/session_id and text are required' }, { status: 400 });
             }
             try {
-              const agent = resolveAgentProvider(config.agents, 'director', body.agent || 'codex');
+              const cfg = currentConfig();
+              const agent = resolveAgentProvider(cfg.agents, 'director', body.agent || 'codex');
               const injector = new CodexThreadInjector({
                 logDir: join(getLogDir(), 'codex-thread-injector'),
-                directorConfig: config.director,
+                directorConfig: cfg.director,
                 agent,
               });
               const result = await injector.injectUserMessage({
