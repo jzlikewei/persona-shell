@@ -21,7 +21,7 @@ import { useIsMobile } from '@/hooks/use-is-mobile'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { Header } from '@/components/header'
-import { Sidebar, shortPath } from '@/components/sidebar'
+import { Sidebar } from '@/components/sidebar'
 import type { BrowseMode } from '@/components/sidebar'
 
 export interface ShellOutletContext {
@@ -205,16 +205,13 @@ export function RootLayout() {
             )}
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="truncate text-sm font-bold text-[#cdd6f4]">
-                Project / {activeProject?.name ?? '-'} · Workspace / {activeWorkspaceInfo?.name ?? '-'}
+                Workspace / {activeWorkspaceInfo?.name ?? '-'}
               </div>
               <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5 font-mono text-[11px] text-[#7f849c]">
-                <span className="min-w-0 max-w-full truncate">project cwd: {shortPath(activeProject?.path)}</span>
                 <span className="min-w-0 max-w-full truncate">workspace: {activeWorkspaceName ?? '-'}</span>
-              </div>
-              <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5 font-mono text-[11px] text-[#7f849c]">
                 <span className="min-w-0 max-w-full truncate">agent: {activeAgentName ?? '-'}{activeAgentType ? ` (${activeAgentType})` : ''}</span>
                 {activeModel && <span className="min-w-0 max-w-full truncate">model: {activeModel}</span>}
-                <span className="min-w-0 max-w-full truncate">session id: {activeSessionInfo?.id ?? '-'}</span>
+                <span className="min-w-0 max-w-full truncate">session: {activeSessionInfo?.id ?? '-'}</span>
               </div>
             </div>
             <nav className="ml-auto flex shrink-0 gap-1">

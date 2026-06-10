@@ -297,13 +297,11 @@ function shortPath(path?: string) {
 }
 
 function WorkspaceSummary({
-  projectName,
   workspaceName,
   workspacePath,
   sessionLabel,
   sessionId,
 }: {
-  projectName?: string
   workspaceName?: string
   workspacePath?: string
   sessionLabel?: string
@@ -311,11 +309,7 @@ function WorkspaceSummary({
 }) {
   return (
     <>
-      <div className="mb-3 grid gap-2 px-4 md:grid-cols-3">
-        <div className="rounded-md bg-[#313244] px-3 py-2">
-          <div className="mb-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Project Directory</div>
-          <div className="truncate font-mono text-sm font-bold text-[#cdd6f4]">{projectName ?? '-'}</div>
-        </div>
+      <div className="mb-3 grid gap-2 px-4 md:grid-cols-2">
         <div className="rounded-md bg-[#313244] px-3 py-2">
           <div className="mb-1 text-[10px] font-bold uppercase tracking-[.08em] text-[#7f849c]">Workspace</div>
           <div className="truncate font-mono text-sm font-bold text-[#cdd6f4]">{workspaceName ?? '-'}</div>
@@ -341,7 +335,6 @@ function EmptyConversation() {
 
 export function ChatPage() {
   const {
-    activeProject,
     activeWorkspace,
     workspaceName,
     activeSession,
@@ -536,13 +529,12 @@ export function ChatPage() {
 
   const renderHeader = useCallback(() => (
     <WorkspaceSummary
-      projectName={activeProject?.name}
       workspaceName={activeWorkspace?.name}
       workspacePath={activeWorkspace?.path}
       sessionLabel={activeSessionInfo?.label}
       sessionId={activeSession}
     />
-  ), [activeProject?.name, activeWorkspace?.name, activeWorkspace?.path, activeSessionInfo?.label, activeSession])
+  ), [activeWorkspace?.name, activeWorkspace?.path, activeSessionInfo?.label, activeSession])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
