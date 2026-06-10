@@ -275,12 +275,6 @@ export function loadConfig(path?: string): Config {
     };
   }
 
-  if (!providers.kimi) {
-    providers.kimi = {
-      type: 'kimi',
-      command: 'kimi',
-    };
-  }
 
   const defaults: Record<string, string> = yaml.agents?.defaults && typeof yaml.agents.defaults === 'object'
     ? Object.fromEntries(
