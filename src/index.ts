@@ -22,6 +22,7 @@ import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logge
 import { parseShellRestartCommand, buildShellRestartBlockedMessage } from './shell-restart.js';
 import { CodexThreadInjector } from './codex-thread-injector.js';
 import type { DirectorDynamicToolCall, DirectorDynamicToolResult } from './director-session-adapter/index.js';
+import { writeShellMcpConfig } from './mcp-config.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -342,22 +343,14 @@ async function main() {
     );
   }
 
-  // DIRECTOR_LABEL is NOT in this config — it's injected via process env by each Director's spawn
-  const mcpConfig = {
-    mcpServers: {
-      'persona-tasks': {
-        command: 'bun',
-        args: ['run', join(import.meta.dirname, 'task', 'task-mcp-server.ts')],
-        env: {
-          SHELL_PORT: String(config.console.port),
-          PERSONA_DIR: config.director.persona_dir,
-          ...(config.console.token ? { SHELL_TOKEN: config.console.token } : {}),
-          no_proxy: '127.0.0.1,localhost',
-        },
-      },
-    },
-  };
-  writeFileSync(join(config.director.persona_dir, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
+  // DIRECTOR_LABEL is NOT in this config — it's injected via process env by each Director's spawn.
+  // PERSONA_TEST shells must not overwrite the production ~/.persona/.mcp.json.
+  const mcpConfigPath = writeShellMcpConfig(config, join(import.meta.dirname, 'task', 'task-mcp-server.ts'));
+  if (mcpConfigPath) {
+    console.log(`[shell] Wrote MCP config: ${mcpConfigPath}`);
+  } else {
+    console.warn('[shell] Skipped MCP config write for this process');
+  }
 
   // Start director process
   const freshStart = await director.start();
