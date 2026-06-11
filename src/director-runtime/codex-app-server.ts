@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 import type { DirectorRuntimeStatus, DirectorSendResult } from './index.js';
 import type { Config } from '../config.js';
 import { buildCodexMcpOverrideArgs, type AgentRuntimeConfig } from '../persona-process.js';
+import { PERSONA_DYNAMIC_TOOLS } from '../persona-dynamic-tools.js';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -655,49 +656,7 @@ export class CodexAppServerRuntime {
   }
 
   private dynamicTools(): Array<Record<string, unknown>> {
-    return [
-      {
-        name: 'create_task',
-        description: '创建 persona-shell 后台任务。只提供业务参数；Shell 会自动绑定当前 session/workspace 用于完成回调。',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            role: { type: 'string', description: '角色名，如 explorer / executor / introspector' },
-            agent: { type: 'string', description: '可选 agent provider 名称' },
-            model: { type: 'string', description: '可选 model 名称' },
-            description: { type: 'string', description: '简短描述' },
-            prompt: { type: 'string', description: '完整任务 briefing' },
-            project_dir: { type: 'string', description: '可选项目工作目录' },
-            timeout_ms: { type: 'number', description: '可选超时时间，单位毫秒' },
-            max_retry: { type: 'number', description: '最大重试次数' },
-          },
-          required: ['role', 'description', 'prompt'],
-        },
-      },
-      {
-        name: 'list_tasks',
-        description: '列出 persona-shell 最近的后台任务，可按状态/角色过滤。',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            status: { type: 'string', description: '按状态过滤：dispatched/running/completed/failed' },
-            role: { type: 'string', description: '按角色过滤' },
-            limit: { type: 'number', description: '返回数量上限' },
-          },
-        },
-      },
-      {
-        name: 'get_task',
-        description: '查询单条 persona-shell 后台任务详情。',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            task_id: { type: 'string', description: 'Task ID' },
-          },
-          required: ['task_id'],
-        },
-      },
-    ];
+    return PERSONA_DYNAMIC_TOOLS;
   }
 
   private runtimeCwd(): string {

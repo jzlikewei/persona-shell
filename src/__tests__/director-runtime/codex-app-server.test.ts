@@ -189,7 +189,7 @@ describe('CodexAppServerRuntime', () => {
     });
   });
 
-  test('registers persona dynamic task tools when mcp_mode is dynamic', () => {
+  test('registers persona dynamic task and cron tools when mcp_mode is dynamic', () => {
     const runtime = new CodexAppServerRuntime(
       {
         label: 'test',
@@ -230,7 +230,15 @@ describe('CodexAppServerRuntime', () => {
     };
 
     const dynamicTools = runtimePrivate.threadOptions().dynamicTools as Array<{ name: string }> | undefined;
-    expect(dynamicTools?.map((tool) => tool.name)).toEqual(['create_task', 'list_tasks', 'get_task']);
+    expect(dynamicTools?.map((tool) => tool.name)).toEqual([
+      'create_task',
+      'list_tasks',
+      'get_task',
+      'create_cron_job',
+      'list_cron_jobs',
+      'delete_cron_job',
+      'toggle_cron_job',
+    ]);
   });
 
   test('handles app-server item/tool/call through dynamic tool hook', async () => {
