@@ -401,7 +401,8 @@ export function startConsole(
           const legacyMatch = name.match(/^[0-9a-f]{8}-(.+)$/i);
           if (legacyMatch && nameSet.has(legacyMatch[1])) continue;
           const dbWs = getWorkspace(name);
-          const hidden = dbWs?.hidden ? true : (hasAnySessionHistory(name) ? false : true);
+          // DB record exists → respect its hidden flag; no DB record → derive from session history
+          const hidden = dbWs ? !!dbWs.hidden : !hasAnySessionHistory(name);
           workspaces.push({
             id: `memory-${name}`,
             name,
