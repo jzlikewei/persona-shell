@@ -1,6 +1,7 @@
 /** Minimal MCP server (stdio transport) for task system — proxies to Shell HTTP API */
 
 import { readFileSync, readdirSync } from 'fs';
+import { homedir } from 'os';
 import { join, basename } from 'path';
 import {
   buildPersonaPromptBundle,
@@ -11,11 +12,30 @@ import {
 } from '../persona-orchestration.js';
 
 const SHELL_PORT = process.env.SHELL_PORT ?? '3000';
-const SHELL_TOKEN = process.env.SHELL_TOKEN;
 const DIRECTOR_LABEL = process.env.DIRECTOR_LABEL ?? 'main';
 const PERSONA_WORKSPACE = process.env.PERSONA_WORKSPACE?.trim() || (DIRECTOR_LABEL === 'main' ? 'main' : DIRECTOR_LABEL);
-const PERSONA_DIR = process.env.PERSONA_DIR ?? '';
+const PERSONA_DIR = process.env.PERSONA_DIR ?? join(homedir(), '.persona');
+const SHELL_TOKEN = process.env.SHELL_TOKEN ?? readShellTokenFromConfig(PERSONA_DIR);
 const BASE = `http://127.0.0.1:${SHELL_PORT}`;
+
+function readShellTokenFromConfig(personaDir: string): string | undefined {
+  try {
+    const text = readFileSync(join(personaDir, 'config.yaml'), 'utf-8');
+    let inConsole = false;
+    for (const line of text.split(/\r?\n/u)) {
+      if (line && !line.startsWith(' ') && !line.startsWith('\t')) {
+        inConsole = line.trim() === 'console:';
+        continue;
+      }
+      if (!inConsole) continue;
+      const match = line.match(/^\s+token:\s*["']?([^"'\s#]+)/u);
+      if (match?.[1]) return match[1];
+    }
+  } catch {
+    // Best-effort fallback for MCP processes launched without SHELL_TOKEN.
+  }
+  return undefined;
+}
 
 function logStartupEnv(): void {
   console.error(`[mcp-server] env: DIRECTOR_LABEL=${DIRECTOR_LABEL} PERSONA_WORKSPACE=${PERSONA_WORKSPACE} PERSONA_SESSION_FILE=${process.env.PERSONA_SESSION_FILE?.trim() || '(none)'} PERSONA_SESSION_ID=${readPersonaSessionIdFromEnv() ?? '(none)'} SHELL_PORT=${SHELL_PORT}`);

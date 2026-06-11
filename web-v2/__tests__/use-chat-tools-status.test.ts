@@ -6,6 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { mergeChatToolCall, type ChatToolCall } from '../src/hooks/chat-tools'
+import { isWorkflowActive, turnStatusFromGoalStatus } from '../src/hooks/workflow-status'
 
 // ── helpers that mirror use-chat.ts inline transforms ──
 
@@ -163,6 +164,26 @@ describe('phase transitions from tool events', () => {
     expect(applyToolEvent('streaming', 'tool_completed')).toBe('streaming')
     expect(applyToolEvent('thinking', 'tool_completed')).toBe('thinking')
     expect(applyToolEvent(null, 'tool_completed')).toBe(null)
+  })
+})
+
+// ── goal workflow status normalization ──
+
+describe('goal workflow status normalization', () => {
+  test('terminal goal status is not treated as running', () => {
+    expect(turnStatusFromGoalStatus('complete')).toBe('completed')
+    expect(turnStatusFromGoalStatus('completed')).toBe('completed')
+    expect(turnStatusFromGoalStatus('done')).toBe('completed')
+    expect(turnStatusFromGoalStatus('blocked')).toBe('blocked')
+    expect(isWorkflowActive({ turnId: 'turn-1', goal: { status: 'complete' }, turnStatus: 'completed' })).toBe(false)
+    expect(isWorkflowActive({ turnId: 'turn-1', goal: { status: 'blocked' }, turnStatus: 'blocked' })).toBe(false)
+  })
+
+  test('active goal status maps to running but goal-only state does not activate turn workflow', () => {
+    expect(turnStatusFromGoalStatus('active')).toBe('running')
+    expect(turnStatusFromGoalStatus('in_progress')).toBe('running')
+    expect(isWorkflowActive({ turnId: 'turn-1', goal: { status: 'active' }, turnStatus: 'running' })).toBe(true)
+    expect(isWorkflowActive({ turnId: 'thread-1', goal: { status: 'active' } })).toBe(false)
   })
 })
 

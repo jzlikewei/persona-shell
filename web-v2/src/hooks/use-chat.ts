@@ -24,7 +24,7 @@ export interface ChatWorkflow {
   goal?: ChatWorkflowGoal
   plan?: ChatWorkflowStep[]
   explanation?: string | null
-  turnStatus?: 'running' | 'completed' | 'failed' | 'aborted'
+  turnStatus?: 'running' | 'completed' | 'failed' | 'aborted' | 'blocked'
 }
 
 export interface ChatMessage {
@@ -74,7 +74,6 @@ interface ApiSessionWorkflow {
   phase?: 'thinking' | 'tool_running' | null
 }
 
-
 function normalizeReplyText(text: string) {
   return text
     .replace(/\n\n\(耗时 [^)]+\)$/u, '')
@@ -106,6 +105,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const [streaming, setStreaming] = useState('')
   const [streamingTools, setStreamingTools] = useState<ChatToolCall[]>([])
   const [workflow, setWorkflow] = useState<ChatWorkflow | null>(null)
+  const [threadGoal, setThreadGoal] = useState<ChatWorkflowGoal | null>(null)
   const [activity, setActivity] = useState<string | null>(null)
   const [turnPhase, setTurnPhase] = useState<TurnPhase>(null)
   const [loading, setLoading] = useState(false)
@@ -173,10 +173,14 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       const live = await get<ApiSessionWorkflow>('/api/session-workflow', { sessionId: targetSessionId })
       if (seq !== requestSeq.current) return
       const liveTools = live.tools ?? []
-      if (live.workflow || live.phase || liveTools.length > 0) {
-        liveWorkflowRef.current = live.workflow ?? null
+      if (live.workflow?.goal) setThreadGoal(live.workflow.goal)
+      const liveTurnWorkflow = live.workflow && (live.workflow.plan?.length || live.workflow.explanation || live.phase || liveTools.length > 0)
+        ? { ...live.workflow, goal: undefined }
+        : null
+      if (liveTurnWorkflow || live.phase || liveTools.length > 0) {
+        liveWorkflowRef.current = liveTurnWorkflow
         liveToolsRef.current = live.tools ?? []
-        setWorkflow(live.workflow ?? null)
+        setWorkflow(liveTurnWorkflow)
         setStreamingTools(liveTools)
         setTurnPhase(live.phase ?? 'thinking')
       } else {
@@ -366,13 +370,18 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
         if (event.type === 'turn_started') {
           liveTurnIdRef.current = event.turnId
           liveToolsRef.current = []
-          liveWorkflowRef.current = { turnId: event.turnId, turnStatus: 'running' }
+          liveWorkflowRef.current = null
           setStreamingTools([])
-          setWorkflow(liveWorkflowRef.current)
+          setWorkflow(null)
           updateStreaming('')
           setActivity(null)
           setTurnPhase('thinking')
           armTurnPhaseTimeout()
+          return
+        }
+
+        if (event.type === 'goal_updated') {
+          setThreadGoal(event.goal ?? null)
           return
         }
 
@@ -381,23 +390,9 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
           streamingRef.current = ''
           setStreaming('')
           liveToolsRef.current = []
-          liveWorkflowRef.current = { turnId: event.turnId, turnStatus: 'running' }
+          liveWorkflowRef.current = null
           setStreamingTools([])
-          setWorkflow(liveWorkflowRef.current)
-        }
-
-        if (event.type === 'goal_updated') {
-          const next: ChatWorkflow = {
-            ...(liveWorkflowRef.current ?? { turnId: event.turnId }),
-            turnId: event.turnId,
-            goal: event.goal,
-            turnStatus: 'running',
-          }
-          liveWorkflowRef.current = next
-          setWorkflow(next)
-          setTurnPhase(prev => prev ?? 'thinking')
-          armTurnPhaseTimeout()
-          return
+          setWorkflow(null)
         }
 
         if (event.type === 'plan_updated') {
@@ -430,7 +425,13 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
         }
 
         if (event.type === 'tool_completed') {
-          if (event.tool) upsertLiveTool(event.tool)
+          if (event.tool) {
+            upsertLiveTool(event.tool)
+            const hasRunningTool = liveToolsRef.current.some(tool => tool.status === 'running')
+            if (!hasRunningTool) {
+              setTurnPhase(prev => prev === 'tool_running' ? (streamingRef.current ? 'streaming' : liveWorkflowRef.current?.plan?.length ? 'thinking' : null) : prev)
+            }
+          }
           armTurnPhaseTimeout()
           return
         }
@@ -567,10 +568,12 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       setStreamingTools([])
       liveTurnIdRef.current = null
       usingTurnEventsRef.current = false
+      setWorkflow(null)
+      liveWorkflowRef.current = null
     }
 
     if (status === 'connected') loadMessages()
   }, [sessionId, workspace, status, loadMessages, updateStreaming, clearTurnPhaseTimeout])
 
-  return { messages, streaming, streamingTools, workflow, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden }
+  return { messages, streaming, streamingTools, workflow, threadGoal, activity, turnPhase, loading, sending, sendMessage, loadMessages, loadMore, hiddenIds, hideMessage, showMessage, showAllHidden }
 }

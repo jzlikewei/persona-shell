@@ -718,6 +718,107 @@ describe('SessionBridge', () => {
     expect(bridge.getLiveWorkflowState()).toEqual({ workflow: null, tools: [], phase: null });
   });
 
+  test('completed goal workflow does not keep live snapshot in running phase', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    await bridge.send('finish goal', { correlationId: 'msg-1' });
+    const turnId = events.find(event => event.type === 'turn_started')?.turnId;
+    expect(turnId).toBeTruthy();
+
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'goal_updated',
+      turnId: 'runtime-turn-1',
+      goal: { objective: 'ship workflow UI', status: 'complete', tokensUsed: 99, timeUsedSeconds: 10 },
+    });
+
+    expect(bridge.getLiveWorkflowState()).toMatchObject({
+      workflow: {
+        turnId,
+        goal: { objective: 'ship workflow UI', status: 'complete', tokensUsed: 99, timeUsedSeconds: 10 },
+        turnStatus: 'completed',
+      },
+      tools: [],
+      phase: null,
+    });
+  });
+
+  test('workflow, command output and completion are emitted on the same visible turn', async () => {
+    const bridge = createBridge();
+    const adapter = FakeAdapter.instances.at(-1)!;
+    const events: AssistantTurnEvent[] = [];
+    bridge.on('turn-event', (event: AssistantTurnEvent) => events.push(event));
+
+    await bridge.start();
+    await bridge.send('run goal workflow', { correlationId: 'msg-workflow' });
+    const visibleTurnId = events.find(event => event.type === 'turn_started')?.turnId;
+    expect(visibleTurnId).toBeTruthy();
+
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'goal_updated',
+      turnId: 'codex-runtime-turn',
+      goal: { objective: 'show goal workflow', status: 'active', tokensUsed: 1, timeUsedSeconds: 0 },
+    });
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'plan_updated',
+      turnId: 'codex-runtime-turn',
+      plan: [{ step: 'run command', status: 'inProgress' }],
+      explanation: 'testing workflow',
+    });
+    adapter.hooks.onToolCall('Bash', {
+      id: 'call-1',
+      name: 'Bash',
+      input: '{ "command": "echo workflow" }',
+      status: 'running',
+    });
+    adapter.hooks.onToolCall('Bash', {
+      id: 'call-1',
+      name: 'Bash',
+      result: 'workflow\n',
+      status: 'running',
+    });
+    adapter.hooks.onToolCall('Bash', {
+      id: 'call-1',
+      name: 'Bash',
+      result: 'workflow\n',
+      status: 'completed',
+      isError: false,
+    });
+    adapter.hooks.onWorkflowEvent?.({
+      type: 'goal_updated',
+      turnId: 'codex-runtime-turn',
+      goal: { objective: 'show goal workflow', status: 'complete', tokensUsed: 5, timeUsedSeconds: 1 },
+    });
+    adapter.completeTurn({ responseText: 'workflow done', durationMs: 20 });
+
+    expect(new Set(events.map(event => event.turnId))).toEqual(new Set([visibleTurnId!]));
+    expect(events.map(event => event.type)).toEqual([
+      'turn_started',
+      'goal_updated',
+      'plan_updated',
+      'tool_started',
+      'tool_started',
+      'tool_completed',
+      'goal_updated',
+      'turn_completed',
+    ]);
+    expect(events.find(event => event.type === 'goal_updated')?.messageId).toBe('msg-workflow');
+    expect(events.filter(event => event.type === 'goal_updated').at(-1)?.goal?.status).toBe('complete');
+    expect(events.find(event => event.type === 'plan_updated')?.plan?.[0]).toEqual({ step: 'run command', status: 'inProgress' });
+    expect(events.filter(event => event.type === 'tool_started').at(-1)?.tool).toMatchObject({
+      id: 'call-1',
+      status: 'running',
+      result: 'workflow\n',
+    });
+    expect(events.find(event => event.type === 'turn_completed')).toMatchObject({
+      content: 'workflow done',
+      durationMs: 20,
+    });
+  });
+
   test('workflow events for a new turn do not inherit previous goal fields', async () => {
     const bridge = createBridge();
     const adapter = FakeAdapter.instances.at(-1)!;

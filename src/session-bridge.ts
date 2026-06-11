@@ -57,6 +57,18 @@ type PendingType =
   | { type: 'flush-checkpoint'; turnId?: string }
   | { type: 'flush-bootstrap'; turnId?: string };
 
+type WorkflowTurnStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'blocked';
+
+function turnStatusFromGoalStatus(status?: string): WorkflowTurnStatus | undefined {
+  const normalized = status?.toLowerCase().replace(/[\s_-]/g, '');
+  if (!normalized) return undefined;
+  if (['complete', 'completed', 'done'].includes(normalized)) return 'completed';
+  if (['failed', 'failure', 'error'].includes(normalized)) return 'failed';
+  if (normalized === 'blocked') return 'blocked';
+  if (['active', 'running', 'inprogress', 'inflight'].includes(normalized)) return 'running';
+  return undefined;
+}
+
 export interface SessionBridgeOptions {
   agents: Config['agents'];
   agentsProvider?: () => Config['agents'];
@@ -124,7 +136,7 @@ export class SessionBridge extends EventEmitter {
   private discardNextResponse = false;
   private personaRole: string = 'director';
   private partialSystemReplyText: string | null = null;
-  private liveWorkflow: Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: 'running' | 'completed' | 'failed' | 'aborted' } | null = null;
+  private liveWorkflow: Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: WorkflowTurnStatus } | null = null;
   private liveTools: DirectorToolCall[] = [];
   private readonly dynamicToolHandler?: SessionBridgeOptions['dynamicToolHandler'];
 
@@ -1177,16 +1189,17 @@ export class SessionBridge extends EventEmitter {
     await this.adapter.restartTransport();
   }
 
-  getLiveWorkflowState(): { workflow: (Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: 'running' | 'completed' | 'failed' | 'aborted' }) | null; tools: DirectorToolCall[]; phase: 'thinking' | 'tool_running' | null } {
+  getLiveWorkflowState(): { workflow: (Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: WorkflowTurnStatus }) | null; tools: DirectorToolCall[]; phase: 'thinking' | 'tool_running' | null } {
     const hasActiveVisibleTurn = this.pendingTurns.some((turn) => this.isVisibleTurn(turn));
     if (!hasActiveVisibleTurn) {
       return { workflow: null, tools: [], phase: null };
     }
     const hasRunningTool = this.liveTools.some((tool) => tool.status === 'running');
+    const hasRunningWorkflow = this.liveWorkflow?.turnStatus === 'running';
     return {
       workflow: this.liveWorkflow,
       tools: this.liveTools,
-      phase: hasRunningTool ? 'tool_running' : this.liveWorkflow || hasActiveVisibleTurn ? 'thinking' : null,
+      phase: hasRunningTool ? 'tool_running' : hasRunningWorkflow || (!this.liveWorkflow && hasActiveVisibleTurn) ? 'thinking' : null,
     };
   }
 
@@ -1455,13 +1468,16 @@ export class SessionBridge extends EventEmitter {
     const visibleTurnId = visibleTurn?.turnId ?? event.turnId;
     const sameTurn = this.liveWorkflow?.turnId === visibleTurnId;
     const base = sameTurn ? this.liveWorkflow : { turnId: visibleTurnId };
+    const eventTurnStatus = event.type === 'goal_updated'
+      ? turnStatusFromGoalStatus(event.goal?.status) ?? 'running'
+      : 'running';
     this.liveWorkflow = {
       ...base,
       turnId: visibleTurnId,
       goal: event.goal ?? (sameTurn ? this.liveWorkflow?.goal : undefined),
       plan: event.plan ?? (sameTurn ? this.liveWorkflow?.plan : undefined),
       explanation: 'explanation' in event ? event.explanation : (sameTurn ? this.liveWorkflow?.explanation : undefined),
-      turnStatus: 'running',
+      turnStatus: eventTurnStatus,
     };
     const visibleEvent: AssistantTurnEvent = {
       ...event,

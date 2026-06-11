@@ -4,14 +4,15 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
-import { CheckCircle2, Loader2, Paperclip, Terminal, XCircle } from 'lucide-react'
+import { CheckCircle2, Loader2, Paperclip, Target, Terminal, XCircle } from 'lucide-react'
 import { CodeBlock } from '@/components/code-block'
 import { DocumentPanel, extractFilePaths } from '@/components/document-panel'
 import { StopOrSend } from '@/components/stop-button'
 import { MessagePagination } from '@/components/message-pagination'
 import { DateSeparator } from '@/components/date-separator'
 import { useApi } from '@/hooks/use-api'
-import { useChat, type ChatMessage, type ChatToolCall, type ChatWorkflow } from '@/hooks/use-chat'
+import { useChat, type ChatMessage, type ChatToolCall, type ChatWorkflow, type ChatWorkflowGoal } from '@/hooks/use-chat'
+import { isWorkflowActive } from '@/hooks/workflow-status'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
 
@@ -170,22 +171,15 @@ function statusTone(status?: string) {
 
 const WorkflowPanel = memo(function WorkflowPanel({ workflow }: { workflow?: ChatWorkflow | null }) {
   if (!workflow) return null
-  const goal = workflow.goal
   const plan = workflow.plan ?? []
-  const workflowStatus = workflow.turnStatus ?? goal?.status
+  if (!workflow.explanation && plan.length === 0) return null
+  const workflowStatus = workflow.turnStatus
   return (
     <div className="mt-2 rounded-md border border-[#45475a] bg-[#181825] p-2 font-mono text-[11px] text-[#a6adc8]">
       <div className="mb-1 flex items-center gap-2">
-        <span className="font-bold text-[#cdd6f4]">Goal workflow</span>
+        <span className="font-bold text-[#cdd6f4]">Turn plan</span>
         {workflowStatus && <span className={cn('ml-auto font-bold', statusTone(workflowStatus))}>{workflowStatus}</span>}
       </div>
-      {goal?.objective && <div className="mb-2 whitespace-pre-wrap text-[#bac2de]">{goal.objective}</div>}
-      {(goal?.tokensUsed != null || goal?.timeUsedSeconds != null) && (
-        <div className="mb-2 flex flex-wrap gap-2 text-[10px] text-[#7f849c]">
-          {goal.tokensUsed != null && <span>tokens {goal.tokensUsed}</span>}
-          {goal.timeUsedSeconds != null && <span>time {goal.timeUsedSeconds}s</span>}
-        </div>
-      )}
       {workflow.explanation && <div className="mb-2 text-[#7f849c]">{workflow.explanation}</div>}
       {plan.length > 0 && (
         <ol className="space-y-1">
@@ -197,6 +191,32 @@ const WorkflowPanel = memo(function WorkflowPanel({ workflow }: { workflow?: Cha
           ))}
         </ol>
       )}
+    </div>
+  )
+})
+
+function formatGoalDuration(seconds?: number) {
+  if (seconds == null || !Number.isFinite(seconds)) return null
+  const total = Math.max(0, Math.floor(seconds))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const secs = total % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${secs}s`
+  return `${secs}s`
+}
+
+const GoalStatusBar = memo(function GoalStatusBar({ goal }: { goal?: ChatWorkflowGoal | null }) {
+  if (!goal?.objective) return null
+  const status = goal.status ?? 'active'
+  const duration = formatGoalDuration(goal.timeUsedSeconds)
+  return (
+    <div className="flex items-center gap-2 rounded-full border border-[#45475a] bg-[#1e1e2e] px-3 py-2 font-mono text-xs text-[#a6adc8] shadow-sm">
+      <Target className={cn('size-4 shrink-0', statusTone(status))} />
+      <span className="font-bold text-[#cdd6f4]">{status === 'active' || status === 'running' ? 'Pursuing goal' : 'Goal'}</span>
+      <span className="min-w-0 flex-1 truncate text-[#bac2de]">{goal.objective}</span>
+      {duration && <span className="shrink-0 text-[#7f849c]">{duration}</span>}
+      <span className={cn('shrink-0 font-bold', statusTone(status))}>{status}</span>
     </div>
   )
 })
@@ -384,9 +404,10 @@ export function ChatPage() {
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, workflow, activity, turnPhase, loading, sending, sendMessage, loadMore } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, workflow, threadGoal, activity, turnPhase, loading, sending, sendMessage, loadMore } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
-  const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0 || workflow !== null
+  const activeWorkflow = isWorkflowActive(workflow)
+  const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0 || activeWorkflow
   const draftKey = activeSession ? `persona-shell:v2:draft:${activeSession}` : null
   const [input, setInput] = useState(() => {
     if (!draftKey) return ''
@@ -545,11 +566,11 @@ export function ChatPage() {
     }
     if (turnPhase) {
       items.push({ __kind: 'streaming', phase: turnPhase })
-    } else if (streaming || activity || streamingTools.length > 0 || workflow) {
+    } else if (streaming || activity || streamingTools.length > 0 || activeWorkflow) {
       items.push({ __kind: 'streaming', phase: streaming ? 'streaming' : 'tool_running' })
     }
     return items
-  }, [visibleChatMessages, loading, streaming, activity, turnPhase, streamingTools.length, workflow])
+  }, [visibleChatMessages, loading, streaming, activity, turnPhase, streamingTools.length, activeWorkflow])
 
   const renderItem = useCallback((_index: number, item: VirtuosoItem) => {
     if ('__kind' in item) {
@@ -618,6 +639,8 @@ export function ChatPage() {
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
       >
+        <GoalStatusBar goal={threadGoal} />
+
         {(attachments.length > 0 || uploadError) && (
           <div className="flex flex-wrap gap-1.5">
             {attachments.map(file => (
