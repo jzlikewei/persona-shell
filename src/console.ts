@@ -3280,7 +3280,8 @@ export function startConsole(
             const record = getSessionRecord(sessionId);
             if (!record?.agent_type || record.agent_type === 'claude') {
               const cwd = sessionManager?.getSession(sessionId)?.bridge.getWorkspaceCwd()
-                ?? record?.cwd ?? undefined;
+                ?? record?.cwd
+                ?? (record?.workspace ? join(config.director.persona_dir, 'workspaces', record.workspace) : undefined);
               if (cwd) {
                 const nativeMessages = parseClaudeTranscript(sessionId, cwd, limit);
                 if (nativeMessages) return Response.json(nativeMessages);
