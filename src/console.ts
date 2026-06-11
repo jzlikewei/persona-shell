@@ -1713,6 +1713,53 @@ export function startConsole(
     });
   }
 
+  async function resolveCronJobTarget(job: CronJob): Promise<{
+    kind: 'main' | 'pool';
+    sessionId: string | null;
+    entry?: NonNullable<ReturnType<NonNullable<typeof sessionManager>['getRuntimeEntryBySessionId']>>;
+  }> {
+    const mainSessionId = director.getStatus().sessionId ?? null;
+
+    const resolveSession = async (sessionId: string | null | undefined) => {
+      const sid = sessionId?.trim();
+      if (!sid) return null;
+      if (sid === mainSessionId) return { kind: 'main' as const, sessionId: sid };
+      if (!sessionManager) return null;
+      const live = sessionManager.getRuntimeEntryBySessionId(sid);
+      if (live) return { kind: 'pool' as const, sessionId: sid, entry: live };
+      const revived = await sessionManager.reviveSession(sid, { feishuChatId: 'web-console' });
+      const revivedId = revived?.sessionId ?? sid;
+      const revivedEntry = sessionManager.getRuntimeEntryBySessionId(revivedId);
+      return revivedEntry ? { kind: 'pool' as const, sessionId: revivedId, entry: revivedEntry } : null;
+    };
+
+    const sourceSessionId = job.source_session_id?.trim();
+    const sourceRecord = sourceSessionId ? getSessionRecord(sourceSessionId) : null;
+    if (sourceSessionId === mainSessionId || (sourceRecord && sourceRecord.archived !== 1)) {
+      const sourceTarget = await resolveSession(sourceSessionId);
+      if (sourceTarget) return sourceTarget;
+    }
+
+    const workspace = job.workspace || 'main';
+    if (workspace === 'main') return { kind: 'main', sessionId: mainSessionId };
+
+    const defaultSessionId = sessionManager?.resolveDefaultSession(workspace) ?? null;
+    const defaultTarget = await resolveSession(defaultSessionId);
+    if (defaultTarget) return defaultTarget;
+
+    if (sessionManager) {
+      try {
+        const created = await sessionManager.resolveWorkspaceDefaultSession(workspace, { feishuChatId: 'web-console' });
+        const createdTarget = await resolveSession(created.sessionId);
+        if (createdTarget) return createdTarget;
+      } catch (err) {
+        console.warn(`[console] Failed to resolve cron target for workspace "${workspace}", falling back to main:`, err);
+      }
+    }
+
+    return { kind: 'main', sessionId: mainSessionId };
+  }
+
   async function runCronJobNow(job: CronJob): Promise<Record<string, unknown>> {
     const actionType = job.action_type ?? 'spawn_role';
 
@@ -1729,6 +1776,7 @@ export function startConsole(
         err.status = 409;
         throw err;
       }
+      const target = await resolveCronJobTarget(job);
       const task = createTask({
         type: 'cron',
         role: job.role,
@@ -1738,9 +1786,7 @@ export function startConsole(
         max_retry: job.max_retry,
         timeout_ms: job.timeout_ms ?? undefined,
         workspace: job.workspace || 'main',
-        source_session_id: (job.workspace || 'main') === 'main'
-          ? director.getStatus().sessionId ?? undefined
-          : sessionManager?.resolveDefaultSession(job.workspace || 'main') ?? undefined,
+        source_session_id: target.sessionId ?? undefined,
         extra: { cronJobId: job.id, manualRun: true },
       });
       runCreatedTask(task);
@@ -1755,18 +1801,15 @@ export function startConsole(
       const yesterday = d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
       const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
       const workspace = job.workspace || 'main';
-      const sessionId = workspace === 'main' ? director.getStatus().sessionId : sessionManager?.resolveDefaultSession(workspace);
-      if (sessionId && sessionId !== director.getStatus().sessionId && sessionManager) {
-        const entry = sessionManager.getRuntimeEntryBySessionId(sessionId);
-        if (entry) {
-          await entry.bridge.sendCronMessage(msg);
-          updateCronJob(job.id, { last_run_at: localNow() });
-          return { ok: true, action_type: actionType, workspace, sessionId };
-        }
+      const target = await resolveCronJobTarget(job);
+      if (target.kind === 'pool' && target.entry) {
+        await target.entry.bridge.sendCronMessage(msg);
+        updateCronJob(job.id, { last_run_at: localNow() });
+        return { ok: true, action_type: actionType, workspace, sessionId: target.sessionId };
       }
       await director.sendCronMessage(msg);
       updateCronJob(job.id, { last_run_at: localNow() });
-      return { ok: true, action_type: actionType, workspace: 'main', sessionId: director.getStatus().sessionId };
+      return { ok: true, action_type: actionType, workspace, sessionId: target.sessionId ?? director.getStatus().sessionId };
     }
 
     if (actionType === 'shell_action') {
@@ -2311,9 +2354,17 @@ export function startConsole(
   }
 
   function normalizeCronSource(input: CreateCronJobInput): CreateCronJobInput {
+    const workspace = input.workspace?.trim()
+      || (input.source_session_id ? getSessionRecord(input.source_session_id)?.workspace : undefined)
+      || 'main';
+    const sourceSessionId = input.source_session_id?.trim()
+      || (workspace === 'main'
+        ? director.getStatus().sessionId ?? undefined
+        : sessionManager?.resolveDefaultSession(workspace) ?? undefined);
     return {
       ...input,
-      workspace: input.workspace?.trim() || 'main',
+      workspace,
+      source_session_id: sourceSessionId,
       source_director: undefined,
     };
   }
@@ -3869,7 +3920,16 @@ export function startConsole(
                   if (!switched) return Response.json({ ok: false, error: `failed to switch main Director to ${body.agent}` }, { status: 500 });
                 }
                 await director.resetSession();
-                const sessionId = director.getStatus().sessionId;
+                let sessionId = director.getStatus().sessionId;
+                if (!sessionId) {
+                  sessionId = await new Promise<string | null>((resolve) => {
+                    const timeout = setTimeout(() => resolve(null), 15_000);
+                    director.once('session-id-ready', (sid: string) => {
+                      clearTimeout(timeout);
+                      resolve(sid);
+                    });
+                  });
+                }
                 if (!sessionId) return Response.json({ ok: false, error: 'main session was not initialized' }, { status: 500 });
                 workspaceRegistry?.setDefaultSession('main', sessionId);
                 writeAuditEntry('session.create', true, { workspace: wsName, sessionId, director: 'main' });
@@ -3925,7 +3985,16 @@ export function startConsole(
                 const isCurrentMain = director.getStatus().sessionId === sessionId;
                 if (isCurrentMain) {
                   await director.resetSession();
-                  const newId = director.getStatus().sessionId;
+                  let newId = director.getStatus().sessionId;
+                  if (!newId) {
+                    newId = await new Promise<string | null>((resolve) => {
+                      const timeout = setTimeout(() => resolve(null), 15_000);
+                      director.once('session-id-ready', (sid: string) => {
+                        clearTimeout(timeout);
+                        resolve(sid);
+                      });
+                    });
+                  }
                   if (newId) workspaceRegistry?.setDefaultSession('main', newId);
                 }
                 const ok = archiveSessionInDb(sessionId);

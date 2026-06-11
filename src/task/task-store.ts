@@ -214,7 +214,10 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   message     TEXT,
   action_name TEXT,
   timeout_ms  INTEGER,
-  max_retry   INTEGER NOT NULL DEFAULT 3
+  max_retry   INTEGER NOT NULL DEFAULT 3,
+  source_session_id TEXT,
+  workspace   TEXT,
+  source_director TEXT
 )`;
 
 /** 生成语义化 Task ID: T-MMdd-HH-NNN */
@@ -301,6 +304,9 @@ function migrateCronJobsTable(db: Database): void {
   }
   if (!existing.has('workspace')) {
     db.run('ALTER TABLE cron_jobs ADD COLUMN workspace TEXT');
+  }
+  if (!existing.has('source_session_id')) {
+    db.run('ALTER TABLE cron_jobs ADD COLUMN source_session_id TEXT');
   }
   db.run(`
     UPDATE cron_jobs
@@ -614,6 +620,8 @@ export interface CronJob {
   max_retry: number;
   /** Cron 所属 workspace,用于调度到 workspace default session */
   workspace: string | null;
+  /** 创建 cron 的 sessionId，用于 director_msg tick / spawn_role callback 优先回到创建会话 */
+  source_session_id: string | null;
   /** 旧 Director 标识；仅作为历史迁移输入/展示残留 */
   source_director: string | null;
 }
@@ -633,6 +641,8 @@ export interface CreateCronJobInput {
   max_retry?: number;
   /** Cron 所属 workspace,用于调度到 workspace default session */
   workspace?: string;
+  /** 创建 cron 的 sessionId，用于优先路由回创建会话 */
+  source_session_id?: string;
   /** 旧发起方 Director 标识；仅作为历史迁移输入 */
   source_director?: string;
 }
@@ -647,6 +657,7 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
     timeout_ms: row.timeout_ms === null || row.timeout_ms === undefined ? null : Number(row.timeout_ms),
     max_retry: row.max_retry === null || row.max_retry === undefined ? 3 : Number(row.max_retry),
     workspace: (row.workspace as string) ?? null,
+    source_session_id: (row.source_session_id as string) ?? null,
     source_director: (row.source_director as string) ?? null,
   } as CronJob;
 }
@@ -663,11 +674,12 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const timeoutMs = input.timeout_ms ?? null;
   const maxRetry = input.max_retry ?? 3;
   const workspace = input.workspace?.trim() || null;
+  const sourceSessionId = input.source_session_id?.trim() || null;
 
   d.run(
-    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, last_run_at, created_at, updated_at, action_type, message, action_name, timeout_ms, max_retry, source_director, workspace)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, lastRunAt, now, now, actionType, message, actionName, timeoutMs, maxRetry, null, workspace],
+    `INSERT INTO cron_jobs (id, name, role, agent, description, prompt, schedule, enabled, last_run_at, created_at, updated_at, action_type, message, action_name, timeout_ms, max_retry, source_director, workspace, source_session_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.name, input.role, input.agent?.trim() || null, input.description, input.prompt, input.schedule, enabled, lastRunAt, now, now, actionType, message, actionName, timeoutMs, maxRetry, null, workspace, sourceSessionId],
   );
 
   return getCronJob(id)!;
@@ -692,7 +704,7 @@ export function listCronJobs(filter?: { enabled?: boolean }): CronJob[] {
 }
 
 export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at'>>): CronJob | null {
-  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'timeout_ms', 'max_retry', 'workspace'] as const;
+  const allowed = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'enabled', 'last_run_at', 'action_type', 'message', 'action_name', 'timeout_ms', 'max_retry', 'workspace', 'source_session_id'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 

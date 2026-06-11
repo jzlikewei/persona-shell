@@ -15,7 +15,7 @@ import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
 import { isBashAction, extractBashCommand, runBashAction } from './task/shell-bash.js';
 import { resolveCronMessage } from './prompt-loader.js';
-import { updateTask, listTasks, createTask, getTask, getState, deleteState, listCronJobs, updateCronJob, createCronJob, deleteCronJob, toggleCronJob, initTaskStore, localNow, getSessionRecord, type TaskExtra } from './task/task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, setState, deleteState, listCronJobs, updateCronJob, createCronJob, deleteCronJob, toggleCronJob, initTaskStore, localNow, getSessionRecord, type TaskExtra } from './task/task-store.js';
 import { writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
@@ -375,8 +375,10 @@ async function main() {
       }
       const entry = sessionManager.getRuntimeEntryBySessionId(sourceSessionId);
       if (entry) return poolTarget(entry);
-      // Pool entry dead — try revive via workspace
-      const revived = await tryReviveWorkspace(workspace);
+      // Pool entry dead — revive the concrete source session first.  Falling
+      // back to workspace default would make callbacks appear in a different
+      // Web session when multiple sessions exist in one workspace.
+      const revived = await tryReviveSession(sourceSessionId);
       if (revived) return poolTarget(revived);
     }
 
@@ -399,6 +401,37 @@ async function main() {
     return mainTarget();
   }
 
+  async function resolveCronTarget(job: { source_session_id?: string | null; workspace?: string | null }): Promise<{
+    chatId: string | null;
+    isWeb: boolean;
+    webLabel: string | null;
+    sessionId: string | null;
+    notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
+    sendCronMessage: (msg: string) => Promise<void>;
+  }> {
+    const sourceSessionId = job.source_session_id?.trim() || null;
+    const sourceRecord = sourceSessionId ? getSessionRecord(sourceSessionId) : null;
+    const mainSessionId = director.getStatus().sessionId ?? null;
+
+    if (sourceSessionId && (sourceSessionId === mainSessionId || (sourceRecord && sourceRecord.archived !== 1))) {
+      const sourceTarget = await tryResolveSessionTarget(sourceSessionId);
+      if (sourceTarget) return sourceTarget;
+    }
+
+    const workspace = job.workspace?.trim() || sourceRecord?.workspace || 'main';
+    if (workspace !== 'main') {
+      const defaultSessionId = sessionManager.resolveDefaultSession(workspace);
+      if (defaultSessionId) {
+        const defaultTarget = await tryResolveSessionTarget(defaultSessionId);
+        if (defaultTarget) return defaultTarget;
+      }
+      const revived = await tryReviveWorkspace(workspace);
+      if (revived) return cronPoolTarget(revived);
+    }
+
+    return cronMainTarget();
+  }
+
   function mainTarget(): {
     chatId: string | null;
     isWeb: boolean;
@@ -406,13 +439,24 @@ async function main() {
     notifyDirector: (taskId: string, success: boolean, msgId?: string) => Promise<void>;
   } {
     return {
-      chatId: messaging.getLastChatId(),
+      chatId: null,
       isWeb: false,
       webLabel: null,
       notifyDirector: async (taskId, success, msgId) => {
         if (msgId) await startSystemStreamingReply(msgId);
         await director.notifyTaskDone(taskId, success, msgId);
       },
+    };
+  }
+
+  function cronMainTarget(): ReturnType<typeof mainTarget> & {
+    sessionId: string | null;
+    sendCronMessage: (msg: string) => Promise<void>;
+  } {
+    return {
+      ...mainTarget(),
+      sessionId: director.getStatus().sessionId ?? null,
+      sendCronMessage: async (msg) => { await director.sendCronMessage(msg); },
     };
   }
 
@@ -431,6 +475,36 @@ async function main() {
         await entry.bridge.notifyTaskDone(taskId, success, msgId);
       },
     };
+  }
+
+  function cronPoolTarget(entry: { bridge: SessionBridge; feishuChatId: string; routingKey: string; workspaceName: string }): ReturnType<typeof poolTarget> & {
+    sessionId: string | null;
+    sendCronMessage: (msg: string) => Promise<void>;
+  } {
+    return {
+      ...poolTarget(entry),
+      sessionId: entry.bridge.getStatus().sessionId ?? null,
+      sendCronMessage: async (msg) => { await entry.bridge.sendCronMessage(msg); },
+    };
+  }
+
+  async function tryResolveSessionTarget(sessionId: string): Promise<ReturnType<typeof cronMainTarget> | ReturnType<typeof cronPoolTarget> | null> {
+    if (sessionId === director.getStatus().sessionId) return cronMainTarget();
+    const live = sessionManager.getRuntimeEntryBySessionId(sessionId);
+    if (live) return cronPoolTarget(live);
+    const revived = await tryReviveSession(sessionId);
+    return revived ? cronPoolTarget(revived) : null;
+  }
+
+  async function tryReviveSession(sessionId: string): Promise<{ bridge: SessionBridge; feishuChatId: string; routingKey: string; workspaceName: string } | null> {
+    try {
+      const session = await sessionManager.reviveSession(sessionId, { feishuChatId: 'web-console' });
+      const entry = session?.sessionId ? sessionManager.getRuntimeEntryBySessionId(session.sessionId) : null;
+      if (entry) return entry;
+    } catch (err) {
+      console.warn(`[shell] Failed to revive session "${sessionId}" for callback/cron routing:`, err);
+    }
+    return null;
   }
 
   async function tryReviveWorkspace(workspace: string): Promise<{ bridge: SessionBridge; feishuChatId: string; routingKey: string; workspaceName: string } | null> {
@@ -463,12 +537,49 @@ async function main() {
     });
   }
 
-  function resolveWorkspaceDefaultEntry(workspace: string) {
-    const sessionId = sessionManager.resolveDefaultSession(workspace);
-    if (!sessionId) return null;
-    if (sessionId === director.getStatus().sessionId) return { kind: 'main' as const, sessionId };
-    const entry = sessionManager.getRuntimeEntryBySessionId(sessionId);
-    return entry ? { kind: 'pool' as const, sessionId, entry } : null;
+  function sanitizeWorkspaceName(raw: string | undefined, fallback: string): string {
+    return (raw ?? fallback).replace(/[\/\\:*?"<>|]/g, '_').trim() || fallback;
+  }
+
+  function workspaceFeishuChatKey(workspace: string): string {
+    return `workspace:feishu_chat_id:${workspace}`;
+  }
+
+  function isFeishuGroupChatId(chatId: string | null | undefined): chatId is string {
+    return !!chatId && chatId !== 'web-console' && !chatId.startsWith('web-');
+  }
+
+  function rememberWorkspaceFeishuChat(workspace: string, chatId: string): void {
+    if (!workspace || !isFeishuGroupChatId(chatId)) return;
+    setState(workspaceFeishuChatKey(workspace), { chatId, updatedAt: localNow() });
+  }
+
+  function chatIdFromStateValue(value: unknown): string | null {
+    if (typeof value === 'string' && isFeishuGroupChatId(value)) return value;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const chatId = (value as Record<string, unknown>).chatId;
+    return typeof chatId === 'string' && isFeishuGroupChatId(chatId) ? chatId : null;
+  }
+
+  function resolveWorkspaceFeishuChatId(workspace: string | null | undefined): string | null {
+    const ws = workspace?.trim();
+    if (!ws || ws === 'main') return null;
+
+    const remembered = chatIdFromStateValue(getState<unknown>(workspaceFeishuChatKey(ws)));
+    if (remembered) return remembered;
+
+    const closed = getState<unknown>('pool:closed');
+    if (Array.isArray(closed)) {
+      for (const item of [...closed].reverse()) {
+        if (!item || typeof item !== 'object') continue;
+        const row = item as Record<string, unknown>;
+        if (row.workspaceName !== ws) continue;
+        const chatId = typeof row.feishuChatId === 'string' ? row.feishuChatId : null;
+        if (isFeishuGroupChatId(chatId)) return chatId;
+      }
+    }
+
+    return null;
   }
 
   function codexCallbackFromTask(task: { extra?: TaskExtra | null } | null | undefined): { threadId: string; cwd?: string } | null {
@@ -559,14 +670,17 @@ async function main() {
     if (target.isWeb && target.webLabel) {
       // Web session — broadcast via WebSocket instead of messaging
       sessionManager.emit('web-alert', target.webLabel, notifyMsg);
-    } else if (target.chatId) {
+    }
+    const pushChatId = target.chatId ?? resolveWorkspaceFeishuChatId(task?.workspace);
+    if (pushChatId) {
       try {
-        notifyMsgId = (await messaging.sendMessage(target.chatId, notifyMsg)) ?? undefined;
+        notifyMsgId = (await messaging.sendMessage(pushChatId, notifyMsg)) ?? undefined;
       } catch (err) {
         console.warn('[shell] Failed to send task-completed notification:', err);
       }
     }
-    target.notifyDirector(result.taskId, true, notifyMsgId).catch((err) => {
+    const directorReplyMsgId = target.isWeb ? undefined : notifyMsgId;
+    target.notifyDirector(result.taskId, true, directorReplyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task completion:', err);
     });
     injectTaskCallbackIntoCodexThread(task, true).catch((err) => {
@@ -605,14 +719,17 @@ async function main() {
     if (target.isWeb && target.webLabel) {
       // Web session — broadcast via WebSocket instead of messaging
       sessionManager.emit('web-alert', target.webLabel, failMsg);
-    } else if (target.chatId) {
+    }
+    const pushChatId = target.chatId ?? resolveWorkspaceFeishuChatId(task?.workspace);
+    if (pushChatId) {
       try {
-        notifyMsgId = (await messaging.sendMessage(target.chatId, failMsg)) ?? undefined;
+        notifyMsgId = (await messaging.sendMessage(pushChatId, failMsg)) ?? undefined;
       } catch (err) {
         console.warn('[shell] Failed to send task-failed notification:', err);
       }
     }
-    target.notifyDirector(result.taskId, false, notifyMsgId).catch((err) => {
+    const directorReplyMsgId = target.isWeb ? undefined : notifyMsgId;
+    target.notifyDirector(result.taskId, false, directorReplyMsgId).catch((err) => {
       console.warn('[shell] Failed to notify Director of task failure:', err);
     });
     injectTaskCallbackIntoCodexThread(task, false, result.error).catch((err) => {
@@ -687,7 +804,7 @@ async function main() {
       listEnabledJobs: () => listCronJobs({ enabled: true }),
       executeSpawnRole: async (job) => {
         const workspace = job.workspace || 'main';
-        const defaultEntry = resolveWorkspaceDefaultEntry(workspace);
+        const target = await resolveCronTarget(job);
         const task = createTask({
           type: 'cron',
           role: job.role,
@@ -698,9 +815,9 @@ async function main() {
           timeout_ms: job.timeout_ms ?? undefined,
           extra: { cronJobId: job.id },
           workspace,
-          source_session_id: defaultEntry?.sessionId,
+          source_session_id: target.sessionId ?? undefined,
         });
-        mergeTaskExtra(task.id, { parent_workspace: workspace, parent_session_id: defaultEntry?.sessionId });
+        mergeTaskExtra(task.id, { parent_workspace: workspace, parent_session_id: target.sessionId });
         taskRunner.runTask({ taskId: task.id, role: task.role, agent: task.agent ?? undefined, model: task.extra?.model, prompt: task.prompt, description: task.description, timeoutMs: task.timeout_ms ?? undefined });
         return task.id;
       },
@@ -722,19 +839,11 @@ async function main() {
         const msg = resolveCronMessage(config.director.persona_dir, job.message ?? '', { today, yesterday });
 
         const workspace = job.workspace || 'main';
-        const target = resolveWorkspaceDefaultEntry(workspace);
-        if (target?.kind === 'pool') {
-          await target.entry.bridge.sendCronMessage(msg);
-          return;
+        const target = await resolveCronTarget(job);
+        if (workspace !== 'main' && target.sessionId !== job.source_session_id && !target.sessionId) {
+          console.warn(`[scheduler] Cron job ${job.name} workspace=${workspace} has no session target, falling back to main`);
         }
-        if (target?.kind === 'main') {
-          await director.sendCronMessage(msg);
-          return;
-        }
-        if (workspace !== 'main') {
-          console.warn(`[scheduler] Cron job ${job.name} workspace=${workspace} has no live default session, falling back to main`);
-        }
-        await director.sendCronMessage(msg);
+        await target.sendCronMessage(msg);
       },
       executeShellAction: async (job) => {
         const actionName = job.action_name ?? '';
@@ -797,17 +906,11 @@ async function main() {
         }
       },
       notifyCronFired: (job) => {
-        const workspace = job.workspace || 'main';
-        let targetChatId: string | null = null;
-        const target = resolveWorkspaceDefaultEntry(workspace);
-        if (target?.kind === 'pool') {
-          targetChatId = target.entry.feishuChatId === 'web-console' ? null : target.entry.feishuChatId;
-        }
-        if (!targetChatId) {
-          targetChatId = messaging.getLastChatId();
-        }
+        void (async () => {
+          const target = await resolveCronTarget(job);
+          const targetChatId = resolveWorkspaceFeishuChatId(job.workspace) ?? (target.isWeb ? null : target.chatId);
 
-        if (targetChatId) {
+          if (!targetChatId) return;
           const actionType = job.action_type ?? 'spawn_role';
           const emoji = actionType === 'spawn_role' ? '🚀' : '⏰';
           const parts = [`${emoji} 定时任务「${job.name}」已触发`];
@@ -824,7 +927,7 @@ async function main() {
           messaging.sendMessage(targetChatId, parts.join('\n')).catch((err) => {
             console.warn('[shell] Failed to send cron notification:', err);
           });
-        }
+        })().catch((err) => console.warn('[shell] Failed to resolve cron notification target:', err));
       },
     },
   );
@@ -997,6 +1100,12 @@ async function main() {
     const routingKey = (chatType === 'group')
       ? chatId                                   // 群聊: 按 chatId 路由（一个群一个 Director）
       : undefined;                               // 私聊: 默认 Director
+    const messageWorkspaceName = chatType === 'group'
+      ? sanitizeWorkspaceName(msg.workspaceName, chatId.slice(0, 8))
+      : undefined;
+    if (messageWorkspaceName) {
+      rememberWorkspaceFeishuChat(messageWorkspaceName, chatId);
+    }
 
     // Helper: resolve the target Director/queue for the current message context
     const getTargetEntry = () => routingKey ? sessionManager.runtimeGet(routingKey) : undefined;
@@ -1039,7 +1148,7 @@ async function main() {
       let poolEntry = getTargetEntry();
       if (routingKey && !poolEntry) {
         // Director not active — spin it up first so we can flush
-        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const workspaceName = messageWorkspaceName ?? sanitizeWorkspaceName(msg.workspaceName, chatId.slice(0, 8));
         const agentName = sessionManager.runtimeGetAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
         const session = await sessionManager.getOrCreateForWorkspace(workspaceName, { workspaceName, feishuChatId: chatId, agentName });
@@ -1105,7 +1214,7 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
 
       if (routingKey && chatType === 'group') {
-        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const workspaceName = messageWorkspaceName ?? sanitizeWorkspaceName(msg.workspaceName, chatId.slice(0, 8));
         const currentAgent = sessionManager.runtimeGetAgentName(routingKey)
           ?? sessionManager.runtimeGet(routingKey)?.bridge.getAgentName()
           ?? config.agents.defaults.director
@@ -1209,7 +1318,7 @@ async function main() {
       messaging.addReaction(messageId, 'Typing').catch(() => {});
       let label = 'main';
       if (routingKey && chatType === 'group') {
-        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const workspaceName = messageWorkspaceName ?? sanitizeWorkspaceName(msg.workspaceName, chatId.slice(0, 8));
         const agentName = sessionManager.runtimeGetAgentName(routingKey)
           ?? config.agents.defaults.director ?? 'claude';
         const poolEntry = await sessionManager.resetSession(routingKey, { workspaceName, feishuChatId: chatId, agentName });
@@ -1322,7 +1431,7 @@ async function main() {
     if (routingKey) {
       // 小群/话题群 → workspace default session
       try {
-        const workspaceName = (msg.workspaceName ?? chatId.slice(0, 8)).replace(/[\/\\:*?"<>|]/g, '_').trim() || chatId.slice(0, 8);
+        const workspaceName = messageWorkspaceName ?? sanitizeWorkspaceName(msg.workspaceName, chatId.slice(0, 8));
         const session = await sessionManager.sendToWorkspaceDefaultSession(workspaceName, {
           workspaceName,
           feishuChatId: chatId,

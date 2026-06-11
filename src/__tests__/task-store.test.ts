@@ -438,7 +438,7 @@ describe('task-store', () => {
       expect(job.enabled).toBe(false);
     });
 
-    test('stores workspace and ignores source_director for new cron jobs', () => {
+    test('stores workspace/source_session_id and ignores source_director for new cron jobs', () => {
       const job = createCronJob({
         name: 'test',
         role: 'r',
@@ -446,9 +446,11 @@ describe('task-store', () => {
         prompt: 'p',
         schedule: '* * * * *',
         workspace: 'project-a',
+        source_session_id: 'session-a',
         source_director: 'legacy-label',
       });
       expect(job.workspace).toBe('project-a');
+      expect(job.source_session_id).toBe('session-a');
       expect(job.source_director).toBeNull();
     });
 
@@ -484,6 +486,7 @@ describe('task-store', () => {
 
       const job = getCronJob('C-legacy');
       expect(job?.workspace).toBe('project-a');
+      expect(job?.source_session_id).toBeNull();
       expect(job?.source_director).toBeNull();
     });
 

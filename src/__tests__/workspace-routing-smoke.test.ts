@@ -421,6 +421,7 @@ describe('smoke:workspace-routing', () => {
       prompt: 'verify cron routing',
       schedule: 'every 30m',
       workspace: session.workspace,
+      source_session_id: session.sessionId,
       source_director: 'legacy-label',
     });
 
@@ -428,6 +429,7 @@ describe('smoke:workspace-routing', () => {
     expect(task.workspace).toBe('work-routing');
     expect(task.source_director).toBeNull();
     expect(cron.workspace).toBe('work-routing');
+    expect(cron.source_session_id).toBe(session.sessionId);
     expect(cron.source_director).toBeNull();
     expect(manager.resolveDefaultSession('work-routing')).toBe(session.sessionId);
   });

@@ -38,8 +38,9 @@ describe('persona dynamic tools', () => {
     ]);
   });
 
-  test('creates cron jobs bound to the caller workspace', async () => {
+  test('creates cron jobs bound to the caller workspace and session', async () => {
     let workspace: string | undefined;
+    let sourceSessionId: string | undefined;
     const result = await handlePersonaDynamicToolCall({
       ...baseCall,
       tool: 'create_cron_job',
@@ -55,12 +56,14 @@ describe('persona dynamic tools', () => {
     }, deps({
       createCronJob: (input) => {
         workspace = input.workspace;
+        sourceSessionId = input.source_session_id;
         return { id: 'C-1', ...input, enabled: true, workspace: input.workspace ?? null } as CronJob;
       },
     }));
 
     expect(result.success).toBe(true);
     expect(workspace).toBe('workspace-a');
+    expect(sourceSessionId).toBe('thread-1');
     expect(JSON.parse(result.text).action_type).toBe('director_msg');
   });
 

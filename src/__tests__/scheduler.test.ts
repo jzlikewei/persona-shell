@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { shouldRun, isDailySchedule } from '../task/scheduler.js';
+import { Scheduler, shouldRun, isDailySchedule } from '../task/scheduler.js';
+import type { CronJob } from '../task/task-store.js';
 
 // Helper: create ISO timestamp offset from now by the given milliseconds
 function ago(ms: number): string {
@@ -109,5 +110,101 @@ describe('isDailySchedule', () => {
     expect(isDailySchedule('every 2h')).toBe(false);
     expect(isDailySchedule('daily')).toBe(false);
     expect(isDailySchedule('garbage')).toBe(false);
+  });
+});
+
+describe('Scheduler execution isolation', () => {
+  function cronJob(overrides: Partial<CronJob>): CronJob {
+    return {
+      id: 'C-test',
+      name: 'test',
+      role: 'system',
+      agent: null,
+      description: 'test cron',
+      prompt: 'prompt',
+      schedule: 'every 1m',
+      enabled: true,
+      last_run_at: null,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+      action_type: 'director_msg',
+      message: null,
+      action_name: null,
+      timeout_ms: null,
+      max_retry: 3,
+      source_director: null,
+      workspace: null,
+      source_session_id: null,
+      ...overrides,
+    };
+  }
+
+  test('long shell_action does not block unrelated due director_msg cron', async () => {
+    const events: string[] = [];
+    let releaseShell!: () => void;
+    const shellDone = new Promise<void>((resolve) => { releaseShell = resolve; });
+    const jobs = [
+      cronJob({ id: 'C-shell', name: 'long-shell', action_type: 'shell_action' }),
+      cronJob({ id: 'C-director', name: 'quick-director', action_type: 'director_msg' }),
+    ];
+
+    const scheduler = new Scheduler({ enabled: true, intervalMinutes: 1 }, {
+      listEnabledJobs: () => jobs,
+      isOverlapping: () => false,
+      markJobRun: (jobId) => events.push(`mark:${jobId}`),
+      notifyCronFired: (job) => events.push(`notify:${job.id}`),
+      executeSpawnRole: async () => null,
+      executeDirectorMsg: async (job) => { events.push(`director:${job.id}`); },
+      executeShellAction: async (job) => {
+        events.push(`shell-start:${job.id}`);
+        await shellDone;
+        events.push(`shell-done:${job.id}`);
+      },
+    });
+
+    await (scheduler as unknown as { tick: () => Promise<void> }).tick();
+    await Promise.resolve();
+
+    expect(events).toContain('shell-start:C-shell');
+    expect(events).toContain('director:C-director');
+    expect(events.indexOf('director:C-director')).toBeGreaterThan(events.indexOf('shell-start:C-shell'));
+    expect(events).not.toContain('shell-done:C-shell');
+
+    releaseShell();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toContain('shell-done:C-shell');
+  });
+
+  test('active long-running job is not started twice by later ticks', async () => {
+    const events: string[] = [];
+    let releaseShell!: () => void;
+    const shellDone = new Promise<void>((resolve) => { releaseShell = resolve; });
+    const jobs = [cronJob({ id: 'C-shell', name: 'long-shell', action_type: 'shell_action' })];
+
+    const scheduler = new Scheduler({ enabled: true, intervalMinutes: 1 }, {
+      listEnabledJobs: () => jobs,
+      isOverlapping: () => false,
+      markJobRun: (jobId) => events.push(`mark:${jobId}`),
+      notifyCronFired: (job) => events.push(`notify:${job.id}`),
+      executeSpawnRole: async () => null,
+      executeDirectorMsg: async () => undefined,
+      executeShellAction: async (job) => {
+        events.push(`shell-start:${job.id}`);
+        await shellDone;
+        events.push(`shell-done:${job.id}`);
+      },
+    });
+
+    await (scheduler as unknown as { tick: () => Promise<void> }).tick();
+    await (scheduler as unknown as { tick: () => Promise<void> }).tick();
+    await Promise.resolve();
+
+    expect(events.filter((event) => event === 'shell-start:C-shell')).toHaveLength(1);
+
+    releaseShell();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toContain('shell-done:C-shell');
   });
 });

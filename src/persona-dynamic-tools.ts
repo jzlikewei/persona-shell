@@ -248,6 +248,7 @@ export async function handlePersonaDynamicToolCall(
         timeout_ms: recordToNumber(args.timeout_ms),
         max_retry: recordToNumber(args.max_retry),
         workspace: call.workspace,
+        source_session_id: call.sourceSessionId ?? undefined,
       });
       return { success: true, text: JSON.stringify(job, null, 2) };
     }

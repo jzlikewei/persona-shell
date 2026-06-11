@@ -7,7 +7,7 @@ delete process.env.CODEX_THREAD_ID;
 delete process.env.CODEX_SESSION_ID;
 delete process.env.PERSONA_SESSION_FILE;
 
-const { buildCreateTaskRequest, buildPersonaDelegateTaskRequest } = await import('../task/task-mcp-server.js');
+const { buildCreateTaskRequest, buildCreateCronJobRequest, buildPersonaDelegateTaskRequest } = await import('../task/task-mcp-server.js');
 
 describe('task-mcp-server task source metadata', () => {
   test('create_task prefers Codex per-turn thread metadata over static MCP env session id', () => {
@@ -82,5 +82,25 @@ describe('task-mcp-server task source metadata', () => {
         cwd: process.env.PWD,
       },
     });
+  });
+
+  test('create_cron_job carries the caller session id for tick routing', () => {
+    const request = buildCreateCronJobRequest({
+      name: 'tick',
+      role: 'system',
+      description: 'cron tick',
+      prompt: 'tick',
+      schedule: 'every 15m',
+      action_type: 'director_msg',
+      message: 'hello',
+      _meta: {
+        'x-codex-turn-metadata': {
+          thread_id: 'codex-thread-current',
+        },
+      },
+    });
+
+    expect(request.workspace).toBe('workspace-a');
+    expect(request.source_session_id).toBe('codex-thread-current');
   });
 });

@@ -31,6 +31,15 @@ export class Scheduler {
   private ticking: boolean = false;
   /** Track consecutive spawn failures per job to apply backoff */
   private failCount = new Map<string, number>();
+  /**
+   * Jobs currently executing.
+   *
+   * Scheduler ticks must stay short: a long shell_action (for example a
+   * production batch script) must not block unrelated cron jobs from being
+   * scanned. Per-job active state preserves the no-overlap guarantee without
+   * turning the whole scheduler into a single global lock.
+   */
+  private activeRuns = new Set<string>();
   private static readonly MAX_FAIL_BACKOFF_TICKS = 30; // max ~30 minutes between retries
 
   constructor(config: SchedulerConfig, callbacks: SchedulerCallbacks) {
@@ -86,71 +95,76 @@ export class Scheduler {
       for (const job of jobs) {
         if (!shouldRun(job.schedule, job.last_run_at)) continue;
 
-        const actionType = job.action_type ?? 'spawn_role';
-
         // Universal overlap check: skip if previous run of this job is still active.
         // Don't markJobRun here — let shouldRun() re-evaluate on the next tick.
         // This ensures daily jobs aren't silently swallowed when overlapping.
-        if (this.callbacks.isOverlapping(job.id, job.role)) {
+        if (this.activeRuns.has(job.id) || this.callbacks.isOverlapping(job.id, job.role)) {
           console.log(`[scheduler] Skipping ${job.name}: previous run still active`);
           continue;
         }
 
-        try {
-          switch (actionType) {
-            case 'spawn_role': {
-              // Exponential backoff on consecutive spawn failures:
-              // skip ticks based on 2^failCount (capped at MAX_FAIL_BACKOFF_TICKS).
-              const fails = this.failCount.get(job.id) ?? 0;
-              if (fails > 0) {
-                const backoffTicks = Math.min(2 ** fails, Scheduler.MAX_FAIL_BACKOFF_TICKS);
-                // Use lastTickTime modulo to decide whether to skip this tick
-                const ticksSinceEpoch = Math.floor(Date.now() / TICK_INTERVAL_MS);
-                if (ticksSinceEpoch % backoffTicks !== 0) {
-                  continue; // skip this tick, retry later
-                }
-              }
-
-              this.callbacks.notifyCronFired?.(job);
-              const taskId = await this.callbacks.executeSpawnRole(job);
-              if (taskId) {
-                this.callbacks.markJobRun(job.id);
-                this.failCount.delete(job.id);
-                console.log(`[scheduler] Created task ${taskId} for ${job.name}`);
-              } else {
-                const newFails = fails + 1;
-                this.failCount.set(job.id, newFails);
-                const nextRetryMin = Math.min(2 ** newFails, Scheduler.MAX_FAIL_BACKOFF_TICKS);
-                console.warn(`[scheduler] Spawn failed for ${job.name} (${newFails}x), next retry in ~${nextRetryMin}min`);
-              }
-              break;
-            }
-
-            case 'director_msg': {
-              this.callbacks.notifyCronFired?.(job);
-              this.callbacks.markJobRun(job.id);
-              await this.callbacks.executeDirectorMsg(job);
-              console.log(`[scheduler] Sent director message for ${job.name}`);
-              break;
-            }
-
-            case 'shell_action': {
-              this.callbacks.notifyCronFired?.(job);
-              this.callbacks.markJobRun(job.id);
-              await this.callbacks.executeShellAction(job);
-              console.log(`[scheduler] Executed shell action for ${job.name}`);
-              break;
-            }
-
-            default:
-              console.warn(`[scheduler] Unknown action_type '${actionType}' for ${job.name}`);
-          }
-        } catch (err) {
-          console.error(`[scheduler] Failed to execute ${job.name} (${actionType}):`, err);
-        }
+        this.activeRuns.add(job.id);
+        void this.runDueJob(job);
       }
     } finally {
       this.ticking = false;
+    }
+  }
+
+  private async runDueJob(job: CronJob): Promise<void> {
+    const actionType = job.action_type ?? 'spawn_role';
+
+    try {
+      switch (actionType) {
+        case 'spawn_role': {
+          // Exponential backoff on consecutive spawn failures:
+          // skip ticks based on 2^failCount (capped at MAX_FAIL_BACKOFF_TICKS).
+          const fails = this.failCount.get(job.id) ?? 0;
+          if (fails > 0) {
+            const backoffTicks = Math.min(2 ** fails, Scheduler.MAX_FAIL_BACKOFF_TICKS);
+            // Use current tick modulo to decide whether to skip this tick.
+            const ticksSinceEpoch = Math.floor(Date.now() / TICK_INTERVAL_MS);
+            if (ticksSinceEpoch % backoffTicks !== 0) return;
+          }
+
+          this.callbacks.notifyCronFired?.(job);
+          const taskId = await this.callbacks.executeSpawnRole(job);
+          if (taskId) {
+            this.callbacks.markJobRun(job.id);
+            this.failCount.delete(job.id);
+            console.log(`[scheduler] Created task ${taskId} for ${job.name}`);
+          } else {
+            const newFails = fails + 1;
+            this.failCount.set(job.id, newFails);
+            const nextRetryMin = Math.min(2 ** newFails, Scheduler.MAX_FAIL_BACKOFF_TICKS);
+            console.warn(`[scheduler] Spawn failed for ${job.name} (${newFails}x), next retry in ~${nextRetryMin}min`);
+          }
+          break;
+        }
+
+        case 'director_msg': {
+          this.callbacks.notifyCronFired?.(job);
+          this.callbacks.markJobRun(job.id);
+          await this.callbacks.executeDirectorMsg(job);
+          console.log(`[scheduler] Sent director message for ${job.name}`);
+          break;
+        }
+
+        case 'shell_action': {
+          this.callbacks.notifyCronFired?.(job);
+          this.callbacks.markJobRun(job.id);
+          await this.callbacks.executeShellAction(job);
+          console.log(`[scheduler] Executed shell action for ${job.name}`);
+          break;
+        }
+
+        default:
+          console.warn(`[scheduler] Unknown action_type '${actionType}' for ${job.name}`);
+      }
+    } catch (err) {
+      console.error(`[scheduler] Failed to execute ${job.name} (${actionType}):`, err);
+    } finally {
+      this.activeRuns.delete(job.id);
     }
   }
 }

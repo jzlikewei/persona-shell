@@ -448,6 +448,25 @@ export function buildCreateTaskRequest(args: Record<string, unknown>): Record<st
   };
 }
 
+export function buildCreateCronJobRequest(args: Record<string, unknown>): Record<string, unknown> {
+  const enrichedArgs = withCodexCallbackDefaults(args);
+  return {
+    name: enrichedArgs.name,
+    role: enrichedArgs.role,
+    agent: enrichedArgs.agent,
+    description: enrichedArgs.description,
+    prompt: enrichedArgs.prompt,
+    schedule: enrichedArgs.schedule,
+    action_type: enrichedArgs.action_type,
+    message: enrichedArgs.message,
+    action_name: enrichedArgs.action_name,
+    timeout_ms: enrichedArgs.timeout_ms,
+    max_retry: enrichedArgs.max_retry,
+    workspace: PERSONA_WORKSPACE,
+    source_session_id: inferSourceSessionId(enrichedArgs),
+  };
+}
+
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
   const enrichedArgs = withCodexCallbackDefaults(args);
   switch (name) {
@@ -494,20 +513,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case 'cancel_task':
       return callShell('POST', `/api/tasks/${enrichedArgs.task_id}/cancel`);
     case 'create_cron_job':
-      return callShell('POST', '/api/cron-jobs', {
-        name: enrichedArgs.name,
-        role: enrichedArgs.role,
-        agent: enrichedArgs.agent,
-        description: enrichedArgs.description,
-        prompt: enrichedArgs.prompt,
-        schedule: enrichedArgs.schedule,
-        action_type: enrichedArgs.action_type,
-        message: enrichedArgs.message,
-        action_name: enrichedArgs.action_name,
-        timeout_ms: enrichedArgs.timeout_ms,
-        max_retry: enrichedArgs.max_retry,
-        workspace: PERSONA_WORKSPACE,
-      });
+      return callShell('POST', '/api/cron-jobs', buildCreateCronJobRequest(enrichedArgs));
     case 'list_cron_jobs':
       return callShell('GET', '/api/cron-jobs');
     case 'delete_cron_job':
