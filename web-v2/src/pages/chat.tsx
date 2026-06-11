@@ -24,11 +24,44 @@ function formatTime(ts: string) {
   }
 }
 
-function visibleMessages(messages: ChatMessage[]) {
-  return messages.filter(msg => {
-    if (msg.role === 'system') return false
-    return true
-  })
+/**
+ * Filter and merge messages for display.
+ * Consecutive assistant messages are merged into one bubble so that a
+ * multi-turn "think → tool → think → tool → reply" cycle doesn't produce
+ * a wall of tiny, mostly-empty bubbles.
+ */
+function visibleMessages(messages: ChatMessage[]): ChatMessage[] {
+  const filtered = messages.filter(msg => msg.role !== 'system')
+
+  const merged: ChatMessage[] = []
+  for (const msg of filtered) {
+    const prev = merged[merged.length - 1]
+    if (
+      msg.role === 'assistant' &&
+      prev?.role === 'assistant' &&
+      msg.sessionId === prev.sessionId &&
+      msg.agentLabel === prev.agentLabel
+    ) {
+      // Merge into prev: append non-empty text, concat tools, keep earliest timestamp
+      const prevText = prev.content.trim()
+      const curText = msg.content.trim()
+      const combinedText = prevText && curText
+        ? `${prevText}\n\n${curText}`
+        : prevText || curText
+      prev.content = combinedText
+      if (msg.tools?.length) {
+        prev.tools = [...(prev.tools ?? []), ...msg.tools]
+      }
+      // Keep latest model label if present
+      if (msg.model) prev.model = msg.model
+      // Keep latest workflow if present
+      if (msg.workflow) prev.workflow = msg.workflow
+    } else {
+      // Push a shallow copy so we don't mutate the source array
+      merged.push({ ...msg, tools: msg.tools ? [...msg.tools] : undefined })
+    }
+  }
+  return merged
 }
 
 function FileLink({ path, onClick }: { path: string; onClick: (path: string) => void }) {

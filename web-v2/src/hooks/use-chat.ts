@@ -161,6 +161,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const liveEventMatches = useCallback((data: Record<string, unknown>) => {
     const eventSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : undefined
     const selectedSessionId = sessionIdRef.current
+    if (!selectedSessionId) return false
     if (selectedSessionId && eventSessionId && eventSessionId !== selectedSessionId) {
       return false
     }

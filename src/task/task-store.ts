@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   default_session_id  TEXT,
   cwd                TEXT,
   agent              TEXT,
+  hidden             INTEGER NOT NULL DEFAULT 0,
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL
 )`;
@@ -268,6 +269,7 @@ function openDb(): Database {
   migrateCronJobsTable(db);
   migrateTasksTable(db);
   migrateSessionsTable(db);
+  migrateWorkspacesTable(db);
   return db;
 }
 
@@ -361,6 +363,16 @@ function migrateSessionsTable(db: Database): void {
   }
   if (!existing.has('model')) {
     db.run("ALTER TABLE sessions ADD COLUMN model TEXT");
+  }
+}
+
+/** 安全地为 workspaces 表添加新列 */
+function migrateWorkspacesTable(db: Database): void {
+  const columns = db.query("PRAGMA table_info(workspaces)").all() as Array<{ name: string }>;
+  const existing = new Set(columns.map((c) => c.name));
+
+  if (!existing.has('hidden')) {
+    db.run("ALTER TABLE workspaces ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -823,6 +835,7 @@ export interface Workspace {
   default_session_id: string | null;
   cwd: string | null;
   agent: string | null;
+  hidden: number;
   created_at: string;
   updated_at: string;
 }
@@ -851,7 +864,7 @@ export function listWorkspaces(): Workspace[] {
 }
 
 export function updateWorkspace(name: string, patch: Partial<Omit<Workspace, 'name' | 'created_at'>>): Workspace | null {
-  const allowed = ['default_session_id', 'cwd', 'agent'] as const;
+  const allowed = ['default_session_id', 'cwd', 'agent', 'hidden'] as const;
   const sets: string[] = [];
   const params: SQLQueryBindings[] = [];
 

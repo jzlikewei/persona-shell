@@ -3,6 +3,7 @@ import { createWorkspace, getWorkspace, listWorkspaces, updateWorkspace, setDefa
 interface LegacyWorkspaceConfig {
   cwd?: string;
   agent?: string;
+  hidden?: boolean;
 }
 
 export class WorkspaceRegistry {
@@ -48,10 +49,12 @@ export class WorkspaceRegistry {
       const existing = getWorkspace(name);
       if (!existing) {
         createWorkspace(name, { cwd: legacy.cwd, agent: legacy.agent });
+        if (legacy.hidden) updateWorkspace(name, { hidden: 1 });
         migrated++;
       } else {
         if (legacy.cwd && !existing.cwd) updateWorkspace(name, { cwd: legacy.cwd });
         if (legacy.agent && !existing.agent) updateWorkspace(name, { agent: legacy.agent });
+        if (legacy.hidden && !existing.hidden) updateWorkspace(name, { hidden: 1 });
       }
       deleteState(key);
     }

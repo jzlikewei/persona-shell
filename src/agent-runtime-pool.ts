@@ -267,7 +267,7 @@ export class AgentRuntimePool extends EventEmitter {
 
     const label = routingKeyToLabel(routingKey);
     const name = opts.workspaceName ?? routingKey.slice(0, 8);
-    const workspaceCwd = getWorkspace(name)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${name}`)?.cwd;
+    const workspaceCwd = getWorkspace(name)?.cwd ?? undefined;
     console.log(`[pool] Creating session bridge for group "${name}" (label=${label}${workspaceCwd ? `, cwd=${workspaceCwd}` : ''})`);
 
     const bridge = new SessionBridge({
@@ -892,7 +892,7 @@ export class AgentRuntimePool extends EventEmitter {
     let restored = 0;
 
     for (const item of saved) {
-      const workspaceCwd = getWorkspace(item.workspaceName)?.cwd ?? getState<{ cwd?: string }>(`workspace:config:${item.workspaceName}`)?.cwd;
+      const workspaceCwd = getWorkspace(item.workspaceName)?.cwd ?? undefined;
       const bridge = new SessionBridge({
         agents: this.getFreshAgentsConfig(),
         agentsProvider: () => this.getFreshAgentsConfig(),

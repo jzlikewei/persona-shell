@@ -13,7 +13,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, buildTaskParentMetadata, type TaskExtra } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, updateWorkspace as updateWorkspaceInDb, createWorkspace as createWorkspaceInDb, buildTaskParentMetadata, type TaskExtra } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
@@ -51,19 +51,8 @@ interface ConsoleWorkspace {
   hidden?: boolean;
 }
 
-interface WorkspaceConfig {
-  cwd?: string;
-  agent?: string;
-  hidden?: boolean;
-}
-
-function getWorkspaceConfig(name: string): WorkspaceConfig | null {
-  return getState<WorkspaceConfig>(`workspace:config:${name}`);
-}
-
-function setWorkspaceConfig(name: string, wsConfig: WorkspaceConfig): void {
-  setState(`workspace:config:${name}`, wsConfig);
-}
+// WorkspaceConfig KV helpers removed — SSOT is now the DB workspaces table.
+// Use getWorkspace / updateWorkspaceInDb / createWorkspaceInDb from task-store.
 
 function canonicalConsoleWorkspaceName(name: string | null | undefined): string | null {
   if (typeof name !== 'string') return null;
@@ -386,14 +375,14 @@ export function startConsole(
       };
     };
 
-    const mainWorkspaceConfig = getWorkspaceConfig('main');
+    const mainDbWs = getWorkspace('main');
     const workspaces: ConsoleWorkspace[] = [{
       id: 'main',
       name: 'Main',
       path: join(cfg.director.persona_dir, 'daily', 'state.md'),
       source: 'main',
-      cwd: mainWorkspaceConfig?.cwd,
-      agent: mainWorkspaceConfig?.agent,
+      cwd: mainDbWs?.cwd ?? undefined,
+      agent: mainDbWs?.agent ?? undefined,
       sessionId: mainStatus.sessionId ?? null,
       sessionName: mainStatus.sessionName ?? null,
       alive: mainStatus.alive,
@@ -411,15 +400,15 @@ export function startConsole(
           // Skip legacy {hash}-{name} directories when the migrated {name} directory exists
           const legacyMatch = name.match(/^[0-9a-f]{8}-(.+)$/i);
           if (legacyMatch && nameSet.has(legacyMatch[1])) continue;
-          const wsConfig = getWorkspaceConfig(name);
-          const hidden = wsConfig?.hidden ?? (hasAnySessionHistory(name) ? false : true);
+          const dbWs = getWorkspace(name);
+          const hidden = dbWs?.hidden ? true : (hasAnySessionHistory(name) ? false : true);
           workspaces.push({
             id: `memory-${name}`,
             name,
             path: join(workspacePath, 'context.md'),
             source: 'memory',
-            cwd: wsConfig?.cwd,
-            agent: wsConfig?.agent,
+            cwd: dbWs?.cwd ?? undefined,
+            agent: dbWs?.agent ?? undefined,
             hidden,
             ...sessionInfoForWorkspace(name),
             ...localHistoryForWorkspace(name),
@@ -488,11 +477,15 @@ export function startConsole(
       writeFileSync(contextPath, '');
     }
 
-    const wsConfig: WorkspaceConfig = {};
-    if (resolvedCwd) wsConfig.cwd = resolvedCwd;
-    if (agent && typeof agent === 'string') wsConfig.agent = agent.trim();
-    if (Object.keys(wsConfig).length > 0) {
-      setWorkspaceConfig(name, wsConfig);
+    const trimmedAgent = agent && typeof agent === 'string' ? agent.trim() : undefined;
+    // SSOT: write directly to DB workspaces table
+    const dbOpts: { cwd?: string; agent?: string } = {};
+    if (resolvedCwd) dbOpts.cwd = resolvedCwd;
+    if (trimmedAgent) dbOpts.agent = trimmedAgent;
+    if (workspaceRegistry) {
+      workspaceRegistry.getOrCreate(name, dbOpts);
+    } else {
+      createWorkspaceInDb(name, dbOpts);
     }
 
     return {
@@ -501,7 +494,7 @@ export function startConsole(
       path: contextPath,
       source: 'memory',
       cwd: resolvedCwd,
-      agent: wsConfig.agent,
+      agent: trimmedAgent,
     };
   }
 
@@ -3189,11 +3182,8 @@ export function startConsole(
                 }
                 renameSync(sourcePath, targetPath);
                 renameWorkspaceInDb(sourceName, wsName);
-                const legacyConfig = getWorkspaceConfig(sourceName);
-                if (legacyConfig) {
-                  deleteState(`workspace:config:${sourceName}`);
-                  setWorkspaceConfig(wsName, legacyConfig);
-                }
+                // Clean up legacy KV entry if it exists
+                deleteState(`workspace:config:${sourceName}`);
               }
             }
             let resolvedCwd: string | undefined;
@@ -3203,11 +3193,20 @@ export function startConsole(
                 return Response.json({ error: `Invalid cwd: directory does not exist: ${resolvedCwd}` }, { status: 400 });
               }
             }
-            const existing = getWorkspaceConfig(wsName);
-            const wsConfig: WorkspaceConfig = { ...existing, cwd: resolvedCwd };
-            if (body.agent !== undefined) wsConfig.agent = body.agent?.trim() || undefined;
-            setWorkspaceConfig(wsName, wsConfig);
-            return Response.json({ ok: true, name: wsName, config: wsConfig });
+            // SSOT: write directly to DB workspaces table
+            const dbPatch: { cwd?: string | null; agent?: string | null } = {};
+            if (body.cwd !== undefined) dbPatch.cwd = resolvedCwd ?? null;  // allow clearing
+            if (body.agent !== undefined) dbPatch.agent = body.agent?.trim() || null;
+            const dbWs = getWorkspace(wsName);
+            if (dbWs) {
+              updateWorkspaceInDb(wsName, dbPatch);
+            } else {
+              createWorkspaceInDb(wsName, { cwd: resolvedCwd, agent: dbPatch.agent ?? undefined });
+            }
+            // Clean up legacy KV entry
+            deleteState(`workspace:config:${wsName}`);
+            const updated = getWorkspace(wsName);
+            return Response.json({ ok: true, name: wsName, config: { cwd: updated?.cwd, agent: updated?.agent } });
           }
           if (url.pathname === '/api/workspaces/visibility' && req.method === 'PUT') {
             const body = await req.json().catch(() => ({})) as { name?: string; hidden?: boolean };
@@ -3215,10 +3214,17 @@ export function startConsole(
             if (!wsName) {
               return Response.json({ error: 'Workspace name is required' }, { status: 400 });
             }
-            const existing = getWorkspaceConfig(wsName);
-            const wsConfig: WorkspaceConfig = { ...existing, hidden: !!body.hidden };
-            setWorkspaceConfig(wsName, wsConfig);
-            return Response.json({ ok: true, name: wsName, hidden: wsConfig.hidden });
+            const hiddenVal = body.hidden ? 1 : 0;
+            const dbWs = getWorkspace(wsName);
+            if (dbWs) {
+              updateWorkspaceInDb(wsName, { hidden: hiddenVal });
+            } else {
+              createWorkspaceInDb(wsName);
+              updateWorkspaceInDb(wsName, { hidden: hiddenVal });
+            }
+            // Clean up legacy KV
+            deleteState(`workspace:config:${wsName}`);
+            return Response.json({ ok: true, name: wsName, hidden: !!body.hidden });
           }
           if (url.pathname === '/api/browse' && req.method === 'GET') {
             const rawPath = url.searchParams.get('path') || '~';
