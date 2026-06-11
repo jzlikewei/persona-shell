@@ -761,13 +761,14 @@ export class AgentRuntimePool extends EventEmitter {
       this.idleTimer = null;
     }
     const keys = [...this.entries.keys()];
-    for (const key of keys) {
+    // Detach all Directors in parallel for faster shutdown
+    await Promise.allSettled(keys.map(async (key) => {
       const entry = this.entries.get(key);
       if (entry) {
         console.log(`[pool] Detaching Director for group "${entry.workspaceName}" (keeping alive for reconnect)`);
         await entry.bridge.detach();
       }
-    }
+    }));
     // Keep entries in persisted state so restoreEntries() can reconnect
     console.log(`[pool] Detached ${keys.length} group Director(s) — orphans preserved for reconnect`);
   }

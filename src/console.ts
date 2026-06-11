@@ -2816,9 +2816,17 @@ export function startConsole(
             }
             broadcastWs(JSON.stringify({ type: 'chat_reply', sessionId: resolveSessionId('main'), messageId: null, text: isForce ? 'Shell 正在强制重启...' : 'Shell 正在重启...' }));
             writeAuditEntry('shell.restart', true, { source: 'web', force: isForce });
-            if (sessionManager) await sessionManager.detachAll();
-            await director.shutdown();
-            setTimeout(() => process.exit(0), 500);
+            // Return response immediately, then shut down asynchronously
+            // so the UI doesn't hang waiting for detach/shutdown to complete.
+            setTimeout(async () => {
+              try {
+                if (sessionManager) await sessionManager.detachAll();
+                await director.shutdown();
+              } catch (err) {
+                console.warn('[shell] Error during restart shutdown:', err);
+              }
+              process.exit(0);
+            }, 100);
             return Response.json({ ok: true, message: 'restarting' });
           }
 
