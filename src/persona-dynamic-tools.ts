@@ -156,6 +156,14 @@ function dynamicToolArgs(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function cronJobBelongsToWorkspace(job: CronJob, workspace: string): boolean {
+  return (job.workspace ?? 'main') === workspace;
+}
+
+function canAccessCronJob(deps: PersonaDynamicToolDeps, id: string, workspace: string): boolean {
+  return deps.listCronJobs().some((job) => job.id === id && cronJobBelongsToWorkspace(job, workspace));
+}
+
 export async function handlePersonaDynamicToolCall(
   call: PersonaDynamicToolCall,
   deps: PersonaDynamicToolDeps,
@@ -244,12 +252,13 @@ export async function handlePersonaDynamicToolCall(
       return { success: true, text: JSON.stringify(job, null, 2) };
     }
     if (call.tool === 'list_cron_jobs') {
-      const jobs = deps.listCronJobs().filter((job) => (job.workspace ?? 'main') === call.workspace);
+      const jobs = deps.listCronJobs().filter((job) => cronJobBelongsToWorkspace(job, call.workspace));
       return { success: true, text: JSON.stringify(jobs, null, 2) };
     }
     if (call.tool === 'delete_cron_job') {
       const id = recordToString(args.id);
       if (!id) return { success: false, text: 'id is required' };
+      if (!canAccessCronJob(deps, id, call.workspace)) return { success: false, text: `Cron job not found: ${id}` };
       const ok = deps.deleteCronJob(id);
       if (!ok) return { success: false, text: `Cron job not found: ${id}` };
       return { success: true, text: JSON.stringify({ ok, id }, null, 2) };
@@ -257,6 +266,7 @@ export async function handlePersonaDynamicToolCall(
     if (call.tool === 'toggle_cron_job') {
       const id = recordToString(args.id);
       if (!id) return { success: false, text: 'id is required' };
+      if (!canAccessCronJob(deps, id, call.workspace)) return { success: false, text: `Cron job not found: ${id}` };
       const job = deps.toggleCronJob(id);
       if (!job) return { success: false, text: `Cron job not found: ${id}` };
       return { success: true, text: JSON.stringify(job, null, 2) };

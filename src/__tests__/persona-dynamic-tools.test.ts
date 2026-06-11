@@ -80,4 +80,71 @@ describe('persona dynamic tools', () => {
     expect(result.success).toBe(true);
     expect(JSON.parse(result.text).map((job: { id: string }) => job.id)).toEqual(['C-1']);
   });
+
+  test('deletes only cron jobs visible in the caller workspace', async () => {
+    const deletedIds: string[] = [];
+    const result = await handlePersonaDynamicToolCall({
+      ...baseCall,
+      tool: 'delete_cron_job',
+      arguments: { id: 'C-1' },
+    }, deps({
+      listCronJobs: () => [
+        { id: 'C-1', name: 'a', workspace: 'workspace-a' },
+        { id: 'C-2', name: 'b', workspace: 'workspace-b' },
+      ] as CronJob[],
+      deleteCronJob: (id) => {
+        deletedIds.push(id);
+        return true;
+      },
+    }));
+
+    expect(result.success).toBe(true);
+    expect(deletedIds).toEqual(['C-1']);
+
+    const denied = await handlePersonaDynamicToolCall({
+      ...baseCall,
+      tool: 'delete_cron_job',
+      arguments: { id: 'C-2' },
+    }, deps({
+      listCronJobs: () => [
+        { id: 'C-2', name: 'b', workspace: 'workspace-b' },
+      ] as CronJob[],
+      deleteCronJob: () => {
+        throw new Error('should not delete cross-workspace cron');
+      },
+    }));
+
+    expect(denied).toEqual({ success: false, text: 'Cron job not found: C-2' });
+  });
+
+  test('toggles only cron jobs visible in the caller workspace', async () => {
+    const result = await handlePersonaDynamicToolCall({
+      ...baseCall,
+      tool: 'toggle_cron_job',
+      arguments: { id: 'C-1' },
+    }, deps({
+      listCronJobs: () => [
+        { id: 'C-1', name: 'a', workspace: 'workspace-a' },
+      ] as CronJob[],
+      toggleCronJob: (id) => ({ id, name: 'a', enabled: false, workspace: 'workspace-a' }) as CronJob,
+    }));
+
+    expect(result.success).toBe(true);
+    expect(JSON.parse(result.text)).toMatchObject({ id: 'C-1', enabled: false });
+
+    const denied = await handlePersonaDynamicToolCall({
+      ...baseCall,
+      tool: 'toggle_cron_job',
+      arguments: { id: 'C-2' },
+    }, deps({
+      listCronJobs: () => [
+        { id: 'C-2', name: 'b', workspace: 'workspace-b' },
+      ] as CronJob[],
+      toggleCronJob: () => {
+        throw new Error('should not toggle cross-workspace cron');
+      },
+    }));
+
+    expect(denied).toEqual({ success: false, text: 'Cron job not found: C-2' });
+  });
 });

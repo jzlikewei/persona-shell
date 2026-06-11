@@ -147,7 +147,7 @@ agents:
 
 | 值 | 行为 |
 |------|------|
-| `dynamic` | （默认）通过 Codex App Server experimental `dynamicTools` 注册 `create_task` / `list_tasks` / `get_task`，由 Shell runtime 直接处理工具调用并自动绑定当前 `threadId` 作为 `source_session_id` |
+| `dynamic` | （默认）通过 Codex App Server experimental `dynamicTools` 注册 task/cron 工具，由 Shell runtime 直接处理工具调用并自动绑定当前 `threadId` 作为 `source_session_id` |
 | `mcp` | 兼容模式：通过 MCP 协议暴露工具给 Codex，Codex 可调用 Persona 注册的 MCP tools |
 | `cli` | 通过 CLI 子命令方式调用工具，不走 MCP 协议 |
 | `off` | 不向 Codex 暴露任何外部工具 |
@@ -161,7 +161,7 @@ Codex 不支持 Claude Code 的 `--plugin-dir` / `--append-system-prompt-file` �
 - **App Server instructions**：`thread/start` 注入 `baseInstructions` / `developerInstructions`，其中 `soul.md`、`meta.md`、`personas/{role}.md`、provider `system_prompt_file`，以及当前 workspace 的 `context.md` 在启动线程时进入 Codex instruction 层。`context.md` 同时保留为可写的持久工作记忆文件。
 - **Skills 发现**：当前不通过 `codex app-server` 启动参数显式传 `skills_dir`。Codex App Server 依赖 Codex 原生 skill 发现机制读取当前工作根下的 `.agents/skills`，因此身份仓库必须保持 `~/.persona/.agents/skills -> ~/.persona/skills` 软链接。Workspace Director 若配置了 provider/workspace `cwd`，仍建议保留该软链接作为 Persona skills 的统一入口；变更 skill 后用 flush 开新线程加载最新资产。
 - **Codex 原生配置**：Codex harness 支持通过 `model_instructions_file` / `developer_instructions` 等配置读取 instruction 内容；Persona Shell 已下线 Tenbase 时代的手工拼 prompt 方案。
-- **任务系统**：Codex App Server 默认 `mcp_mode: dynamic`，直接用 Codex experimental `dynamicTools` 暴露任务工具；这样 Agent 不需要知道 session UUID，Shell runtime 在收到 `item/tool/call` 时用请求里的 `threadId` 补 `source_session_id`。需要原生 MCP 兼容时可设 `mcp_mode: mcp`，关闭则设 `off`。
+- **任务系统**：Codex App Server 默认 `mcp_mode: dynamic`，直接用 Codex experimental `dynamicTools` 暴露 task/cron 工具；这样 Agent 不需要知道 session UUID，Shell runtime 在收到 `item/tool/call` 时用请求里的 `threadId` 补 `source_session_id`。需要原生 MCP 兼容时可设 `mcp_mode: mcp`，关闭则设 `off`。
 
 ### MCP 参数
 
@@ -196,9 +196,17 @@ Codex 输出也是逐行 JSON，但事件类型不同：
 | 后续消息 | `codex exec resume {thread_id}` 恢复上下文 |
 | FLUSH | 清除 `thread_id` → 下次 spawn 新 thread |
 
-### Dynamic task tools（默认）
+### Dynamic persona tools（默认）
 
-Codex 默认使用 `mcp_mode: dynamic`：Shell 在 `thread/start` 注册 `create_task` / `list_tasks` / `get_task`，Codex 调用工具时 App Server 发 `item/tool/call` 给 Shell runtime。该请求自带 `threadId`，Shell 用它作为 `source_session_id`，因此 Agent 不需要知道 session UUID。
+Codex 默认使用 `mcp_mode: dynamic`：Shell 在 `thread/start` 注册 persona task/cron 工具，Codex 调用工具时 App Server 发 `item/tool/call` 给 Shell runtime。该请求自带 `threadId`，Shell 用它作为 `source_session_id`，因此 Agent 不需要知道 session UUID，也不经 HTTP token 认证链路。
+
+当前 dynamic 工具清单：
+
+| 工具 | 说明 |
+|------|------|
+| `create_task` / `list_tasks` / `get_task` | 创建、列出、查询后台任务 |
+| `create_cron_job` / `list_cron_jobs` | 创建、列出当前 workspace 的 cron jobs |
+| `delete_cron_job` / `toggle_cron_job` | 删除、启停当前 workspace 可见的 cron job |
 
 ### CLI 工具注入（兼容）
 
@@ -255,7 +263,7 @@ agents:
 | Skills | 通过 Codex 原生 `.agents/skills` 发现；初始化脚本维护 `~/.persona/.agents/skills -> ../skills` |
 | session 持久化 | 保存 `thread.id`，重启 runtime 后优先 `thread/resume` |
 | Codex app 可见性 | thread 写入 `threadSource=user`，并将 `sessionName` 同步到 `thread/name/set` |
-| Dynamic task tools | `mcp_mode: dynamic` 时在 `thread/start` 注册 `create_task` / `list_tasks` / `get_task`，runtime 响应 `item/tool/call` |
+| Dynamic persona tools | `mcp_mode: dynamic` 时在 `thread/start` 注册 task/cron 工具，runtime 响应 `item/tool/call` |
 | 中断 | 优先 `turn/interrupt`，失败时退回进程信号 |
 
 注意事项：

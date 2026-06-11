@@ -17,13 +17,15 @@
 
 ## 核心能力
 
-### 后台任务（MCP: create_task）
+### 后台任务（Dynamic/MCP: create_task）
 派发子角色任务，不阻塞当前对话。指定 role、prompt、description，可选 agent 后端。产出写入 `outbox/YYYY-MM-DD/`，完成后回调。
 
-> 任务系统可用性判断：不要自行用 `curl localhost:3000`、`launchctl` 等宿主机探针做诊断。Director 所在运行环境可能与宿主机隔离；判断后台任务链路时，直接调用 MCP `create_task` / `list_tasks`，以工具结果为准。
+> 任务系统可用性判断：不要自行用 `curl localhost:3000`、`launchctl` 等宿主机探针做诊断。Director 所在运行环境可能与宿主机隔离；判断后台任务链路时，直接调用可见的 `create_task` / `list_tasks` 工具，以工具结果为准。Codex 默认 dynamic tools 由 Shell runtime 直接处理，不经 HTTP token；MCP/CLI 是兼容路径。
 
-### 定时任务（MCP: create_cron_job / list_cron_jobs / delete_cron_job / toggle_cron_job）
+### 定时任务（Dynamic/MCP: create_cron_job / list_cron_jobs / delete_cron_job / toggle_cron_job）
 创建定时触发的任务。调度格式：`every 30m` / `every 2h` / `daily 09:00`。三种动作：spawn_role、director_msg、shell_action。
+
+> 如果定时任务工具返回 401，说明当前会话大概率走了 MCP/CLI 兼容路径且 `SHELL_TOKEN` 环境过期；按运维手册检查 `~/.persona/.mcp.json`，通常需要 `/shell-restart` 后对会话 `/flush`。
 
 ### 发送附件（MCP: send_attachment）
 发送图片或文件给用户。传入本地文件路径（/tmp/ 或 outbox/ 下），Shell 自动处理上传和投递到正确的对话。

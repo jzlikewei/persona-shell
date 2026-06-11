@@ -106,6 +106,17 @@ Pool runtime entry / 历史文档中的 “Pool Director” 只是 DirectorPool 
 1. 日常会话、任务结果、文件产物:先看 `/`。
 2. 运行时状态、队列、Cron、日志、配置、安全审批:走 CLI、日志或后端 API;确认有高频场景后再迁移到 web-v2。
 
+### Task/Cron 工具 401
+
+Codex 默认 `mcp_mode: dynamic` 时，task/cron 工具由 Shell runtime 直接处理 `item/tool/call`，不经 HTTP token 认证链路。若 `create_cron_job` / `list_cron_jobs` 等工具返回 401，通常说明当前会话正在走 MCP/CLI 兼容路径，且 MCP server 环境里的 `SHELL_TOKEN` 缺失或已过期。
+
+排查顺序:
+
+1. 检查 `~/.persona/config.yaml` 是否配置了 `console.token`；配置后 HTTP API、WebSocket、MCP HTTP 代理都需要同一个 token。
+2. 检查 `~/.persona/.mcp.json` 的 `persona-tasks.env` 是否包含当前 `SHELL_PORT` 和 `SHELL_TOKEN`。不要把 token 打到公开日志里。
+3. 如果 `.mcp.json` 不一致，执行 `/shell-restart` 让 Shell 重写 MCP 配置，再对受影响会话执行 `/flush` 让 Director 重新加载工具。
+4. Codex 会话优先保持 `mcp_mode: dynamic`；只有需要原生 MCP 兼容时才切到 `mcp`。
+
 ## 生命周期操作对比
 
 | 操作 | 进程 | Session | 保存上下文 | 重新加载配置 | 适用场景 |
