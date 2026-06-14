@@ -20,6 +20,16 @@ interface TreeEntry {
   children?: TreeEntry[]
 }
 
+interface TreeResponse {
+  root: string
+  dir?: string
+  tree: TreeEntry[]
+}
+
+const FILES_CACHE_TTL_MS = 15_000
+const dirCache = new Map<string, { at: number; data: TreeResponse }>()
+const fileCache = new Map<string, { at: number; content: string }>()
+
 function isMarkdown(name: string) {
   return /\.(md|mdx|markdown)$/i.test(name)
 }
@@ -41,23 +51,37 @@ function TreeNode({
   depth,
   selectedPath,
   onSelect,
+  onLoadChildren,
+  loadingDirs,
 }: {
   entry: TreeEntry
   depth: number
   selectedPath: string | null
   onSelect: (path: string) => void
+  onLoadChildren: (entry: TreeEntry) => void
+  loadingDirs: Set<string>
 }) {
-  const [open, setOpen] = useState(depth < 1)
+  const [open, setOpen] = useState(false)
 
   if (entry.type === 'dir') {
+    const loading = loadingDirs.has(entry.path)
+    const hasLoadedChildren = Array.isArray(entry.children)
     return (
       <div>
         <button
-          onClick={() => setOpen(!open)}
+          onClick={() => {
+            const nextOpen = !open
+            setOpen(nextOpen)
+            if (nextOpen && !hasLoadedChildren) onLoadChildren(entry)
+          }}
           className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left hover:bg-[#313244] transition-colors"
           style={{ paddingLeft: depth * 12 + 4 }}
         >
-          <ChevronRight className={cn('size-3 text-[#6c7086] transition-transform', open && 'rotate-90')} />
+          {loading ? (
+            <Loader2 className="size-3 animate-spin text-[#6c7086]" />
+          ) : (
+            <ChevronRight className={cn('size-3 text-[#6c7086] transition-transform', open && 'rotate-90')} />
+          )}
           {open ? <FolderOpen className="size-3.5 text-[#f9e2af]" /> : <Folder className="size-3.5 text-[#f9e2af]" />}
           <span className="truncate text-[12px] font-medium text-[#cdd6f4]">{entry.name}</span>
         </button>
@@ -68,6 +92,8 @@ function TreeNode({
             depth={depth + 1}
             selectedPath={selectedPath}
             onSelect={onSelect}
+            onLoadChildren={onLoadChildren}
+            loadingDirs={loadingDirs}
           />
         ))}
       </div>
@@ -90,7 +116,7 @@ function TreeNode({
   )
 }
 
-function FileContent({ path }: { path: string }) {
+function FileContent({ path, root }: { path: string; root: string }) {
   const { get } = useApi()
   const [content, setContent] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -98,15 +124,25 @@ function FileContent({ path }: { path: string }) {
 
   useEffect(() => {
     let cancelled = false
+    const cached = fileCache.get(path)
+    if (cached && Date.now() - cached.at < FILES_CACHE_TTL_MS) {
+      setContent(cached.content)
+      setLoading(false)
+      setError(null)
+      return () => { cancelled = true }
+    }
     setLoading(true)
     setError(null)
     setContent(null)
-    get<{ content: string }>('/api/files/read', { path })
-      .then(data => { if (!cancelled) setContent(data.content) })
+    get<{ content: string }>('/api/files/read', { root, path })
+      .then(data => {
+        fileCache.set(path, { at: Date.now(), content: data.content })
+        if (!cancelled) setContent(data.content)
+      })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [path, get])
+  }, [path, root, get])
 
   if (loading) {
     return (
@@ -144,24 +180,56 @@ export function FilesPage() {
   const [tree, setTree] = useState<TreeEntry[]>([])
   const [root, setRoot] = useState('')
   const [loading, setLoading] = useState(true)
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(() => new Set())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
 
   const projectPath = activeWorkspace?.cwd ?? activeProject?.path
 
+  const fetchDir = useCallback(async (dir: string): Promise<TreeResponse> => {
+    if (!projectPath) throw new Error('Project path is not set')
+    const cacheKey = `${projectPath}\0${dir}`
+    const cached = dirCache.get(cacheKey)
+    if (cached && Date.now() - cached.at < FILES_CACHE_TTL_MS) return cached.data
+    const data = await get<TreeResponse>('/api/files/tree', { root: projectPath, dir, depth: '0' })
+    dirCache.set(cacheKey, { at: Date.now(), data })
+    return data
+  }, [get, projectPath])
+
   const fetchTree = useCallback(() => {
-    if (!projectPath) return
+    if (!projectPath) return undefined
     setLoading(true)
-    get<{ root: string; tree: TreeEntry[] }>('/api/files/tree', { root: projectPath })
+    return fetchDir(projectPath)
       .then(data => {
         setRoot(data.root)
         setTree(data.tree)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [get, projectPath])
+  }, [fetchDir, projectPath])
+
+  const replaceNodeChildren = useCallback((entries: TreeEntry[], path: string, children: TreeEntry[]): TreeEntry[] =>
+    entries.map(entry => {
+      if (entry.path === path) return { ...entry, children }
+      if (entry.children) return { ...entry, children: replaceNodeChildren(entry.children, path, children) }
+      return entry
+    }), [])
+
+  const loadChildren = useCallback((entry: TreeEntry) => {
+    if (!projectPath || entry.type !== 'dir' || loadingDirs.has(entry.path)) return
+    setLoadingDirs(prev => new Set(prev).add(entry.path))
+    fetchDir(entry.path)
+      .then(data => setTree(prev => replaceNodeChildren(prev, entry.path, data.tree)))
+      .catch(() => setTree(prev => replaceNodeChildren(prev, entry.path, [])))
+      .finally(() => setLoadingDirs(prev => {
+        const next = new Set(prev)
+        next.delete(entry.path)
+        return next
+      }))
+  }, [fetchDir, loadingDirs, projectPath, replaceNodeChildren])
 
   useEffect(() => {
     setSelectedPath(null)
+    setLoadingDirs(new Set())
     fetchTree()
   }, [fetchTree])
 
@@ -190,6 +258,8 @@ export function FilesPage() {
                 depth={0}
                 selectedPath={selectedPath}
                 onSelect={setSelectedPath}
+                onLoadChildren={loadChildren}
+                loadingDirs={loadingDirs}
               />
             ))
           )}
@@ -205,7 +275,7 @@ export function FilesPage() {
               <div className="truncate font-mono text-[10px] text-[#7f849c]">{selectedPath}</div>
             </div>
             <div className="min-h-0 flex-1 overflow-auto">
-              <FileContent path={selectedPath} />
+              <FileContent path={selectedPath} root={root} />
             </div>
           </>
         ) : (

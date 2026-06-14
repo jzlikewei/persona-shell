@@ -749,6 +749,130 @@ export function startConsole(
     return `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(rawName)}`;
   }
 
+  interface ProjectTreeEntry {
+    name: string;
+    path: string;
+    type: 'file' | 'dir';
+    size?: number;
+    children?: ProjectTreeEntry[];
+  }
+
+  interface ProjectTreeCacheEntry {
+    root: string;
+    dir: string;
+    mtimeMs: number;
+    size: number;
+    tree: ProjectTreeEntry[];
+  }
+
+  interface ProjectFileCacheEntry {
+    path: string;
+    size: number;
+    mtimeMs: number;
+    content: string;
+  }
+
+  const PROJECT_TREE_CACHE_MAX = 200;
+  const PROJECT_FILE_CACHE_MAX = 50;
+  const projectTreeCache = new Map<string, ProjectTreeCacheEntry>();
+  const projectFileCache = new Map<string, ProjectFileCacheEntry>();
+  const projectSkipDirs = new Set([
+    'node_modules', '.git', '.next', 'dist', 'build', '.turbo',
+    '__pycache__', '.pytest_cache', '.mypy_cache', 'vendor',
+    '.claude', '.persona', 'target', '.venv', 'venv',
+  ]);
+  const projectBinaryExts = new Set([
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
+    '.woff', '.woff2', '.ttf', '.eot', '.otf',
+    '.zip', '.tar', '.gz', '.br', '.7z', '.rar',
+    '.exe', '.dll', '.so', '.dylib', '.o', '.a',
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt',
+    '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv',
+    '.db', '.sqlite', '.sqlite3',
+    '.wasm', '.pyc', '.class',
+  ]);
+
+  function pruneMap<K, V>(map: Map<K, V>, max: number): void {
+    while (map.size > max) {
+      const first = map.keys().next();
+      if (first.done) return;
+      map.delete(first.value);
+    }
+  }
+
+  function resolveProjectChild(root: string, rawPath: string | null): string {
+    const resolvedRoot = resolve(root);
+    if (!rawPath) return resolvedRoot;
+    const candidate = rawPath.startsWith('/') ? resolve(rawPath) : resolve(resolvedRoot, rawPath);
+    if (!isInside(resolvedRoot, candidate)) throw new Error('Path outside root');
+    return candidate;
+  }
+
+  function listProjectTree(root: string, dir: string, maxDepth: number): ProjectTreeEntry[] {
+    const dirStat = statSync(dir);
+    const cacheKey = `${root}\0${dir}\0${maxDepth}`;
+    const cached = projectTreeCache.get(cacheKey);
+    if (cached && cached.mtimeMs === dirStat.mtimeMs && cached.size === dirStat.size) {
+      projectTreeCache.delete(cacheKey);
+      projectTreeCache.set(cacheKey, cached);
+      return cached.tree;
+    }
+
+    function walk(currentDir: string, depth: number): ProjectTreeEntry[] {
+      const entries = readdirSync(currentDir, { withFileTypes: true });
+      const result: ProjectTreeEntry[] = [];
+      for (const entry of entries) {
+        if (entry.name.startsWith('.') && depth > 0) continue;
+        const fullPath = join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+          if (projectSkipDirs.has(entry.name)) continue;
+          const node: ProjectTreeEntry = { name: entry.name, path: fullPath, type: 'dir' };
+          if (depth < maxDepth) {
+            try {
+              node.children = walk(fullPath, depth + 1);
+            } catch {
+              node.children = [];
+            }
+          }
+          result.push(node);
+        } else if (entry.isFile()) {
+          const ext = entry.name.includes('.') ? '.' + entry.name.split('.').pop()!.toLowerCase() : '';
+          if (projectBinaryExts.has(ext)) continue;
+          try {
+            const s = statSync(fullPath);
+            if (s.size > 512 * 1024) continue;
+            result.push({ name: entry.name, path: fullPath, type: 'file', size: s.size });
+          } catch {
+            continue;
+          }
+        }
+      }
+      result.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return result;
+    }
+
+    const tree = walk(dir, 0);
+    projectTreeCache.set(cacheKey, { root, dir, mtimeMs: dirStat.mtimeMs, size: dirStat.size, tree });
+    pruneMap(projectTreeCache, PROJECT_TREE_CACHE_MAX);
+    return tree;
+  }
+
+  function readProjectFile(path: string, size: number, mtimeMs: number): string {
+    const cached = projectFileCache.get(path);
+    if (cached && cached.size === size && cached.mtimeMs === mtimeMs) {
+      projectFileCache.delete(path);
+      projectFileCache.set(path, cached);
+      return cached.content;
+    }
+    const content = readFileSync(path, 'utf-8');
+    projectFileCache.set(path, { path, size, mtimeMs, content });
+    pruneMap(projectFileCache, PROJECT_FILE_CACHE_MAX);
+    return content;
+  }
+
   function safeAttachmentFileName(name: string): string {
     const raw = (name.split(/[\\/]/).pop() || 'attachment').trim();
     const cleaned = raw
@@ -2705,68 +2829,37 @@ export function startConsole(
             if (!existsSync(root) || !statSync(root).isDirectory()) {
               return Response.json({ error: 'Not a directory' }, { status: 404 });
             }
-            const maxDepth = Math.min(Number(url.searchParams.get('depth') ?? 4), 6);
-            const skipDirs = new Set([
-              'node_modules', '.git', '.next', 'dist', 'build', '.turbo',
-              '__pycache__', '.pytest_cache', '.mypy_cache', 'vendor',
-              '.claude', '.persona', 'target', '.venv', 'venv',
-            ]);
-            const binaryExts = new Set([
-              '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
-              '.woff', '.woff2', '.ttf', '.eot', '.otf',
-              '.zip', '.tar', '.gz', '.br', '.7z', '.rar',
-              '.exe', '.dll', '.so', '.dylib', '.o', '.a',
-              '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt',
-              '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv',
-              '.db', '.sqlite', '.sqlite3',
-              '.wasm', '.pyc', '.class',
-            ]);
-            interface TreeEntry { name: string; path: string; type: 'file' | 'dir'; size?: number; children?: TreeEntry[] }
-            function walk(dir: string, depth: number): TreeEntry[] {
-              if (depth > maxDepth) return [];
-              try {
-                const entries = readdirSync(dir, { withFileTypes: true });
-                const result: TreeEntry[] = [];
-                for (const entry of entries) {
-                  if (entry.name.startsWith('.') && depth > 0) continue;
-                  const fullPath = join(dir, entry.name);
-                  if (entry.isDirectory()) {
-                    if (skipDirs.has(entry.name)) continue;
-                    const children = walk(fullPath, depth + 1);
-                    if (children.length > 0 || depth < 2) {
-                      result.push({ name: entry.name, path: fullPath, type: 'dir', children });
-                    }
-                  } else if (entry.isFile()) {
-                    const ext = entry.name.includes('.') ? '.' + entry.name.split('.').pop()!.toLowerCase() : '';
-                    if (binaryExts.has(ext)) continue;
-                    try {
-                      const s = statSync(fullPath);
-                      if (s.size > 512 * 1024) continue;
-                      result.push({ name: entry.name, path: fullPath, type: 'file', size: s.size });
-                    } catch { continue; }
-                  }
-                }
-                result.sort((a, b) => {
-                  if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-                  return a.name.localeCompare(b.name);
-                });
-                return result;
-              } catch { return []; }
+            let dir: string;
+            try {
+              dir = resolveProjectChild(root, url.searchParams.get('dir'));
+            } catch {
+              return Response.json({ error: 'Path outside root' }, { status: 400 });
             }
-            return Response.json({ root, tree: walk(root, 0) });
+            if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+              return Response.json({ error: 'Not a directory' }, { status: 404 });
+            }
+            // depth means "nested levels below dir". Default 0 lists immediate children only.
+            const maxDepth = Math.max(0, Math.min(Number(url.searchParams.get('depth') ?? 0), 2));
+            return Response.json({ root, dir, tree: listProjectTree(root, dir, maxDepth) });
           }
 
           // GET /api/files/read?path=... — read a text file from project directory
           if (url.pathname === '/api/files/read' && req.method === 'GET') {
             const rawPath = url.searchParams.get('path');
             if (!rawPath) return Response.json({ error: 'path is required' }, { status: 400 });
-            const path = resolve(rawPath);
+            const rawRoot = url.searchParams.get('root');
+            let path: string;
+            try {
+              path = rawRoot ? resolveProjectChild(resolve(rawRoot), rawPath) : resolve(rawPath);
+            } catch {
+              return Response.json({ error: 'Path outside root' }, { status: 400 });
+            }
             if (!existsSync(path)) return Response.json({ error: 'Not found' }, { status: 404 });
             const stat = statSync(path);
             if (!stat.isFile()) return Response.json({ error: 'Not a file' }, { status: 400 });
             if (stat.size > 512 * 1024) return Response.json({ error: 'File too large (>512KB)' }, { status: 413 });
             try {
-              const content = readFileSync(path, 'utf-8');
+              const content = readProjectFile(path, stat.size, stat.mtimeMs);
               return Response.json({ path, size: stat.size, content });
             } catch {
               return Response.json({ error: 'Cannot read file' }, { status: 500 });
