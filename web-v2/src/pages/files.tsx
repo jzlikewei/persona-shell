@@ -139,14 +139,14 @@ function FileContent({ path }: { path: string }) {
 }
 
 export function FilesPage() {
-  const { activeProject } = useOutletContext<ShellOutletContext>()
+  const { activeProject, activeWorkspace } = useOutletContext<ShellOutletContext>()
   const { get } = useApi()
   const [tree, setTree] = useState<TreeEntry[]>([])
   const [root, setRoot] = useState('')
   const [loading, setLoading] = useState(true)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
 
-  const projectPath = activeProject?.path
+  const projectPath = activeWorkspace?.cwd ?? activeProject?.path
 
   const fetchTree = useCallback(() => {
     if (!projectPath) return
@@ -160,7 +160,10 @@ export function FilesPage() {
       .finally(() => setLoading(false))
   }, [get, projectPath])
 
-  useEffect(() => { fetchTree() }, [fetchTree])
+  useEffect(() => {
+    setSelectedPath(null)
+    fetchTree()
+  }, [fetchTree])
 
   const fileName = selectedPath?.split('/').pop() ?? ''
 
