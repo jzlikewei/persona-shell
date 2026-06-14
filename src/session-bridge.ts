@@ -59,6 +59,30 @@ type PendingType =
 
 type WorkflowTurnStatus = 'running' | 'completed' | 'failed' | 'aborted' | 'blocked';
 
+interface LiveTurnState {
+  turnId: string;
+  text: string;
+  workflow?: Pick<AssistantTurnEvent, 'turnId' | 'plan' | 'explanation'> & { turnStatus?: WorkflowTurnStatus };
+  tools: DirectorToolCall[];
+  phase: 'thinking' | 'streaming' | 'tool_running' | null;
+  status: WorkflowTurnStatus;
+  startedAt: string;
+  updatedAt: string;
+}
+
+interface SessionLiveState {
+  thread: {
+    goal?: AssistantTurnEvent['goal'] | null;
+  };
+  turn: LiveTurnState | null;
+  /** @deprecated Compatibility for older web-v2 code. Prefer thread.goal + turn.workflow. */
+  workflow: (Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: WorkflowTurnStatus }) | null;
+  /** @deprecated Compatibility for older web-v2 code. Prefer turn.tools. */
+  tools: DirectorToolCall[];
+  /** @deprecated Compatibility for older web-v2 code. Prefer turn.phase. */
+  phase: 'thinking' | 'tool_running' | null;
+}
+
 function turnStatusFromGoalStatus(status?: string): WorkflowTurnStatus | undefined {
   const normalized = status?.toLowerCase().replace(/[\s_-]/g, '');
   if (!normalized) return undefined;
@@ -136,6 +160,8 @@ export class SessionBridge extends EventEmitter {
   private discardNextResponse = false;
   private personaRole: string = 'director';
   private partialSystemReplyText: string | null = null;
+  private threadGoal: AssistantTurnEvent['goal'] | null = null;
+  private liveTurn: LiveTurnState | null = null;
   private liveWorkflow: Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: WorkflowTurnStatus } | null = null;
   private liveTools: DirectorToolCall[] = [];
   private readonly dynamicToolHandler?: SessionBridgeOptions['dynamicToolHandler'];
@@ -1094,6 +1120,90 @@ export class SessionBridge extends EventEmitter {
     return !!turn?.turnId && (turn.type === 'user' || turn.type === 'system-reply');
   }
 
+  private ensureLiveTurn(turn: PendingType & { turnId: string }, phase: LiveTurnState['phase'] = 'thinking'): LiveTurnState {
+    const now = new Date().toISOString();
+    if (!this.liveTurn || this.liveTurn.turnId !== turn.turnId) {
+      this.liveTurn = {
+        turnId: turn.turnId,
+        text: '',
+        tools: [],
+        phase,
+        status: 'running',
+        startedAt: now,
+        updatedAt: now,
+      };
+    } else {
+      this.liveTurn = { ...this.liveTurn, phase: this.liveTurn.phase ?? phase, updatedAt: now };
+    }
+    return this.liveTurn;
+  }
+
+  private appendLiveTurnText(turn: PendingType | undefined, text: string): void {
+    if (!text || !this.isVisibleTurn(turn)) return;
+    const liveTurn = this.ensureLiveTurn(turn, 'streaming');
+    this.liveTurn = {
+      ...liveTurn,
+      text: liveTurn.text + text,
+      phase: 'streaming',
+      status: 'running',
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private updateLiveTurnWorkflow(
+    turnId: string,
+    workflow: LiveTurnState['workflow'],
+    status: WorkflowTurnStatus = 'running',
+  ): void {
+    const now = new Date().toISOString();
+    const visibleTurn = this.pendingTurns.find((turn) => this.isVisibleTurn(turn) && turn.turnId === turnId);
+    if (!this.liveTurn || this.liveTurn.turnId !== turnId) {
+      this.liveTurn = {
+        turnId,
+        text: '',
+        tools: [],
+        phase: status === 'running' ? 'thinking' : null,
+        status,
+        startedAt: now,
+        updatedAt: now,
+      };
+    }
+    this.liveTurn = {
+      ...this.liveTurn,
+      workflow,
+      phase: this.liveTurn.phase ?? (status === 'running' ? 'thinking' : null),
+      status,
+      updatedAt: now,
+    };
+  }
+
+  private updateLiveTurnTools(turn: PendingType | undefined, tools: DirectorToolCall[]): void {
+    if (!this.isVisibleTurn(turn)) return;
+    const hasRunningTool = tools.some((tool) => tool.status === 'running');
+    const liveTurn = this.ensureLiveTurn(turn, hasRunningTool ? 'tool_running' : 'thinking');
+    this.liveTurn = {
+      ...liveTurn,
+      tools,
+      phase: hasRunningTool ? 'tool_running' : (liveTurn.text ? 'streaming' : liveTurn.workflow ? 'thinking' : null),
+      status: 'running',
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private completeLiveTurn(turn: PendingType | undefined, content: string, status: WorkflowTurnStatus): void {
+    if (!this.isVisibleTurn(turn)) return;
+    const liveTurn = this.ensureLiveTurn(turn, null);
+    this.liveTurn = {
+      ...liveTurn,
+      text: content || liveTurn.text,
+      tools: this.liveTools.map(tool => tool.status === 'running' ? { ...tool, status: 'completed' } : tool),
+      workflow: liveTurn.workflow ? { ...liveTurn.workflow, turnStatus: status } : liveTurn.workflow,
+      phase: null,
+      status,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   private emitTurnEvent(
     turn: PendingType | undefined,
     patch: Omit<AssistantTurnEvent, 'agentLabel' | 'sessionId' | 'turnId' | 'timestamp'> & { timestamp?: string },
@@ -1102,6 +1212,7 @@ export class SessionBridge extends EventEmitter {
     if (patch.type === 'turn_started') {
       this.liveWorkflow = null;
       this.liveTools = [];
+      this.ensureLiveTurn(turn, 'thinking');
     }
     const event: AssistantTurnEvent = {
       ...patch,
@@ -1189,17 +1300,34 @@ export class SessionBridge extends EventEmitter {
     await this.adapter.restartTransport();
   }
 
-  getLiveWorkflowState(): { workflow: (Pick<AssistantTurnEvent, 'turnId' | 'goal' | 'plan' | 'explanation'> & { turnStatus?: WorkflowTurnStatus }) | null; tools: DirectorToolCall[]; phase: 'thinking' | 'tool_running' | null } {
+  getLiveWorkflowState(): SessionLiveState {
     const hasActiveVisibleTurn = this.pendingTurns.some((turn) => this.isVisibleTurn(turn));
+    const liveTurn = hasActiveVisibleTurn ? this.liveTurn : null;
+    const turnWorkflow = liveTurn?.workflow ?? (hasActiveVisibleTurn ? this.liveWorkflow : null);
+    const legacyWorkflow = turnWorkflow
+      ? { ...turnWorkflow, goal: (turnWorkflow.plan || turnWorkflow.explanation) ? undefined : this.threadGoal ?? undefined }
+      : this.threadGoal
+        ? { turnId: 'thread', goal: this.threadGoal }
+        : null;
+    const legacyTools = liveTurn?.tools ?? (hasActiveVisibleTurn ? this.liveTools : []);
+    const legacyPhase = liveTurn?.phase === 'streaming'
+      ? 'thinking'
+      : liveTurn?.phase ?? null;
     if (!hasActiveVisibleTurn) {
-      return { workflow: null, tools: [], phase: null };
+      return {
+        thread: { goal: this.threadGoal },
+        turn: null,
+        workflow: legacyWorkflow,
+        tools: [],
+        phase: null,
+      };
     }
-    const hasRunningTool = this.liveTools.some((tool) => tool.status === 'running');
-    const hasRunningWorkflow = this.liveWorkflow?.turnStatus === 'running';
     return {
-      workflow: this.liveWorkflow,
-      tools: this.liveTools,
-      phase: hasRunningTool ? 'tool_running' : hasRunningWorkflow || (!this.liveWorkflow && hasActiveVisibleTurn) ? 'thinking' : null,
+      thread: { goal: this.threadGoal },
+      turn: liveTurn,
+      workflow: legacyWorkflow,
+      tools: legacyTools,
+      phase: legacyPhase === 'tool_running' ? 'tool_running' : legacyPhase === 'thinking' ? 'thinking' : null,
     };
   }
 
@@ -1464,6 +1592,9 @@ export class SessionBridge extends EventEmitter {
 
   private handleWorkflowEvent(event: Omit<AssistantTurnEvent, 'agentLabel' | 'sessionId' | 'timestamp'> & { timestamp?: string }): void {
     if (!event.turnId) return;
+    if (event.type === 'goal_updated') {
+      this.threadGoal = event.goal ?? null;
+    }
     const visibleTurn = this.pendingTurns.find((turn) => this.isVisibleTurn(turn));
     const visibleTurnId = visibleTurn?.turnId ?? event.turnId;
     const sameTurn = this.liveWorkflow?.turnId === visibleTurnId;
@@ -1479,6 +1610,23 @@ export class SessionBridge extends EventEmitter {
       explanation: 'explanation' in event ? event.explanation : (sameTurn ? this.liveWorkflow?.explanation : undefined),
       turnStatus: eventTurnStatus,
     };
+    if (event.type === 'goal_updated' && visibleTurn) {
+      const liveTurn = this.ensureLiveTurn(visibleTurn, eventTurnStatus === 'running' ? 'thinking' : null);
+      this.liveTurn = {
+        ...liveTurn,
+        phase: eventTurnStatus === 'running' ? liveTurn.phase : null,
+        status: eventTurnStatus,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    if (event.type === 'plan_updated') {
+      this.updateLiveTurnWorkflow(visibleTurnId, {
+        turnId: visibleTurnId,
+        plan: event.plan,
+        explanation: 'explanation' in event ? event.explanation : undefined,
+        turnStatus: eventTurnStatus,
+      }, eventTurnStatus);
+    }
     const visibleEvent: AssistantTurnEvent = {
       ...event,
       agentLabel: this.label,
@@ -1494,10 +1642,12 @@ export class SessionBridge extends EventEmitter {
     const head = this.pendingTurns[0];
     const shouldStream = !this.flushing && !this.bootstrapping && !this.discardNextResponse;
     if (shouldStream && head?.type === 'user') {
+      this.appendLiveTurnText(head, text);
       this.emit('chunk', text);
       this.emitTurnEvent(head, { type: 'assistant_delta', text });
     }
     if (shouldStream && head?.type === 'system-reply') {
+      this.appendLiveTurnText(head, text);
       this.emit('system-chunk', text, head.replyToMessageId);
       this.emitTurnEvent(head, { type: 'assistant_delta', text });
     }
@@ -1516,10 +1666,12 @@ export class SessionBridge extends EventEmitter {
     const eventType = eventTool.status === 'completed' || eventTool.status === 'failed' ? 'tool_completed' : 'tool_started';
     this.liveTools = this.mergeLiveTool(this.liveTools, eventTool);
     if (shouldStream && head?.type === 'user') {
+      this.updateLiveTurnTools(head, this.liveTools);
       this.emit('tool-call', toolName, eventTool);
       this.emitTurnEvent(head, { type: eventType, tool: eventTool });
     }
     if (shouldStream && head?.type === 'system-reply') {
+      this.updateLiveTurnTools(head, this.liveTools);
       this.emit('system-tool-call', head.replyToMessageId, toolName, eventTool);
       this.emitTurnEvent(head, { type: eventType, tool: eventTool });
     }
@@ -1595,6 +1747,7 @@ export class SessionBridge extends EventEmitter {
     } else {
       if (!pending || pending.type === 'user') {
         if (this.liveWorkflow) this.liveWorkflow = { ...this.liveWorkflow, turnStatus: 'completed' };
+        this.completeLiveTurn(pending, responseText, 'completed');
         this.emitTurnEvent(pending, {
           type: 'turn_completed',
           content: responseText,
@@ -1607,6 +1760,7 @@ export class SessionBridge extends EventEmitter {
         resolvedTurnType = 'user';
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
+        this.completeLiveTurn(pending, responseText, 'completed');
         this.emitTurnEvent(pending, {
           type: 'turn_completed',
           content: responseText,
@@ -1666,12 +1820,14 @@ export class SessionBridge extends EventEmitter {
       if (!pending || pending.type === 'user') {
         this.messagesProcessedToday++;
         if (this.liveWorkflow) this.liveWorkflow = { ...this.liveWorkflow, turnStatus: 'failed' };
+        this.completeLiveTurn(pending, this.liveTurn?.text ?? '', 'failed');
         this.emitTurnEvent(pending, { type: 'turn_failed', error: message });
         this.emit('response', '处理失败，请稍后重试');
       } else if (pending.type === 'system-reply') {
         this.systemReplyQueue.shift();
         this.partialSystemReplyText = null;
         if (this.liveWorkflow) this.liveWorkflow = { ...this.liveWorkflow, turnStatus: 'failed' };
+        this.completeLiveTurn(pending, this.liveTurn?.text ?? '', 'failed');
         this.emitTurnEvent(pending, { type: 'turn_failed', error: message });
         this.emit('system-stream-abort', pending.replyToMessageId, 'Director 调用失败');
       }

@@ -703,9 +703,22 @@ describe('SessionBridge', () => {
     adapter.hooks.onToolCall('Bash', { id: 'tool-1', name: 'Bash', status: 'running', result: 'hello' });
 
     expect(bridge.getLiveWorkflowState()).toMatchObject({
+      thread: {
+        goal: { objective: 'ship workflow UI', status: 'active', tokensUsed: 10, timeUsedSeconds: 2 },
+      },
+      turn: {
+        turnId,
+        workflow: {
+          turnId,
+          plan: [{ step: 'wire events', status: 'inProgress' }],
+          explanation: 'working',
+          turnStatus: 'running',
+        },
+        tools: [{ id: 'tool-1', name: 'Bash', status: 'running', result: 'hello' }],
+        phase: 'tool_running',
+      },
       workflow: {
         turnId,
-        goal: { objective: 'ship workflow UI', status: 'active', tokensUsed: 10, timeUsedSeconds: 2 },
         plan: [{ step: 'wire events', status: 'inProgress' }],
         explanation: 'working',
         turnStatus: 'running',
@@ -715,7 +728,7 @@ describe('SessionBridge', () => {
     });
 
     adapter.completeTurn({ responseText: 'done', durationMs: 12 });
-    expect(bridge.getLiveWorkflowState()).toEqual({ workflow: null, tools: [], phase: null });
+    expect(bridge.getLiveWorkflowState()).toMatchObject({ turn: null, workflow: { goal: { objective: 'ship workflow UI', status: 'active', tokensUsed: 10, timeUsedSeconds: 2 } }, tools: [], phase: null });
   });
 
   test('completed goal workflow does not keep live snapshot in running phase', async () => {

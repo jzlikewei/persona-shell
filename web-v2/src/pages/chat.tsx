@@ -437,10 +437,14 @@ export function ChatPage() {
     activeSessionInfo,
     setActiveSession,
   } = useOutletContext<ShellOutletContext>()
-  const { messages, streaming, streamingTools, workflow, threadGoal, activity, turnPhase, loading, sending, sendMessage, loadMore } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
+  const { messages, streaming, streamingTools, workflow, currentTurn, threadGoal, activity, turnPhase, loading, sending, sendMessage, loadMore } = useChat(activeSession, activeSessionInfo?.alive ?? false, workspaceName)
   const { request } = useApi()
-  const activeWorkflow = isWorkflowActive(workflow)
-  const isStreaming = turnPhase !== null || streaming.length > 0 || streamingTools.length > 0 || activeWorkflow
+  const liveText = currentTurn?.text ?? streaming
+  const liveTools = currentTurn?.tools ?? streamingTools
+  const liveWorkflow = currentTurn?.workflow ?? workflow
+  const livePhase = currentTurn?.phase ?? turnPhase
+  const activeWorkflow = isWorkflowActive(liveWorkflow)
+  const isStreaming = livePhase !== null || liveText.length > 0 || liveTools.length > 0 || activeWorkflow
   const draftKey = activeSession ? `persona-shell:v2:draft:${activeSession}` : null
   const [input, setInput] = useState(() => {
     if (!draftKey) return ''
@@ -594,16 +598,16 @@ export function ChatPage() {
     }
     if (loading && visibleChatMessages.length === 0) {
       items.push({ __kind: 'loading' })
-    } else if (visibleChatMessages.length === 0 && !streaming && !activity && !turnPhase) {
+    } else if (visibleChatMessages.length === 0 && !liveText && !activity && !livePhase) {
       items.push({ __kind: 'empty' })
     }
-    if (turnPhase) {
-      items.push({ __kind: 'streaming', phase: turnPhase })
-    } else if (streaming || activity || streamingTools.length > 0 || activeWorkflow) {
-      items.push({ __kind: 'streaming', phase: streaming ? 'streaming' : 'tool_running' })
+    if (livePhase) {
+      items.push({ __kind: 'streaming', phase: livePhase })
+    } else if (liveText || activity || liveTools.length > 0 || activeWorkflow) {
+      items.push({ __kind: 'streaming', phase: liveText ? 'streaming' : 'tool_running' })
     }
     return items
-  }, [visibleChatMessages, loading, streaming, activity, turnPhase, streamingTools.length, activeWorkflow])
+  }, [visibleChatMessages, loading, liveText, activity, livePhase, liveTools.length, activeWorkflow])
 
   const renderItem = useCallback((_index: number, item: VirtuosoItem) => {
     if ('__kind' in item) {
@@ -618,7 +622,7 @@ export function ChatPage() {
       if (item.__kind === 'empty') return <EmptyConversation />
       if (item.__kind === 'date') return <DateSeparator date={item.date} />
       // streaming
-      return <StreamingBlock phase={item.phase} text={streaming} tools={streamingTools} workflow={workflow} />
+      return <StreamingBlock phase={item.phase} text={liveText} tools={liveTools} workflow={liveWorkflow} />
     }
     return (
       <MessageBlock
@@ -626,7 +630,7 @@ export function ChatPage() {
         onFileClick={setPreviewPath}
       />
     )
-  }, [streaming, streamingTools, workflow])
+  }, [liveText, liveTools, liveWorkflow])
 
   const renderHeader = useCallback(() => (
     <WorkspaceSummary
