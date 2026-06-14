@@ -370,22 +370,67 @@ DirectorPool 位于 SessionManager 下方，只保存 runtime entry、queue、st
 
 **时间同步**：Director session 跨天时 `currentDate` 会过期。Shell 在消息间隔超过 `time_sync_interval_hours` 时自动注入时间前缀。
 
-## 后台任务
+## 后台任务与长程 Codex worker
+
+后台任务是隔离执行单元，不是所有自动化推进的默认形态：
 
 ```
 Agent ──create_task──→ Shell (task-runner)
                                │
-                   spawn agent process (Claude -p / Codex exec)
+                   spawn agent process / temporary Codex App Server
                                │
                    产出写入 outbox/YYYY-MM-DD/
                                │
-                   回调：先找原 sessionId，已归档则回到 workspace default session
+                   回调：优先注入 source sessionId，失效才回到 workspace default session
 ```
 
 - 任务对 Claude Code 通过 MCP Server（`task-mcp-server.ts`）暴露；对 Codex App Server 默认通过 dynamic tools 暴露，由 runtime 直接处理 `item/tool/call`
 - `task-runner.ts` 管理进程 spawn、超时（默认 30 分钟）、重试
 - `task-store.ts` 使用 SQLite 持久化任务状态和 Cron 定义
-- `scheduler.ts` 轮询 Cron jobs，使用 workspace 的 default session 执行
+- `scheduler.ts` 轮询 Cron jobs，优先使用 cron 的 `source_session_id`，失效时才 fallback 到 workspace default session
+
+### Cron-as-Whip：Cron 只做“鞭子”
+
+对 blueprint / checklist 这类持续推进型工作，cron 的职责是定期抽一鞭子，而不是每次 tick 都创建一个新子任务。
+
+推荐拓扑：
+
+```
+cron tick
+  └─提醒 master Codex thread 继续推进
+       ├─读取 blueprint / .ops/state / workspace context
+       ├─检查 worker lane 状态和 no-overlap
+       ├─需要小步推进：直接让长程 worker thread 继续 turn
+       └─需要大块/并行/隔离：才 create_task 创建临时任务
+```
+
+原则：
+
+- **cron = 鞭子**：只负责唤醒/提醒已有 agent 推进，不亲自做工作，也不默认派发子任务。
+- **master = 调度脑**：一个长期 Codex thread 持有 blueprint 总控权，维护 state、checkpoint、验收和合并。
+- **worker = 长程执行体**：worker 不应只是单个 `create_task`，而应是绑定 lane / worktree / cwd 的长程 Codex App Server thread，可被反复 `thread/resume` + `turn/start` 推进。
+- **create_task = 临时雇佣兵**：只用于大块、并行、隔离、可独立重试的工作；不用于 checklist 的连续小步推进。
+- **no-overlap**：同一 master / worker / lane 已有 active turn 时，新的 tick 应跳过或仅记录提醒，不能重复启动。
+- **checkpoint / compaction**：长程 thread 不能无限膨胀；workspace context、blueprint、todo、`.ops/state` 是 SSOT，阶段完成后应压缩上下文或开启新 thread。
+
+典型状态记录：
+
+```jsonc
+{
+  "master_thread_id": "019e...",
+  "workers": [
+    {
+      "lane": "duckdb-control-plane",
+      "thread_id": "019e...",
+      "cwd": "/path/to/repo/.worktrees/duckdb-control-plane",
+      "status": "idle",
+      "last_heartbeat_at": "2026-06-11T20:00:00+08:00"
+    }
+  ]
+}
+```
+
+这类长程 worker 可以通过 `SessionBridge.sendCronMessage/sendSystemMessage`、`CodexThreadInjector`（`thread/resume` + `thread/inject_items` / `turn/start`）或未来的 `continueCodexThread` / `codex_thread_tick` 原语驱动。现有 `create_task` callback 仍用于把临时任务结果注入回 master thread。
 
 ## 进程容灾
 

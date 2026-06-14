@@ -208,6 +208,27 @@ Codex 默认使用 `mcp_mode: dynamic`：Shell 在 `thread/start` 注册 persona
 | `create_cron_job` / `list_cron_jobs` | 创建、列出当前 workspace 的 cron jobs |
 | `delete_cron_job` / `toggle_cron_job` | 删除、启停当前 workspace 可见的 cron job |
 
+
+### App Server 长程线程编排
+
+Codex App Server 的优势是 thread 可恢复、turn 可持续追加。Codex 官方 CLI 也支持恢复旧会话以保留 transcript、plan history 和 approvals；因此在 persona-shell 中，持续推进型自动化应优先复用长程 thread，而不是把每个小步骤都变成一次新的后台任务。
+
+推荐模式：
+
+- **Master thread**：持有 blueprint / checklist 的总控权，负责读取 workspace state、判断下一步、验收、checkpoint、合并。
+- **Worker thread**：绑定一个 lane / worktree / cwd，长期推进该 lane；tick 到来时继续 `turn/start`，而不是重新创建临时 Codex 任务。
+- **Cron tick**：只做“鞭子”，提醒 master/worker 推进；若目标 thread 或 lane 正在运行，tick 应跳过或记录 heartbeat，不应重入。
+- **create_task**：只作为升级路径，用于大块、并行、隔离、可独立重试的任务。任务完成后用 `callback_codex_thread_id` 把结果注入回 master thread。
+
+当前可用拼装件：
+
+- `SessionBridge.sendCronMessage()` / `sendSystemMessage()`：向已有 session 发送提醒。
+- `CodexThreadInjector`：通过 `thread/resume` 后执行 `thread/inject_items` 或 `turn/start`。
+- `POST /api/codex/inject`：HTTP 方式向指定 Codex thread 注入消息。
+- Dynamic persona tools：Codex 调用 `create_task` / `create_cron_job` 时，Shell 用 app-server 请求里的 `threadId` 自动补 `source_session_id`。
+
+后续若需要强约束，应把上述拼装沉淀成 `continueCodexThread` 或 cron `codex_thread_tick` 原语，以系统层保证 no-overlap 和 source-thread 路由。
+
 ### CLI 工具注入（兼容）
 
 将 Codex provider 配成 `mcp_mode: cli` 后，Shell 会在首轮 prompt 中注入 task CLI 用法，Codex 可通过 shell 命令调用任务系统：

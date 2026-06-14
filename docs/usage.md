@@ -152,6 +152,22 @@ action_name = "!find /tmp/persona -name '*.tmp' -mtime +7 -delete"
 
 bash 命令使用当前用户的 shell 执行（`$SHELL`，默认 `/bin/bash`），超时 5 分钟。stdout/stderr 会记录到 Shell 日志，失败（非 0 退出）会在日志中报错。
 
+
+### Cron 作为“鞭子”
+
+对 blueprint / checklist 这类持续推进任务，cron 不应该默认每次创建子任务。更推荐的用法是：cron 定期提醒已有 Codex App Server session/thread 继续推进；该 thread 读取 workspace state、blueprint 和 `.ops/state`，判断下一步。只有当前步骤足够大、需要并行、需要隔离上下文或可独立重试时，才通过 `create_task` 派后台任务。
+
+简化模型：
+
+```text
+cron = 鞭子 / 提醒器
+master Codex thread = 调度脑
+worker Codex thread = 长程执行体，绑定 lane / worktree
+create_task = 临时雇佣兵，只在必要时使用
+```
+
+这样可以避免每个小步骤都冷启动一个 Codex 子任务，同时保留任务系统在大块并行工作上的价值。
+
 ### 管理
 
 通过 Web 控制台的 Cron 面板管理，或让 Director 直接创建/删除/启停。Cron 定义持久化在 SQLite 中，Shell 重启后自动恢复。

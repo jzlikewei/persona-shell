@@ -860,10 +860,10 @@ async function main() {
               if (attempt > 0) {
                 console.log(`[scheduler] bash retry ${attempt}/${maxRetry} for ${job.name}`);
               }
-              const result = await runBashAction(cmd, { timeoutMs });
+              const result = await runBashAction(cmd, { timeoutMs, logDir: join(getLogDir(), 'shell-action') });
               const outSnippet = result.stdout.trim().slice(0, 500);
               const errSnippet = result.stderr.trim().slice(0, 500);
-              console.log(`[scheduler] bash ok for ${job.name}` + (outSnippet ? `\n  stdout: ${outSnippet}` : '') + (errSnippet ? `\n  stderr: ${errSnippet}` : ''));
+              console.log(`[scheduler] bash ok for ${job.name} (log: ${result.logFile})` + (outSnippet ? `\n  stdout: ${outSnippet}` : '') + (errSnippet ? `\n  stderr: ${errSnippet}` : ''));
               return;
             } catch (err: unknown) {
               lastError = err;

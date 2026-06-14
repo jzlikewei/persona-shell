@@ -1815,7 +1815,7 @@ export function startConsole(
     if (actionType === 'shell_action') {
       const actionName = job.action_name ?? '';
       if (isBashAction(actionName)) {
-        const result = await runBashAction(extractBashCommand(actionName), { timeoutMs: job.timeout_ms ?? undefined });
+        const result = await runBashAction(extractBashCommand(actionName), { timeoutMs: job.timeout_ms ?? undefined, logDir: join(getLogDir(), 'shell-action') });
         updateCronJob(job.id, { last_run_at: localNow() });
         return {
           ok: true,
