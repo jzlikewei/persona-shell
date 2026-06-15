@@ -172,6 +172,18 @@ create_task = 临时雇佣兵，只在必要时使用
 
 通过 Web 控制台的 Cron 面板管理，或让 Director 直接创建/删除/启停。Cron 定义持久化在 SQLite 中，Shell 重启后自动恢复。
 
+
+### 飞书 `/config` 配置卡片
+
+在飞书群里发送 `/config` 会打开当前群的控制卡片。workspace 名称仍由现有逻辑决定（群名即 workspace 名），卡片不负责创建、重命名或隐藏 workspace。一期只覆盖当前群的高频控制面：
+
+- 切换当前群的 default session；
+- 新建 Codex / Claude session，并设为当前 default；
+- 切换当前/default session 的 agent；
+- 查看 cwd，并通过 `/config cwd <path>` 设置当前群 workspace 的工作目录。
+
+`cwd` 保存到 workspace 配置，对新 session 生效；如果要让已运行 session 使用新 cwd，应保存后重启或新建 session。
+
 ## 多后端切换
 
 Persona Shell 支持 Claude Code 和 Codex 两个 agent 后端。
@@ -395,6 +407,10 @@ curl 'localhost:3000/api/sessions?workspace=main'
 | `/restart` | 当前会话 | 重启 Director（保留 session）🔒 |
 | `/new-session` | 当前会话 | 丢弃当前 session，下次消息创建全新 session（不保存上下文）🔒 |
 | `/shell-restart` `/restart-shell` | 全局 | 重启整个 Shell 🔒 |
+| `/config` | 当前飞书群/会话 | 打开配置卡片：切换 session/agent、查看与设置 cwd 🔒 |
+| `/config cwd <path>` | 当前飞书群/会话 | 设置当前群 workspace 的工作目录；不改变 workspace 名称 🔒 |
+| `/config agent <agent>` | 当前飞书群/会话 | 切换当前/default session 的 Agent 🔒 |
+| `/config session <session_id>` | 当前飞书群/会话 | 将当前群 workspace 的 default session 切到指定 session 🔒 |
 | `/switch-agent <agent>` | 当前会话 | 切换当前会话的 Director agent，并持久化恢复上下文 |
 | `/start-with-codex` | 当前会话 | 快捷切到 Codex 后端 |
 | `/start-with-claude` | 当前会话 | 快捷切回 Claude 后端 |

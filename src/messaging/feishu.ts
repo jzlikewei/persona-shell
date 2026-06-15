@@ -302,6 +302,7 @@ function parseCardActionEvent(data: unknown): CardAction | null {
       messageId,
       sourceMessageId,
       chatId: stringValue(context?.open_chat_id) ?? stringValue(candidate.open_chat_id),
+      value: value ?? undefined,
       senderOpenId: stringValue(operator?.open_id)
         ?? stringValue(operatorId?.open_id)
         ?? stringValue(senderId?.open_id)
@@ -843,6 +844,14 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
 
     async reply(messageId: string, text: string) {
       await replyText(messageId, text);
+    },
+
+    async sendInteractiveCard(chatId: string, card: unknown): Promise<string | null> {
+      return sendCard(chatId, card as FeishuCard);
+    },
+
+    async updateInteractiveCard(messageId: string, card: unknown): Promise<void> {
+      return updateCard(messageId, card as FeishuCard);
     },
 
     async sendMessage(chatId: string, text: string): Promise<string | null> {

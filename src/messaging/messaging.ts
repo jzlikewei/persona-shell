@@ -27,6 +27,8 @@ export interface CardAction {
   sourceMessageId?: string;
   chatId?: string;
   senderOpenId?: string;
+  /** Raw card action value payload. Platform adapters should keep this as data-only JSON. */
+  value?: Record<string, unknown>;
 }
 
 export type CardActionHandler = (action: CardAction) => Promise<void> | void;
@@ -47,6 +49,8 @@ export interface MessagingClient {
 
   reply(messageId: string, text: string): Promise<void>;
   sendMessage(chatId: string, text: string): Promise<string | null>;
+  sendInteractiveCard?(chatId: string, card: unknown): Promise<string | null>;
+  updateInteractiveCard?(messageId: string, card: unknown): Promise<void>;
   startStreamingReply?(messageId: string, initialText?: string): Promise<StreamingReplyHandle | null>;
   addReaction(messageId: string, emoji: string): Promise<void>;
 

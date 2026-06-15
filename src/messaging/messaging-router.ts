@@ -65,6 +65,16 @@ export class MessagingRouter implements MessagingClient {
     return this.primary.sendMessage(chatId, text);
   }
 
+  async sendInteractiveCard(chatId: string, card: unknown): Promise<string | null> {
+    if (!this.primary.sendInteractiveCard) return null;
+    return this.primary.sendInteractiveCard(chatId, card);
+  }
+
+  async updateInteractiveCard(messageId: string, card: unknown): Promise<void> {
+    if (!this.primary.updateInteractiveCard) return;
+    return this.primary.updateInteractiveCard(messageId, card);
+  }
+
   async startStreamingReply(messageId: string, initialText?: string): Promise<StreamingReplyHandle | null> {
     const client = this.messageOrigin.get(messageId) ?? this.primary;
     if (!client.startStreamingReply) return null;

@@ -15,15 +15,17 @@ import { createInterface } from 'readline';
 import { Scheduler } from './task/scheduler.js';
 import { isBashAction, extractBashCommand, runBashAction } from './task/shell-bash.js';
 import { resolveCronMessage } from './prompt-loader.js';
-import { updateTask, listTasks, createTask, getTask, getState, setState, deleteState, listCronJobs, updateCronJob, createCronJob, deleteCronJob, toggleCronJob, initTaskStore, localNow, getSessionRecord, type TaskExtra } from './task/task-store.js';
+import { updateTask, listTasks, createTask, getTask, getState, setState, deleteState, listCronJobs, updateCronJob, createCronJob, deleteCronJob, toggleCronJob, initTaskStore, localNow, getSessionRecord, listSessionsFromDb, updateWorkspace as updateWorkspaceInDb, type TaskExtra } from './task/task-store.js';
 import { writeFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, extname } from 'path';
+import { join, extname, resolve } from 'path';
+import { homedir } from 'os';
 import { setLogLevel, log, initLogDir, getLogDir, cleanupOldLogs } from './logger.js';
 import { parseShellRestartCommand, buildShellRestartBlockedMessage } from './shell-restart.js';
 import { CodexThreadInjector } from './codex-thread-injector.js';
 import type { DirectorDynamicToolCall, DirectorDynamicToolResult } from './director-session-adapter/index.js';
 import { writeShellMcpConfig } from './mcp-config.js';
 import { handlePersonaDynamicToolCall } from './persona-dynamic-tools.js';
+import { buildFeishuConfigCard, type ConfigCardState } from './messaging/feishu-config-card.js';
 
 // Prepend local timestamp (Asia/Shanghai) to all console output
 for (const method of ['log', 'warn', 'error'] as const) {
@@ -329,7 +331,219 @@ async function main() {
     if (migrated > 0) console.log(`[shell] Migrated ${migrated} workspace config(s) from legacy KV to workspaces table`);
   }
 
+  function configCardWorkspaceFromMessage(msg: IncomingMessage): string {
+    if (msg.chatType === 'group') {
+      return sanitizeWorkspaceName(msg.workspaceName, msg.chatId.slice(0, 8));
+    }
+    return 'main';
+  }
+
+  function expandConfigCwd(rawPath: string): string {
+    const trimmed = rawPath.trim();
+    if (!trimmed) throw new Error('cwd 不能为空');
+    const expanded = trimmed === '~'
+      ? homedir()
+      : trimmed.startsWith('~/')
+        ? join(homedir(), trimmed.slice(2))
+        : trimmed;
+    const fullPath = resolve(expanded);
+    const stat = statSync(fullPath);
+    if (!stat.isDirectory()) throw new Error(`不是目录: ${fullPath}`);
+    return fullPath;
+  }
+
+  function buildConfigCardState(workspaceName: string, notice?: string): ConfigCardState {
+    const workspace = workspaceRegistry.getOrCreate(workspaceName);
+    const sessions = listSessionsFromDb(workspaceName).map((row) => {
+      const live = workspaceName === 'main' && director.getStatus().sessionId === row.session_id
+        ? true
+        : !!sessionManager.getSession(row.session_id);
+      const liveEntry = sessionManager.getSession(row.session_id);
+      const liveStatus = liveEntry?.bridge.getStatus();
+      return {
+        sessionId: row.session_id,
+        name: row.session_name,
+        agentName: liveStatus?.agentName ?? row.agent_name,
+        agentType: liveStatus?.agentType ?? row.agent_type,
+        model: liveStatus?.agentModel ?? row.model,
+        alive: live,
+        isDefault: workspace.default_session_id === row.session_id,
+        lastMessageAt: row.last_message_at,
+      };
+    });
+    const agents = Object.entries(getFreshAgents().providers).map(([name, provider]) => ({
+      name,
+      type: provider.type,
+      model: provider.model,
+    }));
+    return {
+      workspaceName,
+      cwd: workspace.cwd,
+      workspaceAgent: workspace.agent,
+      defaultSessionId: workspace.default_session_id,
+      sessions,
+      agents,
+      notice,
+    };
+  }
+
+  function configCardFallbackText(state: ConfigCardState): string {
+    const sessions = state.sessions.length > 0
+      ? state.sessions.slice(0, 6).map((s) => `${s.isDefault ? '✅ ' : '- '}${s.name || s.sessionId} · ${s.agentName ?? 'agent:-'} · ${s.alive ? 'live' : 'sleep'}`).join('\n')
+      : '暂无 session';
+    return [
+      `配置 · ${state.workspaceName}`,
+      `cwd: ${state.cwd ?? '未配置'}`,
+      `workspace agent: ${state.workspaceAgent ?? '默认'}`,
+      `default session: ${state.defaultSessionId ?? '未设置'}`,
+      '',
+      sessions,
+      '',
+      '可用命令:',
+      '/config cwd <path>',
+      '/config agent <codex|claude>',
+      '/config session <session_id>',
+    ].join('\n');
+  }
+
+  async function sendConfigCard(chatId: string, workspaceName: string, opts?: { notice?: string; updateMessageId?: string; replyMessageId?: string }): Promise<void> {
+    const state = buildConfigCardState(workspaceName, opts?.notice);
+    const card = buildFeishuConfigCard(state);
+    if (opts?.updateMessageId && messaging.updateInteractiveCard) {
+      try {
+        await messaging.updateInteractiveCard(opts.updateMessageId, card);
+        return;
+      } catch (err) {
+        console.warn(`[shell] /config card update failed, falling back to send:`, err);
+      }
+    }
+    if (messaging.sendInteractiveCard) {
+      const sent = await messaging.sendInteractiveCard(chatId, card).catch((err) => {
+        console.warn(`[shell] /config card send failed, falling back to text:`, err);
+        return null;
+      });
+      if (sent) return;
+    }
+    const fallback = configCardFallbackText(state);
+    if (opts?.replyMessageId) {
+      await messaging.reply(opts.replyMessageId, fallback).catch(() => {});
+      return;
+    }
+    await messaging.sendMessage(chatId, fallback).catch(() => {});
+  }
+
+  async function setConfigWorkspaceCwd(workspaceName: string, cwdInput: string): Promise<string> {
+    const cwd = expandConfigCwd(cwdInput);
+    workspaceRegistry.getOrCreate(workspaceName, { cwd });
+    updateWorkspaceInDb(workspaceName, { cwd });
+    return cwd;
+  }
+
+  async function setConfigSession(workspaceName: string, sessionId: string): Promise<void> {
+    const record = getSessionRecord(sessionId);
+    if (!record || record.workspace !== workspaceName || record.archived === 1) {
+      throw new Error(`session 不属于当前 workspace 或已归档: ${sessionId}`);
+    }
+    sessionManager.setWorkspaceDefaultSession(sessionId);
+  }
+
+  async function createConfigSession(workspaceName: string, chatId: string, agentName?: string): Promise<string> {
+    const targetAgent = agentName ? resolveAgentProvider(getFreshAgents(), 'director', agentName).name : undefined;
+    const entry = workspaceName === 'main'
+      ? null
+      : await sessionManager.createNewSession(workspaceName, { feishuChatId: chatId, agentName: targetAgent });
+    if (workspaceName === 'main') {
+      if (targetAgent) await director.switchAgent(targetAgent);
+      await director.resetSession();
+      const sessionId = director.getStatus().sessionId;
+      if (!sessionId) throw new Error('main session was not initialized');
+      workspaceRegistry.setDefaultSession('main', sessionId);
+      return sessionId;
+    }
+    if (!entry?.sessionId) throw new Error('session was not initialized');
+    sessionManager.setWorkspaceDefaultSession(entry.sessionId);
+    return entry.sessionId;
+  }
+
+  async function switchConfigAgent(workspaceName: string, chatId: string, agentName: string): Promise<string> {
+    const targetAgent = resolveAgentProvider(getFreshAgents(), 'director', agentName).name;
+    if (workspaceName === 'main') {
+      const ok = await director.switchAgent(targetAgent);
+      if (!ok) throw new Error(`主会话切换到 ${targetAgent} 失败`);
+      return targetAgent;
+    }
+    const workspace = workspaceRegistry.getOrCreate(workspaceName);
+    let sessionId = workspace.default_session_id;
+    if (!sessionId) {
+      sessionId = await createConfigSession(workspaceName, chatId, targetAgent);
+      return targetAgent;
+    }
+    let entry = sessionManager.getSession(sessionId);
+    if (!entry) {
+      const revived = await sessionManager.reviveSession(sessionId, { feishuChatId: chatId, agentName: targetAgent });
+      entry = revived ?? null;
+    }
+    if (!entry?.sessionId) throw new Error(`default session 不可恢复: ${sessionId}`);
+    const ok = await entry.bridge.switchAgent(targetAgent);
+    if (!ok) throw new Error(`session 切换到 ${targetAgent} 失败`);
+    sessionManager.setWorkspaceDefaultSession(entry.sessionId);
+    return targetAgent;
+  }
+
+
+  async function handleConfigCardAction(action: CardAction): Promise<void> {
+    if (config.feishu.master_id && action.senderOpenId !== config.feishu.master_id) return;
+    const chatId = action.chatId;
+    if (!chatId) return;
+    const workspaceName = typeof action.value?.workspace === 'string'
+      ? action.value.workspace
+      : 'main';
+    try {
+      let notice = '';
+      switch (action.action) {
+        case 'persona_config_set_session': {
+          const sessionId = typeof action.value?.sessionId === 'string' ? action.value.sessionId : '';
+          if (!sessionId) throw new Error('missing sessionId');
+          await setConfigSession(workspaceName, sessionId);
+          notice = `已切换 default session: ${sessionId}`;
+          break;
+        }
+        case 'persona_config_new_session': {
+          const agentName = typeof action.value?.agent === 'string' ? action.value.agent : undefined;
+          const sessionId = await createConfigSession(workspaceName, chatId, agentName);
+          notice = `已新建并切换 session: ${sessionId}`;
+          break;
+        }
+        case 'persona_config_switch_agent': {
+          const agentName = typeof action.value?.agent === 'string' ? action.value.agent : '';
+          if (!agentName) throw new Error('missing agent');
+          const target = await switchConfigAgent(workspaceName, chatId, agentName);
+          notice = `已切换当前 session agent: ${target}`;
+          break;
+        }
+        case 'persona_config_cwd_help': {
+          await messaging.sendMessage(chatId, `请发送：/config cwd <本地目录>\n例如：/config cwd /Users/ilike/github/jzlikewei/persona-shell\n\n说明：cwd 保存到当前群 workspace，对新 session 生效；如需当前 session 立即使用，请保存后重启或新建 session。`).catch(() => {});
+          return;
+        }
+        case 'persona_config_refresh': {
+          notice = '已刷新';
+          break;
+        }
+        default:
+          return;
+      }
+      await sendConfigCard(chatId, workspaceName, { notice, updateMessageId: action.messageId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await messaging.sendMessage(chatId, `配置操作失败：${msg}`).catch(() => {});
+    }
+  }
+
   messaging.onCardAction?.(async (action: CardAction) => {
+    if (action.action.startsWith('persona_config_')) {
+      await handleConfigCardAction(action);
+      return;
+    }
     if (action.action !== streamCancelAction) return;
     if (config.feishu.master_id && action.senderOpenId !== config.feishu.master_id) return;
     const cancelled = await cancelStreamingReplyByCard(action);
@@ -1113,6 +1327,47 @@ async function main() {
     /** 本体检查：配置了 master_id 时，仅本体可执行危险命令 */
     const isMaster = !config.feishu.master_id || msg.senderOpenId === config.feishu.master_id;
 
+    // /config — Feishu control card for current chat workspace. Workspace identity
+    // stays tied to the group name; first phase only controls session / agent / cwd.
+    const configMatch = text.trim().match(/^\/config(?:\s+(.*))?$/is);
+    if (configMatch) {
+      if (!isMaster) return;
+      const workspaceName = configCardWorkspaceFromMessage(msg);
+      const arg = (configMatch[1] ?? '').trim();
+      try {
+        if (!arg) {
+          await sendConfigCard(chatId, workspaceName, { replyMessageId: messageId });
+          return;
+        }
+        const cwdMatch = arg.match(/^cwd\s+(.+)$/is);
+        if (cwdMatch) {
+          const cwd = await setConfigWorkspaceCwd(workspaceName, cwdMatch[1]);
+          await sendConfigCard(chatId, workspaceName, {
+            notice: `cwd 已保存: ${cwd}。对新 session 生效；如需当前 session 使用新 cwd，请重启或新建 session。`,
+            replyMessageId: messageId,
+          });
+          return;
+        }
+        const agentMatch = arg.match(/^agent\s+([\w-]+)$/i);
+        if (agentMatch) {
+          const target = await switchConfigAgent(workspaceName, chatId, agentMatch[1]);
+          await sendConfigCard(chatId, workspaceName, { notice: `已切换当前 session agent: ${target}`, replyMessageId: messageId });
+          return;
+        }
+        const sessionMatch = arg.match(/^session\s+([\w:-]+)$/i);
+        if (sessionMatch) {
+          await setConfigSession(workspaceName, sessionMatch[1]);
+          await sendConfigCard(chatId, workspaceName, { notice: `已切换 default session: ${sessionMatch[1]}`, replyMessageId: messageId });
+          return;
+        }
+        await messaging.reply(messageId, '用法：/config | /config cwd <path> | /config agent <codex|claude> | /config session <session_id>').catch(() => {});
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        await messaging.reply(messageId, `配置失败：${errorMsg}`).catch(() => {});
+      }
+      return;
+    }
+
     // /esc — cancel the oldest pending message (routes to correct Director)
     if (text.trim() === '/esc') {
       if (!isMaster) return;
@@ -1368,6 +1623,10 @@ async function main() {
         '/session-restart — 重启当前 Director（保留 session，加载新配置）',
         '/new-session — 丢弃当前 session，下次消息创建全新 session',
         '/shell-restart [--force] — 重启整个 Shell 进程（有后台任务时默认拒绝）',
+        '/config — 打开当前群/会话配置卡片（session / agent / cwd）',
+        '/config cwd <path> — 设置当前群 workspace 的工作目录',
+        '/config agent <agent> — 切换当前/default session 的 Agent',
+        '/config session <session_id> — 切换当前群 workspace 的 default session',
         '/help — 显示此帮助信息',
       ];
       await messaging.reply(messageId, lines.join('\n')).catch(() => {});
