@@ -1,4 +1,5 @@
 import { join } from 'path';
+import { readFileSync } from 'fs';
 import { ClaudeDirectorRuntime } from '../director-runtime/claude.js';
 import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessionAdapterOptions } from './index.js';
 import { attachReadHandle } from './index.js';
@@ -45,15 +46,9 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
 
   async send(input: DirectorSendInput): Promise<void> {
     const { text, attachments } = normalizeDirectorInput(input);
-    const content = this.textWithAttachmentFallback(text, attachments);
+    const content = buildMultimodalContent(text, attachments);
     const msg = { type: 'user', message: { role: 'user', content } };
     await this.runtime.write(JSON.stringify(msg) + '\n');
-  }
-
-  private textWithAttachmentFallback(text: string, attachments: DirectorInputAttachment[] | undefined): string {
-    if (!attachments?.length) return text;
-    const lines = attachments.map((attachment) => `- ${attachment.name ?? attachment.path}: ${attachment.path}`);
-    return [text, '附件：', ...lines].filter(Boolean).join('\n');
   }
 
   async stop(): Promise<void> {
@@ -282,4 +277,48 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
       .join('')
       .trim();
   }
+}
+
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+
+function imageMimeType(filePath: string): string {
+  const ext = filePath.toLowerCase().split('.').pop() ?? '';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  return 'image/png';
+}
+
+function buildMultimodalContent(
+  text: string,
+  attachments: DirectorInputAttachment[] | undefined,
+): string | ContentBlock[] {
+  const images = attachments?.filter((a) => {
+    if (a.type === 'image') return true;
+    const ext = a.path.toLowerCase().split('.').pop() ?? '';
+    return IMAGE_EXTS.has(ext);
+  });
+  if (!images?.length) return text;
+
+  const blocks: ContentBlock[] = [];
+  if (text) blocks.push({ type: 'text', text });
+  for (const img of images) {
+    try {
+      const data = readFileSync(img.path).toString('base64');
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mime ?? imageMimeType(img.path), data } });
+    } catch {
+      blocks.push({ type: 'text', text: `[图片加载失败: ${img.path}]` });
+    }
+  }
+
+  const nonImages = attachments?.filter((a) => !images.includes(a));
+  if (nonImages?.length) {
+    const lines = nonImages.map((a) => `- ${a.name ?? a.path}: ${a.path}`);
+    blocks.push({ type: 'text', text: ['附件：', ...lines].join('\n') });
+  }
+  return blocks;
 }
