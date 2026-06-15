@@ -18,7 +18,14 @@ describe('console API contract', () => {
     expect(parseSendApiPayload({ sessionId: 's-1', text: '   ' })).toEqual({
       ok: false,
       status: 400,
-      message: 'text is required',
+      message: 'text or attachments is required',
+    });
+
+    expect(parseSendApiPayload({ sessionId: 's-1', text: '', attachments: [{ kind: 'image', path: '/tmp/a.png', name: 'a.png' }] })).toEqual({
+      ok: true,
+      sessionId: 's-1',
+      text: '',
+      attachments: [{ type: 'image', path: '/tmp/a.png', name: 'a.png' }],
     });
   });
 

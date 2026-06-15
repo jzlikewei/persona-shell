@@ -510,8 +510,8 @@ export function ChatPage() {
     const body = input.trim()
     if ((!body && attachments.length === 0) || sending || uploading) return
     const filesText = attachmentText(attachments)
-    const content = [body, filesText].filter(Boolean).join('\n\n')
-    sendMessage(content, setActiveSession)
+    const displayContent = [body, filesText].filter(Boolean).join('\n\n')
+    sendMessage(body, setActiveSession, attachments, displayContent)
     updateInput('')
     setAttachments([])
     setUploadError(null)

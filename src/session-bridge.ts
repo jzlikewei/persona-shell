@@ -12,6 +12,7 @@ import { KimiDirectorRuntime } from './director-runtime/kimi.js';
 import { CodexAppServerSessionAdapter } from './director-session-adapter/codex-app-server.js';
 import { ClaudeSessionAdapter } from './director-session-adapter/claude.js';
 import { KimiSessionAdapter } from './director-session-adapter/kimi.js';
+import type { DirectorInputAttachment, DirectorSendInput } from './director-input.js';
 import type {
   AssistantTurnEvent,
   DirectorSessionAdapter,
@@ -906,7 +907,7 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
-  async send(message: string, options?: { correlationId?: string; expectResponse?: boolean }): Promise<DirectorSendResult | void> {
+  async send(message: string, options?: { correlationId?: string; expectResponse?: boolean; inputAttachments?: DirectorInputAttachment[] }): Promise<DirectorSendResult | void> {
     if (!this.adapter.isReady()) {
       throw new Error('SessionBridge not started');
     }
@@ -926,12 +927,12 @@ export class SessionBridge extends EventEmitter {
     }
 
     if (options?.expectResponse === false) {
-      return await this.writeRaw(content, { handleSteeredPending: false });
+      return await this.writeRaw(this.buildAdapterInput(content, options?.inputAttachments), { handleSteeredPending: false });
     }
 
     const pendingTurn = this.enqueuePendingTurn({ type: 'user', correlationId: options?.correlationId });
     try {
-      return await this.writeRaw(content);
+      return await this.writeRaw(this.buildAdapterInput(content, options?.inputAttachments));
     } catch (err) {
       this.failPendingTurn(pendingTurn, err);
       throw err;
@@ -961,10 +962,15 @@ export class SessionBridge extends EventEmitter {
     }
   }
 
+  private buildAdapterInput(text: string, attachments: DirectorInputAttachment[] | undefined): DirectorSendInput {
+    return attachments?.length ? { text, attachments } : text;
+  }
+
   private async writeRaw(
-    content: string,
+    input: DirectorSendInput,
     options: { handleSteeredPending?: boolean } = {},
   ): Promise<DirectorSendResult | void> {
+    const content = typeof input === 'string' ? input : input.text;
     if (!this.adapter.isReady()) {
       throw new Error('transport not ready');
     }
@@ -974,6 +980,7 @@ export class SessionBridge extends EventEmitter {
       const logPayload = JSON.stringify({
         type: 'user',
         message: { role: 'user', content },
+        attachments: typeof input === 'string' ? undefined : input.attachments,
         timestamp: new Date().toISOString(),
         agentLabel: this.label,
         session_id: this.sessionId ?? undefined,
@@ -983,7 +990,7 @@ export class SessionBridge extends EventEmitter {
       // best-effort logging
     }
 
-    const result = await this.adapter.send(content);
+    const result = await this.adapter.send(input);
     if (result === 'steered' && options.handleSteeredPending !== false) {
       const steeredTurn = this.pendingTurns.pop();
       if (steeredTurn?.type === 'user') {

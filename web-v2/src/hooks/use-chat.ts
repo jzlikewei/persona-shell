@@ -42,6 +42,14 @@ export interface ChatMessage {
 
 export type TurnPhase = 'thinking' | 'streaming' | 'tool_running' | null
 
+export interface SendAttachment {
+  path: string
+  name?: string
+  kind?: 'markdown' | 'text' | 'image' | 'file'
+  size?: number
+  mime?: string
+}
+
 export interface ChatLiveTurn {
   turnId: string
   text: string
@@ -360,7 +368,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     clearTurnPhaseTimeout()
   }, [publishCurrentTurn, clearTurnPhaseTimeout])
 
-  const sendMessage = useCallback(async (content: string, onSessionCreated?: (sessionId: string) => void) => {
+  const sendMessage = useCallback(async (content: string, onSessionCreated?: (sessionId: string) => void, attachments: SendAttachment[] = [], displayContent?: string) => {
     if (!usingTurnEventsRef.current) flushStreaming()
     setSending(true)
     let targetSessionId = sessionId
@@ -393,7 +401,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     const userMsg: ChatMessage = {
       id: uuid(),
       role: 'user',
-      content,
+      content: displayContent ?? content,
       timestamp: new Date().toISOString(),
       sessionId: targetSessionId,
     }
@@ -403,6 +411,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       await post('/api/send', {
         text: content,
         sessionId: targetSessionId,
+        attachments,
       })
     } catch (e) {
       console.error('Failed to send message:', e)

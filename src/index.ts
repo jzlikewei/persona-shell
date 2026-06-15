@@ -6,6 +6,7 @@ import { WorkspaceRegistry } from './workspace-registry.js';
 import { createFeishuClient } from './messaging/feishu.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
 import type { IncomingMessage, StreamingReplyHandle, CardAction, MessagingClient } from './messaging/messaging.js';
+import type { DirectorInputAttachment } from './director-input.js';
 import { MessageQueue, type QueueItem } from './queue.js';
 import { startConsole, type MetricsCollector } from './console.js';
 import { ensureWebV2Dist } from './ensure-web-v2-dist.js';
@@ -1671,6 +1672,13 @@ async function main() {
     // Director 有上下文，引用截断到 quote_max_length
     const quotePrefix = msg.quotedText ? formatQuote(msg.quotedText, config.director.quote_max_length) : '';
     let directorText: string;
+    const inputAttachments: DirectorInputAttachment[] | undefined = msg.attachments?.map((attachment) => ({
+      type: attachment.type,
+      path: attachment.filePath,
+      name: attachment.fileName,
+      detail: attachment.type === 'image' ? 'high' : undefined,
+    }));
+
     if (chatType === 'group') {
       const senderTag = msg.senderName ? ` | ${msg.senderName}` : '';
       directorText = `[群聊: ${msg.workspaceName || '未知群'}${senderTag}] ${quotePrefix}${text}`;
@@ -1696,6 +1704,7 @@ async function main() {
           feishuChatId: chatId,
           text: directorText,
           messageId,
+          inputAttachments,
         });
         console.log(`[shell] Sent to workspace "${workspaceName}" default session ${session.sessionId || '(pending)'}`);
       } catch (err) {
@@ -1716,7 +1725,7 @@ async function main() {
       if (director.getStatus().pendingCount > 0) {
         try {
           director.promoteActiveTurnToUser();
-          await director.send(directorText, { expectResponse: false });
+          await director.send(directorText, { expectResponse: false, inputAttachments });
           queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));
           console.log(`[shell] Inserted message into active turn: ${messageId}`);
         } catch (err) {
@@ -1731,12 +1740,12 @@ async function main() {
         return;
       }
 
-      const correlationId = queue.enqueue({ text, messageId, chatId });
+      const correlationId = queue.enqueue({ text, messageId, chatId, inputAttachments });
       queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
       try {
         await startStreamingReplyFor(correlationId, messageId);
         queue.markDispatching(correlationId);
-        await director.send(directorText, { correlationId });
+        await director.send(directorText, { correlationId, inputAttachments });
         queue.markDispatched(correlationId);
         await startStreamingReplyFor(correlationId, messageId);
       } catch (err) {

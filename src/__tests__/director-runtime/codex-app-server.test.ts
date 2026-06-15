@@ -4,6 +4,52 @@ import { join } from 'path';
 import { CodexAppServerRuntime } from '../../director-runtime/codex-app-server.js';
 
 describe('CodexAppServerRuntime', () => {
+  test('maps image attachments to app-server localImage user input', () => {
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: 'test',
+        logDir: '/tmp/persona-test/logs',
+        config: {
+          persona_dir: '/tmp/persona-test',
+          pipe_dir: '/tmp/persona-test',
+          pid_file: '/tmp/persona-test/test.pid',
+          time_sync_interval_ms: 999999,
+          flush_context_limit: 999999,
+          flush_interval_ms: 999999,
+          quote_max_length: 32,
+        },
+        agent: { type: 'codex-app-server', command: 'codex', name: 'codex-live' },
+        personaRole: 'director',
+      },
+      {
+        getSessionId: () => 'thread-1',
+        getSessionName: () => 'session-1',
+        getRuntimeEnv: () => ({ DIRECTOR_LABEL: 'test', PERSONA_SESSION_ID: 'thread-1', PERSONA_WORKSPACE: 'main' }),
+        setSessionName: () => {},
+        buildSessionName: () => 'session-1',
+        persistSession: () => {},
+        clearSession: () => {},
+        logOutput: () => {},
+        onChunk: () => {},
+        onToolCall: () => {},
+        onPartialAgentMessage: () => {},
+        onWorkflowEvent: () => {},
+        onMetrics: () => {},
+        onTurnComplete: () => {},
+        onTurnFailure: () => {},
+        onRuntimeClosed: () => {},
+      },
+    );
+    const runtimePrivate = runtime as unknown as {
+      buildTurnInput(text: string, attachments: Array<{ type: 'image' | 'file'; path: string; name?: string }> | undefined): Array<Record<string, unknown>>;
+    };
+
+    expect(runtimePrivate.buildTurnInput('看图', [{ type: 'image', path: '/tmp/a.png', name: 'a.png' }])).toEqual([
+      { type: 'text', text: '看图', text_elements: [] },
+      { type: 'localImage', path: '/tmp/a.png', detail: 'high' },
+    ]);
+  });
+
   test('uses last input tokens for context metrics instead of cumulative totals', () => {
     const metrics: Array<{ lastInputTokens?: number; contextTokens?: number; contextWindow?: number }> = [];
     const runtime = new CodexAppServerRuntime(

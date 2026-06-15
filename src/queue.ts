@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { randomBytes } from 'crypto';
 import { getState, setState, deleteState } from './task/task-store.js';
+import type { DirectorInputAttachment } from './director-input.js';
 
 export interface QueueItem {
   text: string;
@@ -11,6 +12,7 @@ export interface QueueItem {
   correlationId: string;
   cancelled?: boolean;
   pendingAttachments?: PendingAttachment[];
+  inputAttachments?: DirectorInputAttachment[];
 }
 
 export interface PendingAttachment {

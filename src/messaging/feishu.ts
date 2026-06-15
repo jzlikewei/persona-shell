@@ -683,7 +683,7 @@ export function createFeishuClient(config: Config['feishu'], options?: { skipMen
               }).then((r) => r.writeFile(savePath)),
             );
             attachType = 'image';
-            msg.text = `[用户发送了图片，已保存到 ${savePath}]`;
+            msg.text = `[用户发送了图片]`;
           } else if (msgType === 'file') {
             const fileKey = parsed.file_key as string;
             fileName = parsed.file_name as string | undefined;

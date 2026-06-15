@@ -6,6 +6,7 @@ import type { DirectorRuntimeStatus, DirectorSendResult } from './index.js';
 import type { Config } from '../config.js';
 import { buildCodexMcpOverrideArgs, type AgentRuntimeConfig } from '../persona-process.js';
 import { PERSONA_DYNAMIC_TOOLS } from '../persona-dynamic-tools.js';
+import { normalizeDirectorInput, type DirectorInputAttachment, type DirectorSendInput } from '../director-input.js';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -150,7 +151,10 @@ export class CodexAppServerRuntime {
     };
   }
 
-  async send(content: string): Promise<DirectorSendResult> {
+  async send(input: DirectorSendInput): Promise<DirectorSendResult> {
+    const directorInput = normalizeDirectorInput(input);
+    const turnInput = this.buildTurnInput(directorInput.text, directorInput.attachments);
+
     if (!this.isTransportReady()) {
       throw new Error('codex app-server is not ready');
     }
@@ -168,7 +172,7 @@ export class CodexAppServerRuntime {
       await this.request('turn/steer', {
         threadId,
         expectedTurnId: this.activeTurnId,
-        input: [this.textInput(content)],
+        input: turnInput,
       });
       return 'steered';
     }
@@ -178,7 +182,7 @@ export class CodexAppServerRuntime {
     this.currentTurnStartedAt = Date.now();
     const result = await this.request('turn/start', {
       threadId,
-      input: [this.textInput(content)],
+      input: turnInput,
       approvalPolicy: this.options.agent.approval ?? 'never',
       sandboxPolicy: this.toSandboxPolicy(this.options.agent.sandbox),
       ...(this.options.agent.model ? { model: this.options.agent.model } : {}),
@@ -731,6 +735,27 @@ export class CodexAppServerRuntime {
       };
     }
     return { type: 'dangerFullAccess' };
+  }
+
+  private buildTurnInput(text: string, attachments: DirectorInputAttachment[] | undefined): Record<string, JsonValue>[] {
+    const input: Record<string, JsonValue>[] = [];
+    if (text.trim()) input.push(this.textInput(text));
+
+    for (const attachment of attachments ?? []) {
+      if (attachment.type === 'image') {
+        input.push({
+          type: 'localImage',
+          path: attachment.path,
+          detail: attachment.detail ?? 'high',
+        });
+        continue;
+      }
+      input.push(this.textInput(`附件：${attachment.name ?? attachment.path}
+路径：${attachment.path}`));
+    }
+
+    if (input.length === 0) input.push(this.textInput(''));
+    return input;
   }
 
   private textInput(text: string): Record<string, JsonValue> {

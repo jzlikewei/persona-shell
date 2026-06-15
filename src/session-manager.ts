@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import type { AgentRuntimePool, RuntimeEntry } from './agent-runtime-pool.js';
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue, QueueItem, PendingAttachment } from './queue.js';
+import type { DirectorInputAttachment } from './director-input.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import type { CardAction } from './messaging/messaging.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
@@ -40,7 +41,7 @@ export class SessionManager extends EventEmitter {
   // --- Session routing (new sessionId-based API) ---
 
   /** Send a message to a session by sessionId */
-  async send(sessionId: string, text: string, messageId: string, options?: { webOnly?: boolean }): Promise<void> {
+  async send(sessionId: string, text: string, messageId: string, options?: { webOnly?: boolean; inputAttachments?: DirectorInputAttachment[] }): Promise<void> {
     const routingKey = this.sessionToRoutingKey.get(sessionId);
     if (!routingKey) throw new Error(`Session not found: ${sessionId}`);
     await this.pool.send(routingKey, text, messageId, options);
@@ -165,12 +166,13 @@ export class SessionManager extends EventEmitter {
     text: string;
     messageId: string;
     sendOptions?: { webOnly?: boolean };
+    inputAttachments?: DirectorInputAttachment[];
   }): Promise<SessionEntry> {
     const session = await this.resolveWorkspaceDefaultSession(workspaceName, {
       feishuChatId: opts.feishuChatId,
       agentName: opts.agentName,
     });
-    await this.send(session.sessionId, opts.text, opts.messageId, opts.sendOptions);
+    await this.send(session.sessionId, opts.text, opts.messageId, { ...opts.sendOptions, inputAttachments: opts.inputAttachments });
     return session;
   }
 

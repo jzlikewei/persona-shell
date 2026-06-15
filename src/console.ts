@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, read
 import { join, resolve, extname, relative, dirname, normalize, basename } from 'path';
 import { homedir } from 'os';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
+import type { DirectorInputAttachment } from './director-input.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { parseConversationLog, parseConversationLogFiles, parseTaskLog } from './log-parser.js';
 import { parseClaudeTranscript } from './claude-transcript-reader.js';
@@ -1036,6 +1037,23 @@ export function startConsole(
     ];
     if (roots.some((root) => isInside(root, path))) return true;
     return listTasks({ limit: 500 }).some((task) => task.result_file && resolve(task.result_file) === path);
+  }
+
+  function normalizeSendInputAttachments(attachments: Array<{ type: 'image' | 'file' | 'audio'; path: string; name?: string; mime?: string }> | undefined): DirectorInputAttachment[] {
+    return (attachments ?? []).map((attachment) => {
+      const resolved = resolve(attachment.path);
+      if (!isAllowedWorkbenchFile(resolved) || !existsSync(resolved)) {
+        throw new Error(`Attachment path not allowed: ${resolved}`);
+      }
+      const kind = fileKind(resolved);
+      return {
+        type: attachment.type === 'image' || kind === 'image' ? 'image' : attachment.type,
+        path: resolved,
+        name: attachment.name ?? basename(resolved),
+        mime: attachment.mime,
+        detail: attachment.type === 'image' || kind === 'image' ? 'high' : undefined,
+      } satisfies DirectorInputAttachment;
+    });
   }
 
   function isAllowedAttachmentPath(path: string): boolean {
@@ -2979,6 +2997,12 @@ export function startConsole(
             const payload = parseSendApiPayload(await req.json());
             if (!payload.ok) return Response.json({ ok: false, message: payload.message }, { status: payload.status });
             const { sessionId, text } = payload;
+            let inputAttachments: DirectorInputAttachment[];
+            try {
+              inputAttachments = normalizeSendInputAttachments(payload.attachments);
+            } catch (err) {
+              return Response.json({ ok: false, message: String(err) }, { status: 403 });
+            }
             const mainSessionId = director.getStatus().sessionId;
             console.log(`[web-api] POST /api/send sessionId=${sessionId} mainSessionId=${mainSessionId} match=${sessionId === mainSessionId} text="${text.slice(0, 50)}..."`);
 
@@ -2997,6 +3021,7 @@ export function startConsole(
                     messageId,
                     chatId: 'web-console',
                     chatType: 'p2p',
+                    attachments: inputAttachments.map((attachment) => ({ type: attachment.type, filePath: attachment.path, fileName: attachment.name })),
                   });
                 }
                 writeAuditEntry('director.send', true, { target: sessionId, director: 'main', bytes: Buffer.byteLength(text, 'utf-8') });
@@ -3015,7 +3040,7 @@ export function startConsole(
                     agentName: dbRecord.agent_name ?? workspaceAgent,
                   });
                   if (revived?.sessionId) {
-                    await sessionManager.send(revived.sessionId, text, messageId, { webOnly: true });
+                    await sessionManager.send(revived.sessionId, text, messageId, { webOnly: true, inputAttachments });
                     writeAuditEntry('director.send', true, { target: revived.sessionId, revivedFrom: sessionId, bytes: Buffer.byteLength(text, 'utf-8') });
                     return Response.json({ ok: true, message: 'revived session and sent', sessionId: revived.sessionId, revived: true });
                   }
@@ -3028,7 +3053,7 @@ export function startConsole(
                 writeAuditEntry('director.send', false, { target: sessionId, reason: 'session not found' });
                 return Response.json({ ok: false, message: `Session "${sessionId}" not found` }, { status: 404 });
               }
-              await sessionManager.send(sessionId, text, messageId, { webOnly: true });
+              await sessionManager.send(sessionId, text, messageId, { webOnly: true, inputAttachments });
               writeAuditEntry('director.send', true, { target: sessionId, bytes: Buffer.byteLength(text, 'utf-8') });
               return Response.json({ ok: true, message: 'sent to session', sessionId });
             } catch (err) {

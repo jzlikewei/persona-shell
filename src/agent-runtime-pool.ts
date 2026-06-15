@@ -5,6 +5,7 @@ import { existsSync, readdirSync } from 'fs';
 import { extname, join } from 'path';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { MessageQueue, type PendingAttachment, type QueueItem } from './queue.js';
+import type { DirectorInputAttachment } from './director-input.js';
 import { ClaudeProcess } from './claude-process.js';
 import { loadConfig, type Config, isCodexFamily } from './config.js';
 import type { CardAction, MessagingClient, StreamingReplyHandle } from './messaging/messaging.js';
@@ -320,14 +321,14 @@ export class AgentRuntimePool extends EventEmitter {
   }
 
   /** Send a message to a group Director, managing queue correlation */
-  async send(routingKey: string, text: string, messageId: string, options: { webOnly?: boolean } = {}): Promise<void> {
+  async send(routingKey: string, text: string, messageId: string, options: { webOnly?: boolean; inputAttachments?: DirectorInputAttachment[] } = {}): Promise<void> {
     const entry = this.entries.get(routingKey);
     if (!entry) throw new Error(`No Director for routingKey ${routingKey}`);
 
     entry.lastActiveAt = Date.now();
     if (entry.bridge.getStatus().pendingCount > 0) {
       entry.bridge.promoteActiveTurnToUser();
-      await entry.bridge.send(text, { expectResponse: false });
+      await entry.bridge.send(text, { expectResponse: false, inputAttachments: options.inputAttachments });
       entry.queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));
       console.log(`[pool:${entry.workspaceName}] Inserted message into active turn: ${messageId}`);
       return;
@@ -337,13 +338,14 @@ export class AgentRuntimePool extends EventEmitter {
       text,
       messageId,
       chatId: options.webOnly ? 'web-console' : entry.feishuChatId,
+      inputAttachments: options.inputAttachments,
     });
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
 
     try {
       await this.startStreamingReply(entry.queue, correlationId, messageId, routingKey);
       entry.queue.markDispatching(correlationId);
-      await entry.bridge.send(text, { correlationId });
+      await entry.bridge.send(text, { correlationId, inputAttachments: options.inputAttachments });
       entry.queue.markDispatched(correlationId);
       await this.startStreamingReply(entry.queue, correlationId, messageId, routingKey);
       entry.messagesSinceFlush++;

@@ -2,6 +2,7 @@ import { join } from 'path';
 import { ClaudeDirectorRuntime } from '../director-runtime/claude.js';
 import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessionAdapterOptions } from './index.js';
 import { attachReadHandle } from './index.js';
+import { normalizeDirectorInput, type DirectorInputAttachment, type DirectorSendInput } from '../director-input.js';
 
 export class ClaudeSessionAdapter implements DirectorSessionAdapter {
   /** Collects text from assistant events across multi-turn responses */
@@ -42,9 +43,17 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
     return this.runtime.isAlive();
   }
 
-  async send(content: string): Promise<void> {
+  async send(input: DirectorSendInput): Promise<void> {
+    const { text, attachments } = normalizeDirectorInput(input);
+    const content = this.textWithAttachmentFallback(text, attachments);
     const msg = { type: 'user', message: { role: 'user', content } };
     await this.runtime.write(JSON.stringify(msg) + '\n');
+  }
+
+  private textWithAttachmentFallback(text: string, attachments: DirectorInputAttachment[] | undefined): string {
+    if (!attachments?.length) return text;
+    const lines = attachments.map((attachment) => `- ${attachment.name ?? attachment.path}: ${attachment.path}`);
+    return [text, '附件：', ...lines].filter(Boolean).join('\n');
   }
 
   async stop(): Promise<void> {

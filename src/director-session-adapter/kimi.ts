@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { KimiDirectorRuntime } from '../director-runtime/kimi.js';
 import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessionAdapterOptions } from './index.js';
+import { normalizeDirectorInput, type DirectorInputAttachment, type DirectorSendInput } from '../director-input.js';
 
 export class KimiSessionAdapter implements DirectorSessionAdapter {
   private currentResponse = '';
@@ -49,11 +50,19 @@ export class KimiSessionAdapter implements DirectorSessionAdapter {
     return this.collecting;
   }
 
-  async send(content: string): Promise<void> {
+  async send(input: DirectorSendInput): Promise<void> {
+    const { text, attachments } = normalizeDirectorInput(input);
+    const content = this.textWithAttachmentFallback(text, attachments);
     const msg = JSON.stringify({ role: 'user', content }) + '\n';
     this.currentResponse = '';
     this.collecting = true;
     await this.runtime.write(msg);
+  }
+
+  private textWithAttachmentFallback(text: string, attachments: DirectorInputAttachment[] | undefined): string {
+    if (!attachments?.length) return text;
+    const lines = attachments.map((attachment) => `- ${attachment.name ?? attachment.path}: ${attachment.path}`);
+    return [text, '附件：', ...lines].filter(Boolean).join('\n');
   }
 
   async stop(): Promise<void> {

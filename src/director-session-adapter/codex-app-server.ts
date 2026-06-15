@@ -1,5 +1,6 @@
 import { CodexAppServerRuntime } from '../director-runtime/codex-app-server.js';
 import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessionAdapterOptions } from './index.js';
+import type { DirectorSendInput } from '../director-input.js';
 import type { DirectorSendResult } from '../director-runtime/index.js';
 
 export class CodexAppServerSessionAdapter implements DirectorSessionAdapter {
@@ -59,8 +60,8 @@ export class CodexAppServerSessionAdapter implements DirectorSessionAdapter {
     return this.runtime.hasActiveTurn();
   }
 
-  async send(content: string): Promise<DirectorSendResult> {
-    return this.runtime.send(content);
+  async send(input: DirectorSendInput): Promise<DirectorSendResult> {
+    return this.runtime.send(input);
   }
 
   async stop(): Promise<void> {

@@ -1,16 +1,43 @@
+export interface SendApiAttachmentPayload {
+  type: 'image' | 'file' | 'audio';
+  path: string;
+  name?: string;
+  mime?: string;
+}
+
 export type SendApiPayload =
-  | { ok: true; sessionId: string; text: string }
+  | { ok: true; sessionId: string; text: string; attachments?: SendApiAttachmentPayload[] }
   | { ok: false; status: 400; message: string };
 
 export function parseSendApiPayload(body: unknown): SendApiPayload {
   const payload = body && typeof body === 'object' ? body as Record<string, unknown> : {};
   const text = typeof payload.text === 'string' ? payload.text : '';
   const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId.trim() : '';
+  const attachments = parseSendAttachments(payload.attachments);
 
-  if (!text.trim()) return { ok: false, status: 400, message: 'text is required' };
+  if (!text.trim() && attachments.length === 0) return { ok: false, status: 400, message: 'text or attachments is required' };
   if (!sessionId) return { ok: false, status: 400, message: 'sessionId is required' };
 
-  return { ok: true, sessionId, text };
+  return { ok: true, sessionId, text, ...(attachments.length ? { attachments } : {}) };
+}
+
+function parseSendAttachments(value: unknown): SendApiAttachmentPayload[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const record = item as Record<string, unknown>;
+    const path = typeof record.path === 'string' ? record.path.trim() : '';
+    if (!path) return [];
+    const rawType = typeof record.type === 'string'
+      ? record.type
+      : typeof record.kind === 'string'
+        ? record.kind
+        : 'file';
+    const type: SendApiAttachmentPayload['type'] = rawType === 'image' || rawType === 'audio' ? rawType : 'file';
+    const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim() : undefined;
+    const mime = typeof record.mime === 'string' && record.mime.trim() ? record.mime.trim() : undefined;
+    return [{ type, path, ...(name ? { name } : {}), ...(mime ? { mime } : {}) }];
+  });
 }
 
 export function parseMessagesSessionId(url: URL): string | null {
