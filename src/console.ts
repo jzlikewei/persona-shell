@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'crypto';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, readdirSync, openSync, readSync, closeSync, mkdirSync, renameSync } from 'fs';
 import { join, resolve, extname, relative, dirname, normalize, basename } from 'path';
 import { homedir } from 'os';
@@ -42,6 +42,7 @@ interface ConsoleWorkspace {
   path: string;
   source: 'main' | 'memory';
   cwd?: string;
+  gitBranch?: string;
   agent?: string;
   sessionId?: string | null;
   sessionName?: string | null;
@@ -376,13 +377,22 @@ export function startConsole(
       };
     };
 
+    const getGitBranch = (cwd: string | undefined): string | undefined => {
+      if (!cwd) return undefined;
+      try {
+        return execSync('git branch --show-current', { cwd, encoding: 'utf-8', timeout: 2000 }).trim() || undefined;
+      } catch { return undefined; }
+    };
+
     const mainDbWs = getWorkspace('main');
+    const mainCwd = mainDbWs?.cwd ?? undefined;
     const workspaces: ConsoleWorkspace[] = [{
       id: 'main',
       name: 'Main',
       path: join(cfg.director.persona_dir, 'daily', 'state.md'),
       source: 'main',
-      cwd: mainDbWs?.cwd ?? undefined,
+      cwd: mainCwd,
+      gitBranch: getGitBranch(mainCwd),
       agent: mainDbWs?.agent ?? undefined,
       sessionId: mainStatus.sessionId ?? null,
       sessionName: mainStatus.sessionName ?? null,
@@ -404,12 +414,14 @@ export function startConsole(
           const dbWs = getWorkspace(name);
           // DB record exists → respect its hidden flag; no DB record → derive from session history
           const hidden = dbWs ? !!dbWs.hidden : !hasAnySessionHistory(name);
+          const wsCwd = dbWs?.cwd ?? undefined;
           workspaces.push({
             id: `memory-${name}`,
             name,
             path: join(workspacePath, 'context.md'),
             source: 'memory',
-            cwd: dbWs?.cwd ?? undefined,
+            cwd: wsCwd,
+            gitBranch: getGitBranch(wsCwd),
             agent: dbWs?.agent ?? undefined,
             hidden,
             ...sessionInfoForWorkspace(name),

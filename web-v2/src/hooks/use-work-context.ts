@@ -15,6 +15,7 @@ export interface WorkspaceInfo {
   path: string
   source: 'main' | 'memory'
   cwd?: string
+  gitBranch?: string
   agent?: string
   sessionId?: string | null
   sessionName?: string | null

@@ -126,12 +126,13 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
     if (!name.trim()) return
     setCreating(true)
     setError(null)
+    const effectiveCwd = selectedCwd ?? browseResult?.current
     try {
       if (isConfigMode && updateWorkspaceConfig) {
-        await updateWorkspaceConfig(name.trim(), { cwd: selectedCwd, agent: selectedAgent, originalName: existingWorkspace?.name })
+        await updateWorkspaceConfig(name.trim(), { cwd: effectiveCwd, agent: selectedAgent, originalName: existingWorkspace?.name })
         onOpenChange(false)
       } else {
-        const workspace = await createWorkspace(name.trim(), { cwd: selectedCwd, agent: selectedAgent })
+        const workspace = await createWorkspace(name.trim(), { cwd: effectiveCwd, agent: selectedAgent })
         onCreated(workspace)
       }
     } catch (e) {
@@ -139,7 +140,7 @@ export function WorkspaceCreateSheet({ open, onOpenChange, projects, onCreated, 
     } finally {
       setCreating(false)
     }
-  }, [name, selectedCwd, selectedAgent, isConfigMode, createWorkspace, updateWorkspaceConfig, onCreated, onOpenChange, existingWorkspace?.name])
+  }, [name, selectedCwd, browseResult, selectedAgent, isConfigMode, createWorkspace, updateWorkspaceConfig, onCreated, onOpenChange, existingWorkspace?.name])
 
   const shortPath = (p: string) => p.replace(/^\/Users\/[^/]+/, '~')
   const agentNames = Object.keys(agents)

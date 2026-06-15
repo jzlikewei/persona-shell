@@ -209,6 +209,7 @@ export function RootLayout() {
               </div>
               <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5 font-mono text-[11px] text-[#7f849c]">
                 <span className="min-w-0 max-w-full truncate">workspace: {activeWorkspaceName ?? '-'}</span>
+                {activeWorkspaceInfo?.cwd && <span className="min-w-0 max-w-full truncate">cwd: {activeWorkspaceInfo.cwd.split('/').pop()}{activeWorkspaceInfo.gitBranch ? ` (${activeWorkspaceInfo.gitBranch})` : ''}</span>}
                 <span className="min-w-0 max-w-full truncate">agent: {activeAgentName ?? '-'}{activeAgentType ? ` (${activeAgentType})` : ''}</span>
                 {activeModel && <span className="min-w-0 max-w-full truncate">model: {activeModel}</span>}
                 <span className="min-w-0 max-w-full truncate">session: {activeSessionInfo?.id ?? '-'}</span>
