@@ -4050,16 +4050,7 @@ export function startConsole(
                   if (!switched) return Response.json({ ok: false, error: `failed to switch main Director to ${body.agent}` }, { status: 500 });
                 }
                 await director.resetSession();
-                let sessionId = director.getStatus().sessionId;
-                if (!sessionId) {
-                  sessionId = await new Promise<string | null>((resolve) => {
-                    const timeout = setTimeout(() => resolve(null), 15_000);
-                    director.once('session-id-ready', (sid: string) => {
-                      clearTimeout(timeout);
-                      resolve(sid);
-                    });
-                  });
-                }
+                const sessionId = await director.waitForSessionId();
                 if (!sessionId) return Response.json({ ok: false, error: 'main session was not initialized' }, { status: 500 });
                 workspaceRegistry?.setDefaultSession('main', sessionId);
                 writeAuditEntry('session.create', true, { workspace: wsName, sessionId, director: 'main' });
@@ -4115,16 +4106,7 @@ export function startConsole(
                 const isCurrentMain = director.getStatus().sessionId === sessionId;
                 if (isCurrentMain) {
                   await director.resetSession();
-                  let newId = director.getStatus().sessionId;
-                  if (!newId) {
-                    newId = await new Promise<string | null>((resolve) => {
-                      const timeout = setTimeout(() => resolve(null), 15_000);
-                      director.once('session-id-ready', (sid: string) => {
-                        clearTimeout(timeout);
-                        resolve(sid);
-                      });
-                    });
-                  }
+                  const newId = await director.waitForSessionId();
                   if (newId) workspaceRegistry?.setDefaultSession('main', newId);
                 }
                 const ok = archiveSessionInDb(sessionId);

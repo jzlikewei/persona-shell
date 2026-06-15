@@ -293,7 +293,7 @@ function imageMimeType(filePath: string): string {
   return 'image/png';
 }
 
-function buildMultimodalContent(
+export function buildMultimodalContent(
   text: string,
   attachments: DirectorInputAttachment[] | undefined,
 ): string | ContentBlock[] {
@@ -302,7 +302,11 @@ function buildMultimodalContent(
     const ext = a.path.toLowerCase().split('.').pop() ?? '';
     return IMAGE_EXTS.has(ext);
   });
-  if (!images?.length) return text;
+  const nonImages = attachments?.filter((a) => !images?.includes(a));
+  const attachmentFallback = nonImages?.length
+    ? ['附件：', ...nonImages.map((a) => `- ${a.name ?? a.path}: ${a.path}`)].join('\n')
+    : '';
+  if (!images?.length) return [text, attachmentFallback].filter(Boolean).join('\n\n');
 
   const blocks: ContentBlock[] = [];
   if (text) blocks.push({ type: 'text', text });
@@ -315,10 +319,6 @@ function buildMultimodalContent(
     }
   }
 
-  const nonImages = attachments?.filter((a) => !images.includes(a));
-  if (nonImages?.length) {
-    const lines = nonImages.map((a) => `- ${a.name ?? a.path}: ${a.path}`);
-    blocks.push({ type: 'text', text: ['附件：', ...lines].join('\n') });
-  }
+  if (attachmentFallback) blocks.push({ type: 'text', text: attachmentFallback });
   return blocks;
 }

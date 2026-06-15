@@ -326,6 +326,21 @@ export class SessionBridge extends EventEmitter {
     return freshStart;
   }
 
+  async waitForSessionId(timeoutMs = 15_000): Promise<string | null> {
+    if (this.sessionId) return this.sessionId;
+    return new Promise<string | null>((resolve) => {
+      const onReady = (sessionId: string) => {
+        clearTimeout(timeout);
+        resolve(sessionId);
+      };
+      const timeout = setTimeout(() => {
+        this.off('session-id-ready', onReady);
+        resolve(null);
+      }, timeoutMs);
+      this.once('session-id-ready', onReady);
+    });
+  }
+
   /** Whether this bridge resumed an existing session (has a persisted session ID). */
   get hasRestoredSession(): boolean {
     return this.sessionId !== null;

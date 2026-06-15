@@ -456,7 +456,7 @@ async function main() {
     if (workspaceName === 'main') {
       if (targetAgent) await director.switchAgent(targetAgent);
       await director.resetSession();
-      const sessionId = director.getStatus().sessionId;
+      const sessionId = await director.waitForSessionId();
       if (!sessionId) throw new Error('main session was not initialized');
       workspaceRegistry.setDefaultSession('main', sessionId);
       return sessionId;

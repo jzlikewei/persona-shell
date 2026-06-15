@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { Loader2, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
-import { useApi } from '@/hooks/use-api'
 import { useToast } from '@/components/toast'
 import { config } from '@/lib/config'
 
@@ -22,7 +21,6 @@ const RESTART_POLL_INTERVAL_SECONDS = RESTART_POLL_INTERVAL_MS / 1000
  * 作为独立可见的入口。
  */
 export function RestartShellButton() {
-  const { post } = useApi()
   const { toast } = useToast()
   const [confirming, setConfirming] = useState(false)
   const [pending, setPending] = useState(false)
@@ -100,14 +98,12 @@ export function RestartShellButton() {
       const token = localStorage.getItem('auth_token') || ''
       const headers = new Headers({ 'Content-Type': 'application/json' })
       if (token) headers.set('Authorization', `Bearer ${token}`)
-      const restartRes = await fetch('/api/shell/restart', {
+      const restartRes = await fetch(new URL('/api/shell/restart', config.apiBase), {
         method: 'POST',
         headers,
         body: JSON.stringify({}),
       })
-      const res = restartRes.status === 404
-        ? await post<{ ok: boolean; message?: string }>('/api/send', { text: '/shell-restart' })
-        : await restartRes.json() as { ok: boolean; message?: string }
+      const res = await restartRes.json() as { ok: boolean; message?: string }
       if (!res.ok) {
         toast({ title: 'Shell 重启失败', description: res.message, tone: 'error' })
       } else {
