@@ -138,6 +138,7 @@ Cron job 使用所属 workspace 的 default session 执行。
 |---------|------|
 | WebUI | Web Console，总是接收所有回复 |
 | IM（飞书） | 飞书私聊/群聊，按需转发 |
+| IM（微信，计划中） | 通过 `MessagingClient` 适配器接入；设计见 [微信接入方案](weixin-openclaw-integration.md) |
 
 **MessagingRouter**：负责把 Agent 的回复转发到正确的 Channel。
 

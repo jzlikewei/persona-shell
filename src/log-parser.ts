@@ -35,10 +35,14 @@ const MAX_LOG_READ_BYTES = 2 * 1024 * 1024; // 2MB
 
 export interface ConversationMessage {
   direction: 'in' | 'out';
+  /** UI-facing text. For user messages this is the raw human input, not the agent-facing time-synced prompt. */
   content: string;
+  /** Agent-facing input, when it differs from the raw user text shown in content. */
+  agentContent?: string;
   sessionId?: string;
   timestamp?: number;
   tools?: ConversationToolCall[];
+  attachments?: ConversationAttachment[];
   provider?: string;
   model?: string;
   durationMs?: number;
@@ -49,6 +53,14 @@ export interface ConversationMessage {
   numTurns?: number;
 }
 
+export interface ConversationAttachment {
+  type: 'image' | 'file' | 'audio';
+  path: string;
+  name?: string;
+  mime?: string;
+  detail?: string;
+}
+
 export interface ConversationToolCall {
   id?: string;
   name: string;
@@ -56,6 +68,30 @@ export interface ConversationToolCall {
   result?: string;
   isError?: boolean;
   timestamp?: number;
+}
+
+const TIME_SYNC_PREFIX_RE = /^\[(?:\d{4}\/\d{1,2}\/\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s+\d{1,2}:\d{2}(?::\d{2})?\]\s*/;
+
+export function splitUserMessageContent(
+  content: string,
+  rawContent?: unknown,
+  agentInput?: unknown,
+): { content: string; agentContent?: string } {
+  const explicitRaw = typeof rawContent === 'string' ? rawContent : undefined;
+  const explicitAgent = typeof agentInput === 'string' ? agentInput : undefined;
+  if (explicitRaw !== undefined) {
+    const agentContent = explicitAgent && explicitAgent !== explicitRaw ? explicitAgent : undefined;
+    return { content: explicitRaw, agentContent };
+  }
+  if (explicitAgent && explicitAgent !== content) {
+    return { content, agentContent: explicitAgent };
+  }
+
+  const stripped = content.replace(TIME_SYNC_PREFIX_RE, '');
+  if (stripped !== content) {
+    return { content: stripped, agentContent: content };
+  }
+  return { content };
 }
 
 export interface SessionInfo {
@@ -149,6 +185,28 @@ function extractToolResultText(value: unknown): string | undefined {
 
 function cloneTools(tools: ConversationToolCall[]): ConversationToolCall[] | undefined {
   return tools.length ? tools.map((tool) => ({ ...tool })) : undefined;
+}
+
+function parseInputAttachments(value: unknown): ConversationAttachment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const attachments = value.flatMap((item): ConversationAttachment[] => {
+    const record = asRecord(item);
+    const path = stringField(record, 'path');
+    if (!path) return [];
+    const rawType = stringField(record, 'type');
+    const type: ConversationAttachment['type'] = rawType === 'image' || rawType === 'audio' ? rawType : 'file';
+    const name = stringField(record, 'name');
+    const mime = stringField(record, 'mime');
+    const detail = stringField(record, 'detail');
+    return [{
+      type,
+      path,
+      ...(name ? { name } : {}),
+      ...(mime ? { mime } : {}),
+      ...(detail ? { detail } : {}),
+    }];
+  });
+  return attachments.length ? attachments : undefined;
 }
 
 function pushToolCall(tools: ConversationToolCall[], tool: ConversationToolCall | undefined): void {
@@ -287,15 +345,29 @@ export function parseConversationLog(inputLog: string, outputLog: string, limit:
 /** Parse multiple director log files, preserving cross-day session history. */
 export function parseConversationLogFiles(inputLogs: string[], outputLogs: string[], limit: number, sessionFilter?: string): ConversationMessage[] {
   // Parse input log — new format has timestamp + director fields
-  const inputs: Array<{ content: string; director?: string; timestamp?: string; sessionId?: string }> = [];
+  const inputs: Array<{ content: string; agentContent?: string; director?: string; timestamp?: string; sessionId?: string; attachments?: ConversationAttachment[] }> = [];
   try {
     const raw = readTailFromFiles(inputLogs);
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       try {
         const evt = JSON.parse(line);
-        if (evt?.type === 'user' && evt.message?.content) {
-          inputs.push({ content: evt.message.content, director: evt.director, timestamp: evt.timestamp || evt._ts, sessionId: evt.session_id });
+        const attachments = parseInputAttachments(evt.attachments);
+        const rawMessageContent = typeof evt?.message?.content === 'string' ? evt.message.content : '';
+        const { content, agentContent } = splitUserMessageContent(
+          rawMessageContent,
+          evt?.message?.raw_content,
+          evt?.message?.agent_input ?? evt?.message?.agentInput,
+        );
+        if (evt?.type === 'user' && (content.trim() || attachments?.length)) {
+          inputs.push({
+            content,
+            agentContent,
+            director: evt.director,
+            timestamp: evt.timestamp || evt._ts,
+            sessionId: evt.session_id,
+            attachments,
+          });
         }
       } catch { /* skip malformed lines */ }
     }
@@ -456,13 +528,13 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
   }
 
   // Per-director pairing: group inputs and outputs by director label, then pair within each group
-  const directorInputs = new Map<string, Array<{ content: string; timestamp?: string; sessionId?: string }>>();
+  const directorInputs = new Map<string, Array<{ content: string; agentContent?: string; timestamp?: string; sessionId?: string; attachments?: ConversationAttachment[] }>>();
   const directorOutputs = new Map<string, Array<{ text: string; sessionId?: string; timestamp?: string; tools?: ConversationToolCall[]; meta?: Partial<ConversationMessage> }>>();
 
   for (const inp of inputs) {
     const key = inp.director ?? 'main';
     const arr = directorInputs.get(key) ?? [];
-    arr.push({ content: inp.content, timestamp: inp.timestamp, sessionId: inferInputSessionId(inp) });
+    arr.push({ content: inp.content, agentContent: inp.agentContent, timestamp: inp.timestamp, sessionId: inferInputSessionId(inp), attachments: inp.attachments });
     directorInputs.set(key, arr);
   }
 
@@ -498,7 +570,7 @@ export function parseConversationLogFiles(inputLogs: string[], outputLogs: strin
       const includeOutput = !!pairedOutput && (!sessionFilter || pairedOutput.sessionId === sessionFilter);
 
       if (includeInput) {
-        messages.push({ direction: 'in', content: ins[i].content, sessionId, timestamp: timestampMs(ins[i].timestamp) });
+        messages.push({ direction: 'in', content: ins[i].content, agentContent: ins[i].agentContent, sessionId, timestamp: timestampMs(ins[i].timestamp), attachments: ins[i].attachments });
       }
       if (includeOutput && pairedOutput) {
         messages.push({ direction: 'out', content: pairedOutput.text, sessionId: pairedOutput.sessionId, timestamp: timestampMs(pairedOutput.timestamp), tools: pairedOutput.tools, ...pairedOutput.meta });

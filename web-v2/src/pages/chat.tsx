@@ -11,7 +11,7 @@ import { StopOrSend } from '@/components/stop-button'
 import { MessagePagination } from '@/components/message-pagination'
 import { DateSeparator } from '@/components/date-separator'
 import { useApi } from '@/hooks/use-api'
-import { useChat, type ChatMessage, type ChatToolCall, type ChatWorkflow, type ChatWorkflowGoal } from '@/hooks/use-chat'
+import { useChat, type ChatAttachment, type ChatMessage, type ChatToolCall, type ChatWorkflow, type ChatWorkflowGoal } from '@/hooks/use-chat'
 import { isWorkflowActive } from '@/hooks/workflow-status'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
@@ -22,6 +22,19 @@ function formatTime(ts: string) {
   } catch {
     return ''
   }
+}
+
+function normalizeReplyText(text: string) {
+  return text
+    .replace(/\n\n\(耗时 [^)]+\)$/u, '')
+    .replace(/\n\n\(one-shot [^)]+\)$/u, '')
+    .trim()
+}
+
+function sameReplyText(a: string, b: string) {
+  const left = normalizeReplyText(a)
+  const right = normalizeReplyText(b)
+  return !!left && !!right && (left === right || left.startsWith(right) || right.startsWith(left))
 }
 
 /**
@@ -91,6 +104,14 @@ function formatBytes(size: number) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`
   return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+function attachmentName(file: ChatAttachment) {
+  return file.name || file.path.split('/').filter(Boolean).pop() || 'attachment'
+}
+
+function attachmentKind(file: ChatAttachment) {
+  return (file.kind || file.type || 'file').toUpperCase()
 }
 
 function extractText(node: ReactNode): string {
@@ -289,6 +310,34 @@ const ToolCalls = memo(function ToolCalls({ tools }: { tools?: ChatToolCall[] })
   )
 })
 
+const MessageAttachments = memo(function MessageAttachments({
+  attachments,
+  onFileClick,
+}: {
+  attachments?: ChatAttachment[]
+  onFileClick: (path: string) => void
+}) {
+  if (!attachments?.length) return null
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {attachments.map(file => (
+        <button
+          key={file.path}
+          type="button"
+          onClick={() => onFileClick(file.path)}
+          title={file.path}
+          className="inline-flex max-w-[320px] items-center gap-1.5 rounded bg-[#89b4fa]/15 px-2 py-1 font-mono text-[10px] text-[#bac2de] hover:bg-[#89b4fa]/25"
+        >
+          <Paperclip className="size-3 shrink-0 text-[#89b4fa]" />
+          <span className="rounded bg-[#1e1e2e]/70 px-1 text-[9px] font-bold text-[#89b4fa]">{attachmentKind(file)}</span>
+          <span className="truncate text-[#cdd6f4]">{attachmentName(file)}</span>
+          {typeof file.size === 'number' && <span className="shrink-0 text-[#7f849c]">{formatBytes(file.size)}</span>}
+        </button>
+      ))}
+    </div>
+  )
+})
+
 // memo:列表项最贵的就是 markdown 重 parse;父组件每次重渲不应触发整列表 re-mount
 const MessageBlock = memo(function MessageBlock({
   message,
@@ -298,10 +347,12 @@ const MessageBlock = memo(function MessageBlock({
   onFileClick: (path: string) => void
 }) {
   const isUser = message.role === 'user'
-  const filePaths = extractFilePaths(message.content)
+  const attachmentPaths = new Set((message.attachments ?? []).map(file => file.path))
+  const filePaths = extractFilePaths(message.content).filter(path => !attachmentPaths.has(path))
   // user 消息也走 MarkdownContent,但无 markdown 提示时回退到 pre-wrap,
   // 避免无意义 reparse。
   const hasMarkdown = /[*_`#\[\]]/.test(message.content)
+  const hasContent = message.content.trim().length > 0
 
   return (
     <article
@@ -327,9 +378,12 @@ const MessageBlock = memo(function MessageBlock({
             : 'border-l-[3px] border-[#a6e3a1] bg-[#313244] text-[#bac2de]'
         )}>
           {isUser
-            ? (hasMarkdown
-                ? <MarkdownContent content={message.content} onFileClick={onFileClick} />
-                : <div className="whitespace-pre-wrap text-left">{message.content}</div>)
+            ? (<>
+                {hasContent && (hasMarkdown
+                  ? <MarkdownContent content={message.content} onFileClick={onFileClick} />
+                  : <div className="whitespace-pre-wrap text-left">{message.content}</div>)}
+                <MessageAttachments attachments={message.attachments} onFileClick={onFileClick} />
+              </>)
             : (message.content.trim()
                 ? <MarkdownContent content={message.content} onFileClick={onFileClick} />
                 : <div className="font-mono text-xs text-[#7f849c]">仅执行工具调用，无文本输出</div>)}
@@ -429,6 +483,20 @@ function EmptyConversation() {
   )
 }
 
+function InitialSessionLoading({ sessionLabel, sessionId }: { sessionLabel?: string; sessionId?: string | null }) {
+  return (
+    <div className="grid min-h-0 flex-1 place-items-center px-4">
+      <div className="flex max-w-[520px] flex-col items-center gap-3 rounded-lg border border-[#45475a] bg-[#181825] px-5 py-4 text-center shadow-lg">
+        <Loader2 className="size-5 animate-spin text-[#89b4fa]" />
+        <div>
+          <div className="font-mono text-sm font-bold text-[#cdd6f4]">Loading session history…</div>
+          <div className="mt-1 max-w-[460px] truncate font-mono text-[11px] text-[#7f849c]">{sessionLabel || sessionId || '-'}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ChatPage() {
   const {
     activeWorkspace,
@@ -444,7 +512,6 @@ export function ChatPage() {
   const liveWorkflow = currentTurn?.workflow ?? workflow
   const livePhase = currentTurn?.phase ?? turnPhase
   const activeWorkflow = isWorkflowActive(liveWorkflow)
-  const isStreaming = livePhase !== null || liveText.length > 0 || liveTools.length > 0 || activeWorkflow
   const draftKey = activeSession ? `persona-shell:v2:draft:${activeSession}` : null
   const [input, setInput] = useState(() => {
     if (!draftKey) return ''
@@ -480,6 +547,25 @@ export function ChatPage() {
   // 用户是否已贴底:决定流式新内容是平滑滚动还是停滞(尊重用户上滑阅读历史)
   const atBottomRef = useRef(true)
   const visibleChatMessages = useMemo(() => visibleMessages(messages), [messages])
+  const liveHasRunningTool = liveTools.some(tool => tool.status === 'running')
+  const lastVisibleAssistant = useMemo(
+    () => [...visibleChatMessages].reverse().find(msg => msg.role === 'assistant'),
+    [visibleChatMessages],
+  )
+  const liveDuplicatesFinalMessage = !!(
+    liveText &&
+    lastVisibleAssistant &&
+    sameReplyText(lastVisibleAssistant.content, liveText) &&
+    !liveHasRunningTool
+  )
+  const shouldShowLiveTail = !liveDuplicatesFinalMessage && (livePhase !== null || liveText.length > 0 || liveTools.length > 0 || activeWorkflow)
+  const isStreaming = shouldShowLiveTail
+  const isInitialHistoryLoading = !!activeSession &&
+    loading &&
+    visibleChatMessages.length === 0 &&
+    !liveText &&
+    !activity &&
+    !livePhase
 
   useEffect(() => {
     pendingInitialBottomSessionRef.current = activeSession ?? null
@@ -498,20 +584,10 @@ export function ChatPage() {
     })
   }, [activeSession, visibleChatMessages.length, loading])
 
-  const attachmentText = useCallback((files: UploadedAttachment[]) => {
-    if (files.length === 0) return ''
-    return [
-      '附件：',
-      ...files.map(file => `- ${file.name} (${file.kind}, ${formatBytes(file.size)}): ${file.path}`),
-    ].join('\n')
-  }, [])
-
   const handleSend = () => {
     const body = input.trim()
     if ((!body && attachments.length === 0) || sending || uploading) return
-    const filesText = attachmentText(attachments)
-    const displayContent = [body, filesText].filter(Boolean).join('\n\n')
-    sendMessage(body, setActiveSession, attachments, displayContent)
+    sendMessage(body, setActiveSession, attachments)
     updateInput('')
     setAttachments([])
     setUploadError(null)
@@ -601,13 +677,16 @@ export function ChatPage() {
     } else if (visibleChatMessages.length === 0 && !liveText && !activity && !livePhase) {
       items.push({ __kind: 'empty' })
     }
+    if (!shouldShowLiveTail) {
+      return items
+    }
     if (livePhase) {
       items.push({ __kind: 'streaming', phase: livePhase })
     } else if (liveText || activity || liveTools.length > 0 || activeWorkflow) {
       items.push({ __kind: 'streaming', phase: liveText ? 'streaming' : 'tool_running' })
     }
     return items
-  }, [visibleChatMessages, loading, liveText, activity, livePhase, liveTools.length, activeWorkflow])
+  }, [visibleChatMessages, loading, liveText, activity, livePhase, liveTools.length, activeWorkflow, shouldShowLiveTail])
 
   const renderItem = useCallback((_index: number, item: VirtuosoItem) => {
     if ('__kind' in item) {
@@ -643,29 +722,35 @@ export function ChatPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#1e1e2e]">
-      <MessagePagination
-        loading={loading}
-        loadedCount={visibleChatMessages.length}
-        onLoadMore={loadMore}
-      />
-      <Virtuoso
-        // key 绑定 session:切 session 时强制 remount,避免上一会话的滚动位置和 ResizeObserver
-        // 测高过程继续 follow 进新会话,产生"持续滚动几秒"的视觉
-        key={activeSession ?? 'no-session'}
-        ref={virtuosoRef}
-        data={virtuosoItems}
-        itemContent={renderItem}
-        components={{ Header: renderHeader }}
-        // 'auto' = 瞬间贴底,'smooth' 会"追着布局变化跑"产生持续滚动观感
-        // 流式追加消息(streaming 来时 data 长度增长)也是 auto:对 chat 来说足够好,
-        // 而且避免 mount 期高度收敛过程被平滑动画放大
-        followOutput={atBottomRef.current ? 'auto' : false}
-        atBottomStateChange={(atBottom) => { atBottomRef.current = atBottom }}
-        // 切换 session 时跳到最底(像普通 chat 一样从最新看起)
-        initialTopMostItemIndex={virtuosoItems.length > 0 ? virtuosoItems.length - 1 : 0}
-        increaseViewportBy={{ top: 200, bottom: 400 }}
-        className="min-h-0 flex-1 overflow-x-hidden py-3"
-      />
+      {isInitialHistoryLoading ? (
+        <InitialSessionLoading sessionLabel={activeSessionInfo?.label} sessionId={activeSession} />
+      ) : (
+        <>
+          <MessagePagination
+            loading={loading}
+            loadedCount={visibleChatMessages.length}
+            onLoadMore={loadMore}
+          />
+          <Virtuoso
+            // key 绑定 session:切 session 时强制 remount,避免上一会话的滚动位置和 ResizeObserver
+            // 测高过程继续 follow 进新会话,产生"持续滚动几秒"的视觉
+            key={activeSession ?? 'no-session'}
+            ref={virtuosoRef}
+            data={virtuosoItems}
+            itemContent={renderItem}
+            components={{ Header: renderHeader }}
+            // 'auto' = 瞬间贴底,'smooth' 会"追着布局变化跑"产生持续滚动观感
+            // 流式追加消息(streaming 来时 data 长度增长)也是 auto:对 chat 来说足够好,
+            // 而且避免 mount 期高度收敛过程被平滑动画放大
+            followOutput={atBottomRef.current ? 'auto' : false}
+            atBottomStateChange={(atBottom) => { atBottomRef.current = atBottom }}
+            // 切换 session 时跳到最底(像普通 chat 一样从最新看起)
+            initialTopMostItemIndex={virtuosoItems.length > 0 ? virtuosoItems.length - 1 : 0}
+            increaseViewportBy={{ top: 200, bottom: 400 }}
+            className="min-h-0 flex-1 overflow-x-hidden py-3"
+          />
+        </>
+      )}
 
       <div
         className={cn(

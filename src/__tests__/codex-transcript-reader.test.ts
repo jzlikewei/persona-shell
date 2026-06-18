@@ -120,4 +120,36 @@ describe('parseCodexTranscript', () => {
     expect(result!.some((msg) => msg.content.includes('environment_context'))).toBe(false);
     expect(result!.every((msg) => msg.sessionId === SESSION_ID)).toBe(true);
   });
+
+  test('shows raw user text while preserving agent-facing time-synced input', () => {
+    writeTranscript([
+      {
+        timestamp: '2026-06-18T07:27:58.001Z',
+        type: 'event_msg',
+        payload: { type: 'task_started', turn_id: 'turn-001' },
+      },
+      {
+        timestamp: '2026-06-18T07:27:58.002Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: '[2026/6/18 15:27:58] 看下这个问题' }],
+        },
+      },
+      {
+        timestamp: '2026-06-18T07:28:00.000Z',
+        type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: 'turn-001' },
+      },
+    ]);
+
+    const result = parseCodexTranscript(SESSION_ID, 100, SESSIONS_DIR);
+    expect(result).not.toBeNull();
+    expect(result![0]).toMatchObject({
+      direction: 'in',
+      content: '看下这个问题',
+      agentContent: '[2026/6/18 15:27:58] 看下这个问题',
+    });
+  });
 });

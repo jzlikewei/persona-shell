@@ -128,6 +128,45 @@ describe('log-parser', () => {
       expect(parseConversationLog(join(TMP_DIR, 'nope-in.log'), join(TMP_DIR, 'nope-out.log'), 100)).toEqual([]);
     });
 
+    test('separates raw user text from agent-facing time-synced input', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+      writeFileSync(inLog, JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: '看下这个问题',
+          agent_input: '[2026/6/18 15:27:58] 看下这个问题',
+        },
+        timestamp: '2026-06-18T15:27:58+08:00',
+        session_id: 's-1',
+      }) + '\n');
+      writeFileSync(outLog, '');
+
+      const messages = parseConversationLog(inLog, outLog, 100);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        direction: 'in',
+        content: '看下这个问题',
+        agentContent: '[2026/6/18 15:27:58] 看下这个问题',
+        sessionId: 's-1',
+      });
+    });
+
+    test('strips legacy time-sync prefix from old input logs for display', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+      writeFileSync(inLog, inputLine('[2026/6/18 15:27:58] 看下这个问题', 'main', '2026-06-18T15:27:58+08:00') + '\n');
+      writeFileSync(outLog, '');
+
+      const messages = parseConversationLog(inLog, outLog, 100);
+      expect(messages[0]).toMatchObject({
+        direction: 'in',
+        content: '看下这个问题',
+        agentContent: '[2026/6/18 15:27:58] 看下这个问题',
+      });
+    });
+
     test('only input, no output → only in-direction messages', () => {
       const inLog = join(TMP_DIR, 'input.log');
       const outLog = join(TMP_DIR, 'output.log');
@@ -354,6 +393,32 @@ describe('log-parser', () => {
       expect(filtered.some((m) => m.direction === 'in' && m.content.startsWith('[TASK_DONE]'))).toBe(true);
       const taskMsg = filtered.find((m) => m.content.startsWith('[TASK_DONE]'));
       expect(taskMsg?.sessionId).toBe('sess-raw-task');
+    });
+
+    test('preserves user input attachments separately from text', () => {
+      const inLog = join(TMP_DIR, 'input.log');
+      const outLog = join(TMP_DIR, 'output.log');
+
+      writeFileSync(inLog, JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '看图' },
+        attachments: [{ type: 'image', path: '/tmp/a.png', name: 'a.png', detail: 'high' }],
+        director: 'main',
+        timestamp: '2026-04-15T10:00:00+08:00',
+        session_id: 'sess-image',
+      }) + '\n');
+      writeFileSync(outLog, [
+        outputInit('sess-image'),
+        outputAssistant('ok'),
+        outputResult('sess-image', '2026-04-15T10:00:01+08:00'),
+      ].join('\n') + '\n');
+
+      const msgs = parseConversationLogFiles([inLog], [outLog], 100, 'sess-image');
+      const input = msgs.find((m) => m.direction === 'in');
+      expect(input?.content).toBe('看图');
+      expect(input?.attachments).toEqual([
+        { type: 'image', path: '/tmp/a.png', name: 'a.png', detail: 'high' },
+      ]);
     });
 
     test('codex format — thread.started + item.completed + turn.completed', () => {

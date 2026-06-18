@@ -41,7 +41,7 @@ export class SessionManager extends EventEmitter {
   // --- Session routing (new sessionId-based API) ---
 
   /** Send a message to a session by sessionId */
-  async send(sessionId: string, text: string, messageId: string, options?: { webOnly?: boolean; inputAttachments?: DirectorInputAttachment[] }): Promise<void> {
+  async send(sessionId: string, text: string, messageId: string, options?: { webOnly?: boolean; inputAttachments?: DirectorInputAttachment[]; sourceChatId?: string }): Promise<void> {
     const routingKey = this.sessionToRoutingKey.get(sessionId);
     if (!routingKey) throw new Error(`Session not found: ${sessionId}`);
     await this.pool.send(routingKey, text, messageId, options);
@@ -172,7 +172,7 @@ export class SessionManager extends EventEmitter {
       feishuChatId: opts.feishuChatId,
       agentName: opts.agentName,
     });
-    await this.send(session.sessionId, opts.text, opts.messageId, { ...opts.sendOptions, inputAttachments: opts.inputAttachments });
+    await this.send(session.sessionId, opts.text, opts.messageId, { ...opts.sendOptions, inputAttachments: opts.inputAttachments, sourceChatId: opts.feishuChatId });
     return session;
   }
 

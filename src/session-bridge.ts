@@ -927,12 +927,12 @@ export class SessionBridge extends EventEmitter {
     }
 
     if (options?.expectResponse === false) {
-      return await this.writeRaw(this.buildAdapterInput(content, options?.inputAttachments), { handleSteeredPending: false });
+      return await this.writeRaw(this.buildAdapterInput(content, options?.inputAttachments), { handleSteeredPending: false, rawUserText: message });
     }
 
     const pendingTurn = this.enqueuePendingTurn({ type: 'user', correlationId: options?.correlationId });
     try {
-      return await this.writeRaw(this.buildAdapterInput(content, options?.inputAttachments));
+      return await this.writeRaw(this.buildAdapterInput(content, options?.inputAttachments), { rawUserText: message });
     } catch (err) {
       this.failPendingTurn(pendingTurn, err);
       throw err;
@@ -968,9 +968,10 @@ export class SessionBridge extends EventEmitter {
 
   private async writeRaw(
     input: DirectorSendInput,
-    options: { handleSteeredPending?: boolean } = {},
+    options: { handleSteeredPending?: boolean; rawUserText?: string } = {},
   ): Promise<DirectorSendResult | void> {
     const content = typeof input === 'string' ? input : input.text;
+    const rawUserText = options.rawUserText ?? content;
     if (!this.adapter.isReady()) {
       throw new Error('transport not ready');
     }
@@ -979,7 +980,11 @@ export class SessionBridge extends EventEmitter {
       if (!existsSync(this.logDir)) mkdirSync(this.logDir, { recursive: true });
       const logPayload = JSON.stringify({
         type: 'user',
-        message: { role: 'user', content },
+        message: {
+          role: 'user',
+          content: rawUserText,
+          ...(content !== rawUserText ? { agent_input: content } : {}),
+        },
         attachments: typeof input === 'string' ? undefined : input.attachments,
         timestamp: new Date().toISOString(),
         agentLabel: this.label,

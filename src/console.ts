@@ -3,10 +3,11 @@ import { spawn } from 'child_process';
 import { readFileSync, writeFileSync, appendFileSync, existsSync, statSync, readdirSync, openSync, readSync, closeSync, mkdirSync, renameSync } from 'fs';
 import { join, resolve, extname, relative, dirname, normalize, basename } from 'path';
 import { homedir } from 'os';
+import { gzipSync } from 'zlib';
 import type { IncomingMessage, MessagingClient } from './messaging/messaging.js';
 import type { DirectorInputAttachment } from './director-input.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
-import { parseConversationLog, parseConversationLogFiles, parseTaskLog } from './log-parser.js';
+import { parseConversationLog, parseConversationLogFiles, parseTaskLog, splitUserMessageContent } from './log-parser.js';
 import { parseClaudeTranscript } from './claude-transcript-reader.js';
 import { parseCodexTranscript } from './codex-transcript-reader.js';
 
@@ -230,6 +231,14 @@ export function readLastUserMessageText(inputLogPaths: string[]): string | null 
       if (obj && obj.direction === 'in' && typeof obj.text === 'string' && obj.text.length > 0) {
         return obj.text
       }
+      if (obj?.type === 'user' && typeof obj.message?.content === 'string') {
+        const split = splitUserMessageContent(
+          obj.message.content,
+          obj.message.raw_content,
+          obj.message.agent_input ?? obj.message.agentInput,
+        )
+        if (split.content.trim()) return split.content
+      }
     } catch {
       // 单行解析失败,跳过
     }
@@ -309,6 +318,19 @@ export function startConsole(
     const url = new URL(req.url);
     if (url.searchParams.get('token') === token) return null;
     return new Response('Unauthorized', { status: 401 });
+  }
+
+  function jsonResponse(req: Request, data: unknown, init: ResponseInit = {}): Response {
+    const body = JSON.stringify(data);
+    const headers = new Headers(init.headers);
+    if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json; charset=utf-8');
+    const acceptsGzip = /\bgzip\b/i.test(req.headers.get('Accept-Encoding') ?? '');
+    if (acceptsGzip && Buffer.byteLength(body, 'utf-8') > 1024) {
+      headers.set('Content-Encoding', 'gzip');
+      headers.append('Vary', 'Accept-Encoding');
+      return new Response(gzipSync(Buffer.from(body)), { ...init, headers });
+    }
+    return new Response(body, { ...init, headers });
   }
 
   // 活跃的 WebSocket 连接集合
@@ -3453,19 +3475,19 @@ export function startConsole(
                 ?? (record?.workspace ? join(config.director.persona_dir, 'workspaces', record.workspace) : undefined);
               if (cwd) {
                 const nativeMessages = parseClaudeTranscript(sessionId, cwd, limit);
-                if (nativeMessages) return Response.json(nativeMessages);
+                if (nativeMessages) return jsonResponse(req, nativeMessages);
               }
             }
 
             // Try agent-native transcript for Codex sessions
             if (record?.agent_type === 'codex-app-server') {
               const nativeMessages = parseCodexTranscript(sessionId, limit);
-              if (nativeMessages) return Response.json(nativeMessages);
+              if (nativeMessages) return jsonResponse(req, nativeMessages);
             }
 
             // Fallback to pShell captured logs
             const target = resolveSessionLogTarget(sessionId, director, sessionManager);
-            return Response.json(parseConversationLogFiles(target.inputLogs, target.outputLogs, limit, sessionId));
+            return jsonResponse(req, parseConversationLogFiles(target.inputLogs, target.outputLogs, limit, sessionId));
           }
           if (url.pathname === '/api/sessions' && req.method === 'GET') {
             const wsName = parseSessionsWorkspace(url);

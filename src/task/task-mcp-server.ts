@@ -247,6 +247,31 @@ const TOOLS = [
     },
   },
   {
+    name: 'update_cron_job',
+    description: '更新 cron job，保留原 id 与未指定字段',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        id: { type: 'string', description: 'Cron Job ID' },
+        name: { type: 'string', description: '可选：Job 名称' },
+        role: { type: 'string', description: `可选：${buildRoleDescription()}，action_type=director_msg 时可填 "system"` },
+        agent: { type: 'string', description: '可选：agent provider 名称' },
+        description: { type: 'string', description: '可选：简短描述' },
+        prompt: { type: 'string', description: '可选：完整 prompt（action_type=spawn_role 时使用）' },
+        schedule: { type: 'string', description: '可选：调度表达式: "every 30m", "every 2h", "daily 09:00"' },
+        enabled: { type: 'boolean', description: '可选：启用/禁用' },
+        action_type: { type: 'string', description: '可选：动作类型: "spawn_role" | "director_msg" | "shell_action"', enum: ['spawn_role', 'director_msg', 'shell_action'] },
+        message: { type: 'string', description: '可选：action_type=director_msg 时的消息内容' },
+        action_name: { type: 'string', description: '可选：action_type=shell_action 时的动作名' },
+        timeout_ms: { type: 'number', description: '可选：shell_action 超时时间，单位毫秒' },
+        max_retry: { type: 'number', description: '可选：shell_action 失败后的最大重试次数' },
+        workspace: { type: 'string', description: '可选：迁移/修正所属 workspace' },
+        source_session_id: { type: 'string', description: '可选：修正创建/回调 source session id' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'toggle_cron_job',
     description: '切换 cron job 的启用/禁用状态',
     inputSchema: {
@@ -467,6 +492,32 @@ export function buildCreateCronJobRequest(args: Record<string, unknown>): Record
   };
 }
 
+export function buildUpdateCronJobRequest(args: Record<string, unknown>): Record<string, unknown> {
+  const allowed = [
+    'name',
+    'role',
+    'agent',
+    'description',
+    'prompt',
+    'schedule',
+    'enabled',
+    'action_type',
+    'message',
+    'action_name',
+    'timeout_ms',
+    'max_retry',
+    'workspace',
+    'source_session_id',
+  ];
+  const request: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(args, key)) {
+      request[key] = args[key];
+    }
+  }
+  return request;
+}
+
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<unknown> {
   const enrichedArgs = withCodexCallbackDefaults(args);
   switch (name) {
@@ -518,6 +569,8 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
       return callShell('GET', '/api/cron-jobs');
     case 'delete_cron_job':
       return callShell('DELETE', `/api/cron-jobs/${enrichedArgs.id}`);
+    case 'update_cron_job':
+      return callShell('PUT', `/api/cron-jobs/${enrichedArgs.id}`, buildUpdateCronJobRequest(enrichedArgs));
     case 'toggle_cron_job':
       return callShell('POST', `/api/cron-jobs/${enrichedArgs.id}/toggle`);
     case 'send_attachment':
@@ -547,7 +600,7 @@ function printCliUsage(): never {
     '  persona_list, persona_prompt, persona_memory_read, persona_memory_write',
     '  persona_delegate, persona_session_link',
     '  create_task, get_task, list_tasks, cancel_task',
-    '  create_cron_job, list_cron_jobs, delete_cron_job, toggle_cron_job',
+    '  create_cron_job, list_cron_jobs, update_cron_job, delete_cron_job, toggle_cron_job',
     '  send_attachment',
     '',
     'Examples:',

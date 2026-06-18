@@ -321,7 +321,7 @@ export class AgentRuntimePool extends EventEmitter {
   }
 
   /** Send a message to a group Director, managing queue correlation */
-  async send(routingKey: string, text: string, messageId: string, options: { webOnly?: boolean; inputAttachments?: DirectorInputAttachment[] } = {}): Promise<void> {
+  async send(routingKey: string, text: string, messageId: string, options: { webOnly?: boolean; inputAttachments?: DirectorInputAttachment[]; sourceChatId?: string } = {}): Promise<void> {
     const entry = this.entries.get(routingKey);
     if (!entry) throw new Error(`No Director for routingKey ${routingKey}`);
 
@@ -337,7 +337,7 @@ export class AgentRuntimePool extends EventEmitter {
     const correlationId = entry.queue.enqueue({
       text,
       messageId,
-      chatId: options.webOnly ? 'web-console' : entry.feishuChatId,
+      chatId: options.webOnly ? 'web-console' : (options.sourceChatId ?? entry.feishuChatId),
       inputAttachments: options.inputAttachments,
     });
     entry.queue.logAction('SEND_TO_DIRECTOR', messageId, `cid=${correlationId} ${text.slice(0, 100)}`);
@@ -1027,6 +1027,9 @@ export class AgentRuntimePool extends EventEmitter {
   private wireEvents(bridge: SessionBridge, queue: MessageQueue, routingKey: string, feishuChatId: string, workspaceName: string): void {
     const isWeb = routingKey.startsWith('web-') || feishuChatId === 'web-console';
 
+    /** Per-message web check: a message is web-only when its chatId is 'web-console' or starts with 'web-' */
+    const isWebMessage = (chatId: string) => chatId === 'web-console' || chatId.startsWith('web-');
+
     // response → resolve oldest queue item → reply to feishu (or web)
     bridge.on('response', async (reply: string, durationMs?: number) => {
       const item = queue.resolveOldest();
@@ -1042,7 +1045,8 @@ export class AgentRuntimePool extends EventEmitter {
       const displayReply = reply.trim() || '仅执行工具调用，无文本输出';
       const replyWithTiming = `${displayReply}\n\n(耗时 ${elapsedSec}s)`;
 
-      const webOnly = isWeb || item.chatId === 'web-console';
+      // Per-message routing: use the chatId stored with the queue item, not the session-level isWeb flag
+      const webOnly = isWebMessage(item.chatId);
       if (webOnly) {
         this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
         queue.logAction('WEB_REPLY_SENT', item.messageId, `cid=${item.correlationId} elapsed=${elapsedSec}s`);
@@ -1050,6 +1054,8 @@ export class AgentRuntimePool extends EventEmitter {
         return;
       }
 
+      // Feishu message — use item.chatId as the reply target (may differ from session-level feishuChatId)
+      const replyChatId = item.chatId || feishuChatId;
       try {
         const streamed = await this.finishStreamingReply(item.correlationId, replyWithTiming);
         if (!streamed) {
@@ -1062,12 +1068,12 @@ export class AgentRuntimePool extends EventEmitter {
         this.streamingReplies.delete(item.correlationId);
         queue.logAction('ERROR', item.messageId, `cid=${item.correlationId} ${String(err)}`);
         console.error(`[pool:${workspaceName}] reply failed, trying sendMessage as fallback:`, err);
-        await this.messaging.sendMessage(feishuChatId, replyWithTiming).catch((e) => {
+        await this.messaging.sendMessage(replyChatId, replyWithTiming).catch((e) => {
           console.error(`[pool:${workspaceName}] sendMessage fallback also failed:`, e);
         });
         this.emit('web-reply', bridge.label, item.messageId, replyWithTiming);
       }
-      await this.sendQueuedAttachments(item, queue, feishuChatId, webOnly, workspaceName);
+      await this.sendQueuedAttachments(item, queue, replyChatId, webOnly, workspaceName);
       await this.startStreamingReplyForHead(queue, routingKey);
     });
 
