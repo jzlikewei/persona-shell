@@ -205,7 +205,7 @@ Codex 默认使用 `mcp_mode: dynamic`：Shell 在 `thread/start` 注册 persona
 | 工具 | 说明 |
 |------|------|
 | `create_task` / `list_tasks` / `get_task` | 创建、列出、查询后台任务 |
-| `create_cron_job` / `list_cron_jobs` | 创建、列出当前 workspace 的 cron jobs |
+| `create_cron_job` / `list_cron_jobs` / `update_cron_job` | 创建、列出、更新当前 workspace 的 cron jobs；更新保留原 id 与未指定字段 |
 | `delete_cron_job` / `toggle_cron_job` | 删除、启停当前 workspace 可见的 cron job |
 
 

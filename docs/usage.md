@@ -170,7 +170,7 @@ create_task = 临时雇佣兵，只在必要时使用
 
 ### 管理
 
-通过 Web 控制台的 Cron 面板管理，或让 Director 直接创建/删除/启停。Cron 定义持久化在 SQLite 中，Shell 重启后自动恢复。
+通过 Web 控制台的 Cron 面板管理，或让 Director 直接创建/更新/删除/启停。Cron 定义持久化在 SQLite 中，Shell 重启后自动恢复；更新 cron 应走 `update_cron_job`/`PUT /api/cron-jobs/{id}`，不要直接改 SQLite。
 
 
 ### 飞书 `/config` 配置卡片

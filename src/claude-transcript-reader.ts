@@ -8,7 +8,7 @@
 import { existsSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import type { ConversationMessage, ConversationToolCall } from './log-parser.js';
+import { splitUserMessageContent, type ConversationMessage, type ConversationToolCall } from './log-parser.js';
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024; // 4MB
 
@@ -140,9 +140,11 @@ export function parseClaudeTranscript(
 
       // Plain text prompt → direction: 'in'
       if (typeof content === 'string') {
+        const split = splitUserMessageContent(content);
         userMessages.push({
           direction: 'in',
-          content,
+          content: split.content,
+          agentContent: split.agentContent,
           sessionId: typeof evt.sessionId === 'string' ? evt.sessionId : sessionId,
           timestamp: typeof evt.timestamp === 'string' ? new Date(evt.timestamp).getTime() : undefined,
         });

@@ -314,6 +314,9 @@ function migrateCronJobsTable(db: Database): void {
         source_director = NULL
     WHERE source_director IS NOT NULL
   `);
+  for (const [legacy, canonical] of Object.entries(LEGACY_CRON_WORKSPACE_ALIASES)) {
+    db.run('UPDATE cron_jobs SET workspace = ? WHERE workspace = ?', [canonical, legacy]);
+  }
 }
 
 /** 安全地为 tasks 表添加新列 */
@@ -626,6 +629,19 @@ export interface CronJob {
   source_director: string | null;
 }
 
+const LEGACY_CRON_WORKSPACE_ALIASES: Record<string, string> = {
+  // Historical Web workspace created from a runtime label for the ETF production
+  // signal cron. Cron routing is now workspace-name based; keep the one-off
+  // legacy alias explicit and migrate it on startup.
+  ce7f7aa1: 'ETF轮动',
+};
+
+export function resolveCronWorkspaceAlias(workspace: string | null | undefined): string | null {
+  const value = workspace?.trim();
+  if (!value) return null;
+  return LEGACY_CRON_WORKSPACE_ALIASES[value] ?? value;
+}
+
 export interface CreateCronJobInput {
   name: string;
   role: string;
@@ -656,7 +672,7 @@ function rowToCronJob(row: Record<string, unknown>): CronJob {
     action_name: (row.action_name as string) ?? null,
     timeout_ms: row.timeout_ms === null || row.timeout_ms === undefined ? null : Number(row.timeout_ms),
     max_retry: row.max_retry === null || row.max_retry === undefined ? 3 : Number(row.max_retry),
-    workspace: (row.workspace as string) ?? null,
+    workspace: resolveCronWorkspaceAlias(row.workspace as string) ?? null,
     source_session_id: (row.source_session_id as string) ?? null,
     source_director: (row.source_director as string) ?? null,
   } as CronJob;
@@ -673,7 +689,7 @@ export function createCronJob(input: CreateCronJobInput): CronJob {
   const actionName = input.action_name ?? null;
   const timeoutMs = input.timeout_ms ?? null;
   const maxRetry = input.max_retry ?? 3;
-  const workspace = input.workspace?.trim() || null;
+  const workspace = resolveCronWorkspaceAlias(input.workspace) ?? null;
   const sourceSessionId = input.source_session_id?.trim() || null;
 
   d.run(
@@ -712,7 +728,8 @@ export function updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | '
     if (key in update) {
       sets.push(`${key} = ?`);
       const val = (update as Record<string, unknown>)[key];
-      params.push((key === 'enabled' ? (val ? 1 : 0) : val) as SQLQueryBindings);
+      const normalized = key === 'workspace' ? resolveCronWorkspaceAlias(val as string | null | undefined) : val;
+      params.push((key === 'enabled' ? (normalized ? 1 : 0) : normalized) as SQLQueryBindings);
     }
   }
 

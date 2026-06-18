@@ -100,6 +100,7 @@ AgentRuntimePool 在 SessionManager 下方承载 runtime entry、队列、stream
 | [使用指南](docs/usage.md) | 命令、群聊策略、任务、Cron、Web 控制台、人格自定义 |
 | [技术架构](docs/architecture.md) | 三层架构、通讯层、消息路由、FLUSH、进程容灾 |
 | [运维速查](docs/ops-reference.md) | 命令、日志路径、运行时文件 |
+| [微信接入方案](docs/weixin-openclaw-integration.md) | 复用 Tencent openclaw-weixin 接入 p-shell 的设计与实施计划 |
 
 ## License
 

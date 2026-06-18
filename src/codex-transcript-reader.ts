@@ -8,7 +8,7 @@
 import { existsSync, statSync, readdirSync, openSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import type { ConversationMessage, ConversationToolCall } from './log-parser.js';
+import { splitUserMessageContent, type ConversationMessage, type ConversationToolCall } from './log-parser.js';
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024; // 4MB
 const CODEX_SESSIONS_DIR = join(homedir(), '.codex', 'sessions');
@@ -112,6 +112,7 @@ function stringifyPreview(value: unknown, maxLength = 900): string | undefined {
 type TurnAccum = {
   turnId: string;
   userText?: string;
+  userAgentText?: string;
   userTimestamp?: string;
   assistantTexts: string[];
   tools: ConversationToolCall[];
@@ -213,7 +214,9 @@ export function parseCodexTranscript(
             // Skip system prompts (AGENTS.md, permissions, env context, etc.)
             if (text.startsWith('<') || text.startsWith('#')) continue;
             if (text) {
-              currentTurn.userText = text;
+              const split = splitUserMessageContent(text);
+              currentTurn.userText = split.content;
+              currentTurn.userAgentText = split.agentContent;
               currentTurn.userTimestamp = timestamp;
             }
           }
@@ -295,6 +298,7 @@ export function parseCodexTranscript(
       messages.push({
         direction: 'in',
         content: turn.userText,
+        agentContent: turn.userAgentText,
         sessionId,
         timestamp: turn.userTimestamp ? new Date(turn.userTimestamp).getTime() : undefined,
       });

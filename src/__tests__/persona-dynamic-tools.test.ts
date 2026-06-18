@@ -19,6 +19,7 @@ function deps(overrides: Partial<PersonaDynamicToolDeps> = {}): PersonaDynamicTo
     runTask: () => {},
     createCronJob: (input) => ({ id: 'C-1', ...input, enabled: true, workspace: input.workspace ?? null }) as CronJob,
     listCronJobs: () => [],
+    updateCronJob: () => null,
     deleteCronJob: () => false,
     toggleCronJob: () => null,
     ...overrides,
@@ -34,6 +35,7 @@ describe('persona dynamic tools', () => {
       'create_cron_job',
       'list_cron_jobs',
       'delete_cron_job',
+      'update_cron_job',
       'toggle_cron_job',
     ]);
   });
@@ -149,5 +151,58 @@ describe('persona dynamic tools', () => {
     }));
 
     expect(denied).toEqual({ success: false, text: 'Cron job not found: C-2' });
+  });
+
+  test('updates only cron jobs visible in the caller workspace', async () => {
+    const updates: Array<{ id: string; schedule?: string; timeout_ms?: number }> = [];
+    const result = await handlePersonaDynamicToolCall({
+      ...baseCall,
+      tool: 'update_cron_job',
+      arguments: { id: 'C-1', schedule: 'daily 15:30', timeout_ms: 120_000 },
+    }, deps({
+      listCronJobs: () => [
+        { id: 'C-1', name: 'a', workspace: 'workspace-a' },
+      ] as CronJob[],
+      updateCronJob: (id, update) => {
+        updates.push({ id, schedule: update.schedule, timeout_ms: update.timeout_ms ?? undefined });
+        return { id, name: 'a', schedule: update.schedule, timeout_ms: update.timeout_ms, workspace: 'workspace-a' } as CronJob;
+      },
+    }));
+
+    expect(result.success).toBe(true);
+    expect(updates).toEqual([{ id: 'C-1', schedule: 'daily 15:30', timeout_ms: 120_000 }]);
+    expect(JSON.parse(result.text)).toMatchObject({ id: 'C-1', schedule: 'daily 15:30' });
+
+    const denied = await handlePersonaDynamicToolCall({
+      ...baseCall,
+      tool: 'update_cron_job',
+      arguments: { id: 'C-2', schedule: 'daily 15:30' },
+    }, deps({
+      listCronJobs: () => [
+        { id: 'C-2', name: 'b', workspace: 'workspace-b' },
+      ] as CronJob[],
+      updateCronJob: () => {
+        throw new Error('should not update cross-workspace cron');
+      },
+    }));
+
+    expect(denied).toEqual({ success: false, text: 'Cron job not found: C-2' });
+  });
+
+  test('treats known legacy cron workspace labels as their canonical workspace', async () => {
+    const result = await handlePersonaDynamicToolCall({
+      ...baseCall,
+      workspace: 'ETF轮动',
+      tool: 'update_cron_job',
+      arguments: { id: 'C-legacy', schedule: 'daily 15:30' },
+    }, deps({
+      listCronJobs: () => [
+        { id: 'C-legacy', name: 'legacy etf', workspace: 'ce7f7aa1' },
+      ] as CronJob[],
+      updateCronJob: (id, update) => ({ id, name: 'legacy etf', schedule: update.schedule, workspace: 'ETF轮动' }) as CronJob,
+    }));
+
+    expect(result.success).toBe(true);
+    expect(JSON.parse(result.text)).toMatchObject({ id: 'C-legacy', schedule: 'daily 15:30' });
   });
 });

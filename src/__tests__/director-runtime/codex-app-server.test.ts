@@ -283,6 +283,7 @@ describe('CodexAppServerRuntime', () => {
       'create_cron_job',
       'list_cron_jobs',
       'delete_cron_job',
+      'update_cron_job',
       'toggle_cron_job',
     ]);
   });

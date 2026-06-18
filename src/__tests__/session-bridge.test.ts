@@ -469,6 +469,9 @@ describe('SessionBridge', () => {
     await bridge.start();
     await bridge.send('test message');
     expect(adapter.sent.at(-1)!).toMatch(/^\[.+\] test message$/);
+    const logged = JSON.parse(readFileSync(bridge.inputLogPath, 'utf-8').trim().split('\n').at(-1)!);
+    expect(logged.message.content).toBe('test message');
+    expect(logged.message.agent_input).toBe(adapter.sent.at(-1)!);
     adapter.completeTurn({ responseText: 'ok', durationMs: 1 });
   });
 

@@ -27,28 +27,35 @@ export interface ChatWorkflow {
   turnStatus?: 'running' | 'completed' | 'failed' | 'aborted' | 'blocked'
 }
 
+export type ChatAttachmentKind = 'markdown' | 'text' | 'image' | 'file' | 'audio'
+
+export interface ChatAttachment {
+  path: string
+  name?: string
+  kind?: ChatAttachmentKind
+  type?: 'image' | 'file' | 'audio'
+  size?: number
+  mime?: string
+  detail?: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
+  agentContent?: string
   timestamp: string
   sessionId?: string
   agentLabel?: string
   tools?: ChatToolCall[]
   workflow?: ChatWorkflow
-  attachments?: string[]
+  attachments?: ChatAttachment[]
   model?: string
 }
 
 export type TurnPhase = 'thinking' | 'streaming' | 'tool_running' | null
 
-export interface SendAttachment {
-  path: string
-  name?: string
-  kind?: 'markdown' | 'text' | 'image' | 'file'
-  size?: number
-  mime?: string
-}
+export type SendAttachment = ChatAttachment
 
 export interface ChatLiveTurn {
   turnId: string
@@ -66,9 +73,11 @@ export interface ChatLiveTurn {
 interface ApiConversationMessage {
   direction: 'in' | 'out'
   content: string
+  agentContent?: string
   sessionId?: string
   timestamp?: number
   tools?: ChatToolCall[]
+  attachments?: unknown
   model?: string
 }
 
@@ -112,15 +121,119 @@ function sameReplyText(a: string, b: string) {
   return left === right || left.startsWith(right) || right.startsWith(left)
 }
 
+function canonicalUserMessageContent(text: string) {
+  return text
+    .replace(/^\[(?:\d{4}\/\d{1,2}\/\d{1,2}|\d{4}-\d{1,2}-\d{1,2})\s+\d{1,2}:\d{2}(?::\d{2})?\]\s*/, '')
+    .trim()
+}
+
+function isDuplicateUserMessage(a: ChatMessage, b: ChatMessage) {
+  return a.role === 'user' &&
+    b.role === 'user' &&
+    a.sessionId === b.sessionId &&
+    canonicalUserMessageContent(a.content) === canonicalUserMessageContent(b.content)
+}
+
+function mergeAttachments(left?: ChatAttachment[], right?: ChatAttachment[]): ChatAttachment[] | undefined {
+  const merged = [...(left ?? [])]
+  let changed = false
+  for (const item of right ?? []) {
+    if (!item.path || merged.some(existing => existing.path === item.path)) continue
+    merged.push(item)
+    changed = true
+  }
+  if (!changed && left) return left
+  return merged.length ? merged : undefined
+}
+
+function appendMessageDedup(prev: ChatMessage[], msg: ChatMessage): ChatMessage[] {
+  if (msg.role === 'user') {
+    const recent = prev.slice(-20)
+    const recentDuplicateIndex = recent.findIndex(existing => isDuplicateUserMessage(existing, msg))
+    if (recentDuplicateIndex >= 0) {
+      const duplicateIndex = prev.length - recent.length + recentDuplicateIndex
+      const existing = prev[duplicateIndex]
+      const attachments = mergeAttachments(existing.attachments, msg.attachments)
+      const content = canonicalUserMessageContent(existing.content) === msg.content.trim() ? msg.content : existing.content
+      if ((attachments === existing.attachments || (!attachments && !existing.attachments)) && content === existing.content) return prev
+      return [
+        ...prev.slice(0, duplicateIndex),
+        { ...existing, content, attachments, agentContent: existing.agentContent ?? msg.agentContent },
+        ...prev.slice(duplicateIndex + 1),
+      ]
+    }
+    return [...prev, msg]
+  }
+
+  if (msg.role === 'assistant') {
+    const last = prev[prev.length - 1]
+    if (last?.role === 'assistant' && sameReplyText(last.content, msg.content)) {
+      return [...prev.slice(0, -1), { ...last, ...msg, id: last.id, tools: msg.tools ?? last.tools, attachments: mergeAttachments(last.attachments, msg.attachments) }]
+    }
+  }
+
+  return [...prev, msg]
+}
+
+function mergeOptimisticMessages(history: ChatMessage[], optimistic: ChatMessage[]) {
+  let next = history
+  for (const msg of optimistic) {
+    next = appendMessageDedup(next, msg)
+  }
+  return next
+}
+
+function fileNameFromPath(path: string) {
+  return path.split('/').filter(Boolean).pop() ?? path
+}
+
+function normalizeChatAttachments(value: unknown): ChatAttachment[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const attachments = value.flatMap((item): ChatAttachment[] => {
+    if (typeof item === 'string') {
+      const path = item.trim()
+      return path ? [{ path, name: fileNameFromPath(path), kind: 'file' }] : []
+    }
+    if (!item || typeof item !== 'object') return []
+    const record = item as Record<string, unknown>
+    const path = typeof record.path === 'string' ? record.path.trim() : ''
+    if (!path) return []
+    const rawType = typeof record.type === 'string' ? record.type : undefined
+    const rawKind = typeof record.kind === 'string' ? record.kind : undefined
+    const type: ChatAttachment['type'] | undefined = rawType === 'image' || rawType === 'audio' || rawType === 'file' ? rawType : undefined
+    const kind: ChatAttachmentKind = rawKind === 'markdown' || rawKind === 'text' || rawKind === 'image' || rawKind === 'file' || rawKind === 'audio'
+      ? rawKind
+      : type ?? 'file'
+    const name = typeof record.name === 'string' && record.name.trim() ? record.name.trim() : fileNameFromPath(path)
+    const size = typeof record.size === 'number' && Number.isFinite(record.size) ? record.size : undefined
+    const mime = typeof record.mime === 'string' && record.mime.trim() ? record.mime.trim() : undefined
+    const detail = typeof record.detail === 'string' && record.detail.trim() ? record.detail.trim() : undefined
+    return [{
+      path,
+      name,
+      kind,
+      ...(type ? { type } : {}),
+      ...(size != null ? { size } : {}),
+      ...(mime ? { mime } : {}),
+      ...(detail ? { detail } : {}),
+    }]
+  })
+  return attachments.length ? attachments : undefined
+}
+
 function mapMessage(message: ApiConversationMessage, index: number): ChatMessage {
   const timestamp = message.timestamp ? new Date(message.timestamp).toISOString() : new Date().toISOString()
+  const isUser = message.direction === 'in'
+  const displayContent = isUser ? canonicalUserMessageContent(message.content) : message.content
   return {
     id: `${message.sessionId ?? 'message'}-${message.timestamp ?? Date.now()}-${index}`,
-    role: message.direction === 'in' ? 'user' : 'assistant',
-    content: message.content,
+    role: isUser ? 'user' : 'assistant',
+    content: displayContent,
+    agentContent: message.agentContent ?? (isUser && displayContent !== message.content ? message.content : undefined),
     timestamp,
     sessionId: message.sessionId,
     tools: message.tools,
+    attachments: normalizeChatAttachments(message.attachments),
     model: message.model,
   }
 }
@@ -136,9 +249,9 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const [turnPhase, setTurnPhase] = useState<TurnPhase>(null)
   const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
-  // limit 状态(默认 100;loadMore 调成 500)。后端 /api/messages 不支持 offset/cursor,
+  // limit 状态(默认 30;loadMore 调成 500)。后端 /api/messages 不支持 offset/cursor,
   // 所以"Load earlier"只能"调大 limit 重拉最后 N 条",不是真分页。
-  const [limit, setLimit] = useState(100)
+  const [limit, setLimit] = useState(30)
   // hideMessage 客户端过滤,Set 装被隐藏消息 id
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set())
   const { get, post } = useApi()
@@ -154,6 +267,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
   const liveTurnIdRef = useRef<string | null>(null)
   const usingTurnEventsRef = useRef(false)
   const messageCacheRef = useRef(new Map<string, { at: number; messages: ChatMessage[] }>())
+  const optimisticMessagesRef = useRef(new Map<string, ChatMessage[]>())
   const prevHistoryKeyRef = useRef<string | undefined>(undefined)
   sessionIdRef.current = sessionId
   liveSessionRef.current = liveSession
@@ -280,7 +394,8 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     const cacheKey = `${workspace ?? ''}:${sessionId}:${limit}`
     const cached = messageCacheRef.current.get(cacheKey)
     if (cached) {
-      startTransition(() => setMessages(cached.messages))
+      const targetOptimistic = optimisticMessagesRef.current.get(sessionId) ?? []
+      startTransition(() => setMessages(mergeOptimisticMessages(cached.messages, targetOptimistic)))
       // 切换 session 时最卡的是后端重复解析原生 transcript。短 TTL 内直接复用
       // 已解析窗口；实时消息会由 websocket 继续补齐。
       if (Date.now() - cached.at < 15_000) {
@@ -296,7 +411,8 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
       if (workspace) params.workspace = workspace
       const data = await get<ApiConversationMessage[]>('/api/messages', params)
       if (seq === requestSeq.current) {
-        const next = data.map(mapMessage).reverse()
+        const targetOptimistic = optimisticMessagesRef.current.get(sessionId) ?? []
+        const next = mergeOptimisticMessages(data.map(mapMessage).reverse(), targetOptimistic)
         messageCacheRef.current.set(cacheKey, { at: Date.now(), messages: next })
         // 大列表 + 同步 markdown 渲染会堵主线程,startTransition 让它走低优先级,
         // 不阻塞 loading spinner 绘制和后续用户输入(比如再点别的 session)
@@ -368,7 +484,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     clearTurnPhaseTimeout()
   }, [publishCurrentTurn, clearTurnPhaseTimeout])
 
-  const sendMessage = useCallback(async (content: string, onSessionCreated?: (sessionId: string) => void, attachments: SendAttachment[] = [], displayContent?: string) => {
+  const sendMessage = useCallback(async (content: string, onSessionCreated?: (sessionId: string) => void, attachments: SendAttachment[] = []) => {
     if (!usingTurnEventsRef.current) flushStreaming()
     setSending(true)
     let targetSessionId = sessionId
@@ -401,11 +517,13 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
     const userMsg: ChatMessage = {
       id: uuid(),
       role: 'user',
-      content: displayContent ?? content,
+      content,
       timestamp: new Date().toISOString(),
       sessionId: targetSessionId,
+      attachments: attachments.length ? normalizeChatAttachments(attachments) : undefined,
     }
-    setMessages(prev => [...prev, userMsg])
+    optimisticMessagesRef.current.set(targetSessionId, appendMessageDedup(optimisticMessagesRef.current.get(targetSessionId) ?? [], userMsg))
+    setMessages(prev => appendMessageDedup(prev, userMsg))
 
     try {
       await post('/api/send', {
@@ -551,8 +669,7 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
           const tools = liveToolsRef.current.map(t =>
             t.status === 'running' ? { ...t, status: 'completed' as const } : t
           )
-          const completedWorkflow = liveWorkflowRef.current ? { ...liveWorkflowRef.current, turnStatus: 'completed' as const } : currentTurnRef.current?.workflow ? { ...currentTurnRef.current.workflow, turnStatus: 'completed' as const } : undefined
-          if (text || tools.length || completedWorkflow) {
+          if (text || tools.length) {
             const msg: ChatMessage = {
               id: event.messageId || event.turnId,
               role: 'assistant',
@@ -561,22 +678,14 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
               agentLabel: event.agentLabel,
               sessionId: event.sessionId ?? undefined,
               tools: tools.length ? tools : undefined,
-              workflow: completedWorkflow,
             }
-            setMessages(prev => {
-              const last = prev[prev.length - 1]
-              if (last?.role === 'assistant' && sameReplyText(last.content, msg.content)) {
-                return [...prev.slice(0, -1), { ...last, ...msg, id: last.id, tools: msg.tools ?? last.tools }]
-              }
-              return [...prev, msg]
-            })
+            setMessages(prev => appendMessageDedup(prev, msg))
           }
           clearLiveTurn()
           return
         }
 
         if (event.type === 'turn_failed') {
-          const failedWorkflow = liveWorkflowRef.current ? { ...liveWorkflowRef.current, turnStatus: 'failed' as const } : currentTurnRef.current?.workflow ? { ...currentTurnRef.current.workflow, turnStatus: 'failed' as const } : undefined
           const msg: ChatMessage = {
             id: event.messageId || event.turnId,
             role: 'assistant',
@@ -584,7 +693,6 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
             timestamp: event.timestamp || new Date().toISOString(),
             agentLabel: event.agentLabel,
             sessionId: event.sessionId ?? undefined,
-            workflow: failedWorkflow,
           }
           setMessages(prev => [...prev, msg])
           clearLiveTurn()
@@ -627,15 +735,9 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
           timestamp: new Date().toISOString(),
           sessionId: replySessionId,
           tools: liveTools.length ? liveTools : undefined,
-          attachments: data.attachments as string[] | undefined,
+          attachments: normalizeChatAttachments(data.attachments),
         }
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (last?.role === 'assistant' && sameReplyText(last.content, msg.content)) {
-            return [...prev.slice(0, -1), { ...last, ...msg, id: last.id }]
-          }
-          return [...prev, msg]
-        })
+        setMessages(prev => appendMessageDedup(prev, msg))
         if (!streamingRef.current || sameReplyText(streamingRef.current, text)) updateStreaming('')
         else updateStreaming('')
         clearLiveTurn()
@@ -650,12 +752,15 @@ export function useChat(sessionId?: string, liveSession = false, workspace?: str
           content: text,
           timestamp: typeof data.timestamp === 'string' ? data.timestamp : new Date().toISOString(),
           sessionId: inputSessionId,
+          attachments: normalizeChatAttachments(data.attachments),
         }
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          if (last?.role === 'user' && last.content === text && last.sessionId === msg.sessionId) return prev
-          return [...prev, msg]
-        })
+        if (inputSessionId) {
+          optimisticMessagesRef.current.set(
+            inputSessionId,
+            (optimisticMessagesRef.current.get(inputSessionId) ?? []).filter(existing => !isDuplicateUserMessage(existing, msg)),
+          )
+        }
+        setMessages(prev => appendMessageDedup(prev, msg))
       }),
     ]
     return () => unsubs.forEach(fn => fn())

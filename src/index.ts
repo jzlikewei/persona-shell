@@ -66,6 +66,7 @@ async function main() {
       runTask: (input) => taskRunner.runTask(input),
       createCronJob,
       listCronJobs,
+      updateCronJob,
       deleteCronJob,
       toggleCronJob,
     });

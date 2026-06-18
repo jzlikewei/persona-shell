@@ -1,9 +1,10 @@
-import type {
-  CreateCronJobInput,
-  CreateTaskInput,
-  CronActionType,
-  CronJob,
-  Task,
+import {
+  resolveCronWorkspaceAlias,
+  type CreateCronJobInput,
+  type CreateTaskInput,
+  type CronActionType,
+  type CronJob,
+  type Task,
 } from './task/task-store.js';
 import type {
   DirectorDynamicToolCall,
@@ -103,6 +104,29 @@ export const PERSONA_DYNAMIC_TOOLS: DynamicToolSchema[] = [
     },
   },
   {
+    name: 'update_cron_job',
+    description: '更新当前 workspace 可见的 persona-shell cron job，保留原 id 与未指定字段。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'Cron Job ID' },
+        name: { type: 'string', description: '可选：Job 名称' },
+        role: { type: 'string', description: '可选：角色名；action_type=director_msg 时可填 system' },
+        agent: { type: 'string', description: '可选：agent provider 名称' },
+        description: { type: 'string', description: '可选：简短描述' },
+        prompt: { type: 'string', description: '可选：完整 prompt（action_type=spawn_role 时使用）' },
+        schedule: { type: 'string', description: '可选：调度表达式: "every 30m", "every 2h", "daily 09:00"' },
+        enabled: { type: 'boolean', description: '可选：启用/禁用' },
+        action_type: { type: 'string', description: '可选：动作类型: "spawn_role" | "director_msg" | "shell_action"', enum: ['spawn_role', 'director_msg', 'shell_action'] },
+        message: { type: 'string', description: '可选：action_type=director_msg 时的消息内容' },
+        action_name: { type: 'string', description: '可选：action_type=shell_action 时的动作名' },
+        timeout_ms: { type: 'number', description: '可选：shell_action 超时时间，单位毫秒' },
+        max_retry: { type: 'number', description: '可选：shell_action 失败后的最大重试次数' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'toggle_cron_job',
     description: '切换 persona-shell cron job 的启用/禁用状态。',
     inputSchema: {
@@ -136,6 +160,7 @@ export interface PersonaDynamicToolDeps {
   }): void;
   createCronJob(input: CreateCronJobInput): CronJob;
   listCronJobs(): CronJob[];
+  updateCronJob(id: string, update: Partial<Omit<CronJob, 'id' | 'created_at' | 'source_director'>>): CronJob | null;
   deleteCronJob(id: string): boolean;
   toggleCronJob(id: string): CronJob | null;
 }
@@ -148,6 +173,10 @@ function recordToNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function recordToBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 function recordToCronActionType(value: unknown): CronActionType | undefined {
   return value === 'spawn_role' || value === 'director_msg' || value === 'shell_action' ? value : undefined;
 }
@@ -157,7 +186,7 @@ function dynamicToolArgs(value: unknown): Record<string, unknown> {
 }
 
 function cronJobBelongsToWorkspace(job: CronJob, workspace: string): boolean {
-  return (job.workspace ?? 'main') === workspace;
+  return (resolveCronWorkspaceAlias(job.workspace) ?? 'main') === workspace;
 }
 
 function canAccessCronJob(deps: PersonaDynamicToolDeps, id: string, workspace: string): boolean {
@@ -263,6 +292,47 @@ export async function handlePersonaDynamicToolCall(
       const ok = deps.deleteCronJob(id);
       if (!ok) return { success: false, text: `Cron job not found: ${id}` };
       return { success: true, text: JSON.stringify({ ok, id }, null, 2) };
+    }
+    if (call.tool === 'update_cron_job') {
+      const id = recordToString(args.id);
+      if (!id) return { success: false, text: 'id is required' };
+      if (!canAccessCronJob(deps, id, call.workspace)) return { success: false, text: `Cron job not found: ${id}` };
+
+      const update: Partial<Omit<CronJob, 'id' | 'created_at' | 'source_director'>> = {};
+      const stringFields = ['name', 'role', 'agent', 'description', 'prompt', 'schedule', 'message', 'action_name', 'workspace', 'source_session_id'] as const;
+      for (const field of stringFields) {
+        if (field in args) {
+          const value = recordToString(args[field]);
+          if (!value && !['agent', 'message', 'action_name', 'workspace', 'source_session_id'].includes(field)) {
+            return { success: false, text: `${field} must be a non-empty string` };
+          }
+          (update as Record<string, unknown>)[field] = value ?? null;
+        }
+      }
+      if ('enabled' in args) {
+        const enabled = recordToBoolean(args.enabled);
+        if (enabled === undefined) return { success: false, text: 'enabled must be boolean' };
+        update.enabled = enabled;
+      }
+      if ('action_type' in args) {
+        const actionType = recordToCronActionType(args.action_type);
+        if (!actionType) return { success: false, text: 'action_type must be spawn_role, director_msg or shell_action' };
+        update.action_type = actionType;
+      }
+      if ('timeout_ms' in args) {
+        const value = recordToNumber(args.timeout_ms);
+        if (value === undefined) return { success: false, text: 'timeout_ms must be number' };
+        update.timeout_ms = value;
+      }
+      if ('max_retry' in args) {
+        const value = recordToNumber(args.max_retry);
+        if (value === undefined) return { success: false, text: 'max_retry must be number' };
+        update.max_retry = value;
+      }
+
+      const job = deps.updateCronJob(id, update);
+      if (!job) return { success: false, text: `Cron job not found: ${id}` };
+      return { success: true, text: JSON.stringify(job, null, 2) };
     }
     if (call.tool === 'toggle_cron_job') {
       const id = recordToString(args.id);

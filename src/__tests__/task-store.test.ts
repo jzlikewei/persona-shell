@@ -17,6 +17,7 @@ import {
   getCronJob,
   listCronJobs,
   updateCronJob,
+  resolveCronWorkspaceAlias,
   deleteCronJob,
   toggleCronJob,
   getOutboxDir,
@@ -404,6 +405,19 @@ describe('task-store', () => {
 
   // --- Cron Jobs CRUD ---
   describe('createCronJob()', () => {
+    test('normalizes known legacy cron workspace labels', () => {
+      const job = createCronJob({
+        name: 'legacy etf',
+        role: 'r',
+        description: 'd',
+        prompt: 'p',
+        schedule: 'daily 15:30',
+        workspace: 'ce7f7aa1',
+      });
+      expect(job.workspace).toBe('ETF轮动');
+      expect(resolveCronWorkspaceAlias('ce7f7aa1')).toBe('ETF轮动');
+    });
+
     test('creates cron job with C-MMdd-HH-NNN format id', () => {
       const job = createCronJob({
         name: 'daily check',
