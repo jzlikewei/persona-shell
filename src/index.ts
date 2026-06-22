@@ -1723,7 +1723,7 @@ async function main() {
       }
     } else {
       // 私聊 → main workspace runtime
-      if (director.getStatus().pendingCount > 0) {
+      if (director.getStatus().pendingCount > 0 && !director.isBootstrapping) {
         try {
           director.promoteActiveTurnToUser();
           await director.send(directorText, { expectResponse: false, inputAttachments });

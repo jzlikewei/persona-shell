@@ -326,7 +326,7 @@ export class AgentRuntimePool extends EventEmitter {
     if (!entry) throw new Error(`No Director for routingKey ${routingKey}`);
 
     entry.lastActiveAt = Date.now();
-    if (entry.bridge.getStatus().pendingCount > 0) {
+    if (entry.bridge.getStatus().pendingCount > 0 && !entry.bridge.isBootstrapping) {
       entry.bridge.promoteActiveTurnToUser();
       await entry.bridge.send(text, { expectResponse: false, inputAttachments: options.inputAttachments });
       entry.queue.logAction('INSERT_INTO_ACTIVE_TURN', messageId, text.slice(0, 100));

@@ -588,6 +588,10 @@ export class SessionBridge extends EventEmitter {
     return this.flushing;
   }
 
+  get isBootstrapping(): boolean {
+    return this.bootstrapping;
+  }
+
   getAgentName(): string {
     return this.directorAgent.name;
   }
