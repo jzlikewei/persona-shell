@@ -101,7 +101,7 @@ export function buildPersonaPromptBundle(
   role: string,
   options?: { systemPromptFile?: string | null },
 ): PersonaPromptBundle {
-  const baseFiles = ['soul.md', 'meta.md'];
+  const baseFiles = ['CLAUDE.md', 'soul.md', 'meta.md'];
   const developerFiles = [
     ...(options?.systemPromptFile ? [options.systemPromptFile] : []),
     `personas/${role}.md`,

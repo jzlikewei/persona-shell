@@ -16,6 +16,7 @@ describe('persona orchestration', () => {
     rmSync(TEST_DIR, { recursive: true, force: true });
     mkdirSync(join(TEST_DIR, 'personas'), { recursive: true });
     mkdirSync(join(TEST_DIR, 'memory'), { recursive: true });
+    writeFileSync(join(TEST_DIR, 'CLAUDE.md'), 'Claude prompt');
     writeFileSync(join(TEST_DIR, 'soul.md'), 'Soul prompt');
     writeFileSync(join(TEST_DIR, 'meta.md'), 'Meta prompt');
     writeFileSync(join(TEST_DIR, 'prompts.md'), 'Agent prompt');
@@ -52,9 +53,10 @@ describe('persona orchestration', () => {
 
     expect(bundle.baseInstructions).toContain('Soul prompt');
     expect(bundle.baseInstructions).toContain('Meta prompt');
+    expect(bundle.baseInstructions).toContain('Claude prompt');
     expect(bundle.developerInstructions).toContain('Agent prompt');
     expect(bundle.developerInstructions).toContain('Critic prompt');
-    expect(bundle.files.base).toHaveLength(2);
+    expect(bundle.files.base).toHaveLength(3);
     expect(bundle.files.developer).toHaveLength(2);
   });
 

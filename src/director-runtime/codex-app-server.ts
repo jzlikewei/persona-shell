@@ -651,7 +651,7 @@ export class CodexAppServerRuntime {
       approvalPolicy: this.options.agent.approval ?? 'never',
       sandbox: this.options.agent.sandbox ?? 'danger-full-access',
       ...(this.options.agent.model ? { model: this.options.agent.model } : {}),
-      baseInstructions: this.readPromptSections(['soul.md', 'meta.md']),
+      baseInstructions: this.readPromptSections(['CLAUDE.md', 'soul.md', 'meta.md']),
       developerInstructions: this.readDeveloperInstructions(),
       sessionStartSource: 'startup',
       threadSource: 'user',

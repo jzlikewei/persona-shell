@@ -366,12 +366,13 @@ describe('CodexAppServerRuntime', () => {
     });
   });
 
-  test('injects soul, role persona, and workspace context into app-server thread instructions', () => {
+  test('injects CLAUDE rules, soul, role persona, and workspace context into app-server thread instructions', () => {
     const personaDir = '/tmp/persona-codex-context-test';
     const contextPath = join(personaDir, 'workspaces', 'demo', 'context.md');
     rmSync(personaDir, { recursive: true, force: true });
     mkdirSync(join(personaDir, 'personas'), { recursive: true });
     mkdirSync(join(personaDir, 'workspaces', 'demo'), { recursive: true });
+    writeFileSync(join(personaDir, 'CLAUDE.md'), 'Claude project rules');
     writeFileSync(join(personaDir, 'soul.md'), 'Soul instruction');
     writeFileSync(join(personaDir, 'meta.md'), 'Meta instruction');
     writeFileSync(join(personaDir, 'personas', 'director.md'), 'Director persona instruction');
@@ -421,6 +422,7 @@ describe('CodexAppServerRuntime', () => {
     const options = runtimePrivate.threadOptions();
     const baseInstructions = String(options.baseInstructions);
     const developerInstructions = String(options.developerInstructions);
+    expect(baseInstructions).toContain('Claude project rules');
     expect(baseInstructions).toContain('Soul instruction');
     expect(baseInstructions).toContain('Meta instruction');
     expect(developerInstructions).toContain('Director persona instruction');
