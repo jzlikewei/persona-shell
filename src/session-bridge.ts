@@ -99,6 +99,8 @@ export interface SessionBridgeOptions {
   agentsProvider?: () => Config['agents'];
   config: Config['director'];
   agentName?: string;
+  /** Override the provider's default model for this session. */
+  model?: string;
   /** Seed an existing provider session/thread id before adapter startup.
    *  Used by sessionId-first revive paths where the user-facing sessionId is
    *  the durable identity and pool routingKey is only a runtime detail. */
@@ -188,6 +190,10 @@ export class SessionBridge extends EventEmitter {
     const pidFile = this.isMain ? this.config.pid_file : join(pipeDir, 'director.pid');
     this.sessionFile = this.isMain ? join(pipeDir, 'director-session') : join(pipeDir, 'session');
 
+    const resolvedAgent = this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName));
+    // Allow session-level model override (from Web Console "new session" dialog)
+    if (options.model) resolvedAgent.model = options.model;
+
     const adapterOptions: DirectorSessionAdapterOptions = {
       label: this.label,
       isMain: this.isMain,
@@ -195,7 +201,7 @@ export class SessionBridge extends EventEmitter {
       workspaceContextPath: this.getWorkspaceContextFilePath(),
       config: this.config,
       agents: this.getFreshAgents(),
-      directorAgent: this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName)),
+      directorAgent: resolvedAgent,
       logDir: this.logDir,
     };
 
@@ -223,6 +229,7 @@ export class SessionBridge extends EventEmitter {
 
     const persistedAgentName = this.readPersistedDirectorAgentName();
     this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName ?? persistedAgentName));
+    if (options.model) this.directorAgent.model = options.model;
     this.personaRole = this.readPersistedPersonaRole() ?? 'director';
     this.adapter = this.adapterFactory(this.directorAgent);
   }

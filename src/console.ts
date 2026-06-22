@@ -13,7 +13,7 @@ import { parseCodexTranscript } from './codex-transcript-reader.js';
 
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
-import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
+import { appendSupportedModel, defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
 import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, listWorkspaces, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, updateWorkspace as updateWorkspaceInDb, createWorkspace as createWorkspaceInDb, buildTaskParentMetadata, type TaskExtra } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
@@ -4115,6 +4115,11 @@ export function startConsole(
                 model: body.model,
               });
               writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
+              // Persist new model to config.yaml supported_models if not already listed
+              if (body.model?.trim()) {
+                const agentName = body.agent ?? currentConfig().agents.defaults.default ?? 'claude';
+                try { appendSupportedModel(agentName, body.model.trim()); } catch { /* best-effort */ }
+              }
               return Response.json({
                 ok: true,
                 sessionId: entry.sessionId,

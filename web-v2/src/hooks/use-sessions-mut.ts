@@ -8,12 +8,12 @@ export function useSessionsMut() {
   const [isPending, setIsPending] = useState(false)
 
   const create = useCallback(
-    async (input: { workspace: string; agent?: string }, hooks?: { onSuccess?: () => void }) => {
+    async (input: { workspace: string; agent?: string; model?: string }, hooks?: { onSuccess?: () => void }) => {
       setIsPending(true)
       try {
         const res = await post<{ ok: boolean; sessionId?: string; workspace?: string; error?: string }>(
           '/api/sessions',
-          { workspace: input.workspace, agent: input.agent }
+          { workspace: input.workspace, agent: input.agent, model: input.model }
         )
         if (!res.ok || !res.sessionId) {
           toast({ title: '新建 session 失败', description: res.error, tone: 'error' })

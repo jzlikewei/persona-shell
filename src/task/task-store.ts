@@ -790,8 +790,8 @@ export function upsertSession(workspace: string, sessionId: string, patch: Sessi
   const firstAt = patch.firstMessageAt ?? now;
   const lastAt = patch.lastMessageAt ?? now;
   getDb().run(
-    `INSERT INTO sessions (session_id, workspace, session_name, first_message_at, last_message_at, alive, agent_name, agent_type, model)
-     VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+    `INSERT INTO sessions (session_id, workspace, session_name, created_at, first_message_at, last_message_at, alive, agent_name, agent_type, model)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
      ON CONFLICT(session_id) DO UPDATE SET
        last_message_at = ?,
        alive = 1,
@@ -799,7 +799,7 @@ export function upsertSession(workspace: string, sessionId: string, patch: Sessi
        agent_type = COALESCE(?, agent_type),
        model = COALESCE(?, model)`,
     [
-      sessionId, workspace, patch.sessionName ?? null, firstAt, lastAt,
+      sessionId, workspace, patch.sessionName ?? null, now, firstAt, lastAt,
       patch.agentName ?? null, patch.agentType ?? null, patch.model ?? null,
       lastAt,
       patch.agentName ?? null, patch.agentType ?? null, patch.model ?? null,
@@ -816,15 +816,16 @@ export function setSessionNameInDb(sessionId: string, name: string | null): void
 }
 
 export function listSessionsFromDb(workspace: string, opts?: { includeArchived?: boolean }): SessionRow[] {
-  // 与 listSessionRecords 行为对齐:默认隐藏 archived=1,供 UI 默认列表使用;
-  // 显式 includeArchived=true 时返回全部(管理面板/审计场景)。
+  // 按创建时间降序（新→旧），避免 last_message_at 导致列表频繁跳动。
+  // 旧记录 created_at 可能为空，fallback 到 first_message_at。
+  const orderClause = 'ORDER BY COALESCE(created_at, first_message_at) DESC';
   if (opts?.includeArchived) {
     return getDb().query(
-      'SELECT * FROM sessions WHERE workspace = ? ORDER BY last_message_at DESC',
+      `SELECT * FROM sessions WHERE workspace = ? ${orderClause}`,
     ).all(workspace) as SessionRow[];
   }
   return getDb().query(
-    'SELECT * FROM sessions WHERE workspace = ? AND archived = 0 ORDER BY last_message_at DESC',
+    `SELECT * FROM sessions WHERE workspace = ? AND archived = 0 ${orderClause}`,
   ).all(workspace) as SessionRow[];
 }
 

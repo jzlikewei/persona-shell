@@ -7,6 +7,7 @@ export interface AgentProvider {
   type: string
   command?: string
   model?: string | null
+  supportedModels?: string[] | null
   sandbox?: string | null
   approval?: string | null
   effort?: string | null

@@ -8,25 +8,35 @@ interface NewSessionDialogProps {
   onOpenChange: (open: boolean) => void
   workspace: string
   defaultAgent?: string
-  onCreate: (opts: { agent?: string; sessionName?: string }) => void | Promise<void>
+  onCreate: (opts: { agent?: string; sessionName?: string; model?: string }) => void | Promise<void>
 }
 
 export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, onCreate }: NewSessionDialogProps) {
   const [busy, setBusy] = useState(false)
   const [sessionName, setSessionName] = useState('')
   const [selectedAgent, setSelectedAgent] = useState<string | undefined>(defaultAgent)
+  const [modelInput, setModelInput] = useState('')
   const { agents } = useAgents()
   const agentNames = Object.keys(agents)
   const currentAgent = selectedAgent ? agents[selectedAgent] : undefined
+  const supportedModels = currentAgent?.supportedModels ?? []
 
   useEffect(() => {
     if (open) {
       setSessionName('')
       setSelectedAgent(defaultAgent)
+      setModelInput('')
     }
   }, [open, defaultAgent])
 
+  // Reset model when agent changes
+  useEffect(() => {
+    setModelInput('')
+  }, [selectedAgent])
+
   if (!open) return null
+
+  const modelValue = modelInput.trim() || undefined
 
   return (
     <div
@@ -77,11 +87,33 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
             </div>
           )}
 
-          {currentAgent?.model && (
-            <div className="rounded border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground">
-              model: <span className="text-foreground">{currentAgent.model}</span>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">Model</label>
+            <div className="relative">
+              <Input
+                list="model-options"
+                placeholder={currentAgent?.model ? `默认: ${currentAgent.model}` : '可选，留空使用默认'}
+                value={modelInput}
+                onChange={e => setModelInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    document.getElementById('new-session-create-btn')?.click()
+                  }
+                }}
+              />
+              {supportedModels.length > 0 && (
+                <datalist id="model-options">
+                  {supportedModels.map(m => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+              )}
             </div>
-          )}
+            {modelValue && !supportedModels.includes(modelValue) && supportedModels.length > 0 && (
+              <p className="text-xs text-muted-foreground">新 model，将自动保存到配置</p>
+            )}
+          </div>
         </div>
 
         <div className="mt-4 flex justify-end gap-2">
@@ -98,6 +130,7 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
                 await onCreate({
                   agent: selectedAgent,
                   sessionName: sessionName.trim() || undefined,
+                  model: modelValue,
                 })
               } finally {
                 setBusy(false)

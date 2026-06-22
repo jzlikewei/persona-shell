@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'fs';
-import { load } from 'js-yaml';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { load, dump } from 'js-yaml';
 import { dirname, resolve } from 'path';
 import { homedir } from 'os';
 
@@ -29,6 +29,8 @@ export interface AgentProviderConfig {
   /** Codex app-server thread cwd. Defaults to director.persona_dir. */
   cwd?: string;
   model?: string;
+  /** Available models for this provider; shown as dropdown in Web Console when creating a session. */
+  supported_models?: string[];
   /** Override director.flush_context_limit for this provider. */
   flush_context_limit?: number;
   /** Per-model flush thresholds for this provider; keyed by model name. */
@@ -183,6 +185,7 @@ export function loadConfig(path?: string): Config {
     ephemeral?: unknown;
     cwd?: unknown;
     model?: unknown;
+    supported_models?: unknown;
     flush_context_limit?: unknown;
     flush_context_limits?: unknown;
     disable_auto_flush?: unknown;
@@ -234,6 +237,9 @@ export function loadConfig(path?: string): Config {
           ? { cwd: expandHome(provider.cwd.trim()) }
           : {}),
         ...(typeof provider?.model === 'string' && provider.model.trim() ? { model: provider.model.trim() } : {}),
+        ...(Array.isArray(provider?.supported_models) && provider.supported_models.length > 0
+          ? { supported_models: provider.supported_models.filter((m): m is string => typeof m === 'string' && m.trim() !== '').map(m => m.trim()) }
+          : {}),
         ...(providerFlushContextLimit ? { flush_context_limit: providerFlushContextLimit } : {}),
         ...(providerFlushContextLimits ? { flush_context_limits: providerFlushContextLimits } : {}),
         ...(typeof provider?.disable_auto_flush === 'boolean' ? { disable_auto_flush: provider.disable_auto_flush } : {}),
@@ -347,4 +353,27 @@ export function loadConfig(path?: string): Config {
       queue_log: yaml.logging?.queue_log ?? 'logs/queue.log',
     },
   };
+}
+
+/**
+ * Append a model to a provider's supported_models list in config.yaml.
+ * No-op if the model is already present. Returns true if the file was updated.
+ */
+export function appendSupportedModel(providerName: string, model: string, configPath?: string): boolean {
+  const filePath = configPath ?? defaultConfigPath();
+  const raw = readFileSync(filePath, 'utf-8');
+  const yaml = load(raw) as Record<string, unknown>;
+
+  const providers = (yaml.agents as Record<string, unknown>)?.providers as Record<string, Record<string, unknown>> | undefined;
+  if (!providers?.[providerName]) return false;
+
+  const provider = providers[providerName];
+  const existing: string[] = Array.isArray(provider.supported_models) ? provider.supported_models as string[] : [];
+
+  if (existing.includes(model)) return false;
+
+  provider.supported_models = [...existing, model];
+  writeFileSync(filePath, dump(yaml, { lineWidth: -1, noRefs: true }), 'utf-8');
+  console.log(`[config] Appended model "${model}" to ${providerName}.supported_models`);
+  return true;
 }

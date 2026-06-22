@@ -47,6 +47,7 @@ interface RuntimeCreateOptions {
   workspaceName?: string;
   feishuChatId: string;
   agentName?: string;
+  model?: string;
   initialSessionId?: string;
 }
 
@@ -276,6 +277,7 @@ export class AgentRuntimePool extends EventEmitter {
       agentsProvider: () => this.getFreshAgentsConfig(),
       config: this.directorConfig,
       agentName: opts.agentName,
+      model: opts.model,
       initialSessionId: opts.initialSessionId,
       label,
       isMain: false,
