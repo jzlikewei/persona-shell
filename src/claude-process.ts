@@ -28,6 +28,8 @@ export interface ClaudeSpawnOptions {
   personaDir: string;
   projectDir?: string;
   agents: Config['agents'];
+  /** Pre-resolved agent config (with session-level model override). Takes precedence over agents.providers.claude. */
+  directorAgent?: AgentRuntimeConfig;
   mcpConfigPath?: string;
   sessionId?: string;
   sessionName?: string;
@@ -83,7 +85,9 @@ export class ClaudeProcess {
       throw new Error('Claude provider is required for foreground Director process');
     }
 
-    const claudeAgent: AgentRuntimeConfig = {
+    // Use pre-resolved directorAgent if available (carries session-level model override),
+    // otherwise fall back to building from provider config.
+    const claudeAgent: AgentRuntimeConfig = opts.directorAgent ?? {
       name: 'claude',
       type: 'claude',
       command: provider.command,
@@ -92,6 +96,7 @@ export class ClaudeProcess {
         ? { dangerously_skip_permissions: provider.dangerously_skip_permissions }
         : {}),
       ...(provider.effort ? { effort: provider.effort } : {}),
+      ...(provider.model ? { model: provider.model } : {}),
     };
 
     const { child } = spawnPersona({

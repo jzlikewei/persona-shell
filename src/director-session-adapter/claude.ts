@@ -151,6 +151,7 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
       personaDir,
       projectDir: effectiveCwd !== personaDir ? effectiveCwd : undefined,
       agents: this.options.agents,
+      directorAgent: this.options.directorAgent,
       mcpConfigPath: join(personaDir, '.mcp.json'),
       sessionId: savedSession ?? undefined,
       sessionName,
