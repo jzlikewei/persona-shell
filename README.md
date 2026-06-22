@@ -115,28 +115,32 @@ Session 是一次 agent 运行会话。一个 workspace 可以有多个 session�
 
 ## 架构概览
 
-```text
-IM / Web / Cron
-      │
-      ▼
-Persona Shell (TypeScript)
-      │
-      ├─ WorkspaceRegistry / SessionManager  →  DB SSOT
-      │
-      ├─ TaskRunner / Scheduler              →  后台任务与定时任务
-      │
-      └─ AgentRuntimePool                    →  Claude / Codex runtime
-                │
-                └─ SessionBridge / Adapter   →  agent 协议适配、streaming、tool events
+```mermaid
+flowchart TD
+    A1["飞书 (Webhook/Event)"] --> MR
+    A2["Web Console (HTTP/WS)"] --> MR
+    A3["Cron / Task 回调"] --> MR
+    MR["MessagingRouter — 消息分发"] --> WS
+    WS["WorkspaceRegistry / SessionManager → DB SSOT (SQLite)"] --> ARP
+    WS --> TR
+    WS --> SCH
+    ARP["AgentRuntimePool"] --> SB["SessionBridge"]
+    TR["TaskRunner"] --> SUB["子角色进程"]
+    SCH["Scheduler"] --> CRON["Cron Jobs"]
+    SB --> ADAPTER["Claude / Codex Adapter → agent CLI 进程"]
+    ADAPTER --> PERSONA["~/.persona/ — 身份仓库\n(soul.md / personas / prompts / memory / workspaces)"]
 ```
 
 关键边界：
 
+- `MessagingRouter`：飞书、Web、内部回调的统一入口分发。
 - `SessionManager`：workspace/session 业务路由。
 - `AgentRuntimePool`：runtime 生命周期、队列、恢复、streaming。
 - `SessionBridge`：单 session 的消息收发、flush、restart、指标和事件。
+- `TaskRunner / Scheduler`：后台任务派发与 Cron 调度。
 - `task-store`：workspace、session、task、cron 的 SQLite SSOT。
-- `web-v2`：面向人的工作台。
+- `task-mcp-server`：对外暴露任务能力的 MCP 接口，供 agent 内部调用。
+- `web-v2`：面向人的工作台（React + Vite），通过 Console API / WebSocket 通信。
 
 技术细节见 [架构文档](docs/architecture.md)。
 

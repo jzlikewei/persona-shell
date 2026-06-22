@@ -2,22 +2,23 @@
 
 ## 领域模型
 
-```
-Workspace（持久容器，name 唯一 key）
-  ├─ defaultSessionId          ← 飞书入口的路由 fallback
-  └─ 1:N Session（路由单元，sessionId 是路由标识）
-                ├─ archived: boolean
-                └─ 1:1 Agent（运行时实例）
-                      ├─ role: string
-                      ├─ context
-                      └─ cwd: string
+```mermaid
+graph TD
+    W["Workspace（持久容器，name 唯一 key）"]
+    W --> |defaultSessionId| DSI["飞书入口的路由 fallback"]
+    W --> |1:N| S["Session（路由单元，sessionId 是路由标识）"]
+    S --> |archived| BOOL["boolean"]
+    S --> |1:1| A["Agent（运行时实例）"]
+    A --- R["role: string"]
+    A --- CTX["context"]
+    A --- CWD["cwd: string"]
 
-────────────────────── 领域层 / 基础设施层 ──────────────────────
+    SEP["───── 领域层 / 基础设施层 ─────"]
 
-MessageChannel（基础设施层）
-  ├─ WebUI      — 总是接收所有回复
-  └─ IM（飞书）  — 按需转发
-       ↕ MessagingRouter（转发决策）
+    MC["MessageChannel（基础设施层）"]
+    MC --> WEBUI["WebUI — 总是接收所有回复"]
+    MC --> IM["IM（飞书） — 按需转发"]
+    IM <--> MR["MessagingRouter（转发决策）"]
 ```
 
 ### Workspace（工作空间）
@@ -94,16 +95,13 @@ Session 绑定的 AI 运行时。不是持久实体——Session 创建时 Agent
 
 ### 消息路由
 
-```
-消息到达
-  │
-  ├─ Web（必须携带 sessionId）
-  │     → 直接路由到 Session → Agent 处理
-  │
-  └─ 飞书（携带群名 / 私聊）
-        → 群名映射到 workspace
-        → workspace.defaultSessionId
-        → Session → Agent 处理
+```mermaid
+flowchart TD
+    MSG["消息到达"] --> WEB["Web（必须携带 sessionId）"]
+    MSG --> FS["飞书（携带群名 / 私聊）"]
+    WEB --> |直接路由| S1["Session → Agent 处理"]
+    FS --> |群名映射| WK["workspace"]
+    WK --> |defaultSessionId| S2["Session → Agent 处理"]
 ```
 
 Web 端发消息必须带 sessionId。如果是新 workspace 还没有 session，前端先调 `POST /api/sessions` 创建。
@@ -186,20 +184,20 @@ Shell 本身不做 AI 推理，所有智能由底层 agent（Claude Code / Codex
 
 ### 运行时组件
 
-```
-WorkspaceRegistry          — workspace CRUD + default session 管理
-SessionManager             — Session/Agent 生命周期 + 消息发送
-  entries: Map<sessionId, SessionEntry>
-MessagingRouter            — 回复转发到 Channel（WebUI / IM）
+```mermaid
+flowchart LR
+    WR["WorkspaceRegistry\n— workspace CRUD + default session 管理"]
+    SM["SessionManager\n— Session/Agent 生命周期 + 消息发送\nentries: Map‹sessionId, SessionEntry›"]
+    MR["MessagingRouter\n— 回复转发到 Channel（WebUI / IM）"]
 ```
 
 消息流：
-```
-消息到达
-  → WorkspaceRegistry.resolve(workspaceName) → sessionId（飞书路径）
-  → SessionManager.send(sessionId, text)
-  → Agent 处理 → 回复
-  → MessagingRouter 转发到 Channel
+```mermaid
+flowchart LR
+    MSG["消息到达"] --> WR["WorkspaceRegistry.resolve(workspaceName)\n→ sessionId（飞书路径）"]
+    WR --> SM["SessionManager.send(sessionId, text)"]
+    SM --> AGENT["Agent 处理 → 回复"]
+    AGENT --> MR["MessagingRouter\n转发到 Channel"]
 ```
 
 ## 通讯层
@@ -230,34 +228,28 @@ interface MessagingClient {
 
 ## 消息入口路由
 
-```
-消息到达
-  │
-  ├─ 飞书私聊 → main workspace → default session
-  │
-  ├─ 飞书群聊
-  │     ├─ 大群（> threshold）→ One-shot（无状态，不创建 session）
-  │     └─ 小群（≤ threshold）→ workspace(群名) → default session
-  │
-  └─ Web Console → sessionId 直达（必须指定）
+```mermaid
+flowchart TD
+    MSG["消息到达"] --> PC["飞书私聊 → main workspace → default session"]
+    MSG --> GC["飞书群聊"]
+    GC --> BIG["大群（> threshold）\n→ One-shot（无状态，不创建 session）"]
+    GC --> SMALL["小群（≤ threshold）\n→ workspace(群名) → default session"]
+    MSG --> WEB["Web Console → sessionId 直达（必须指定）"]
 ```
 
 ## Agent 三层架构
 
-```
-SessionBridge (session-bridge.ts)
-  ├─ 会话编排：消息队列 / FLUSH / bootstrap / 事件发射
-  ├─ 不关心底层是 Claude 还是 Codex
-  │
-  └─ DirectorSessionAdapter (director-session-adapter/)
-      ├─ claude.ts — stream-json 双向协议
-      ├─ codex-app-server.ts — App Server JSON-RPC 协议
-      ├─ kimi.ts — stream-json stdin/stdout 协议
-      │
-      └─ DirectorRuntime (director-runtime/)
-          ├─ claude.ts — daemon 进程（FIFO named pipe，长驻）
-          ├─ codex-app-server.ts — App Server JSON-RPC runtime（主线）
-          └─ kimi.ts — daemon 进程（stdin/stdout pipe，长驻）
+```mermaid
+flowchart TD
+    SB["SessionBridge (session-bridge.ts)\n会话编排：消息队列 / FLUSH / bootstrap / 事件发射\n不关心底层是 Claude 还是 Codex"]
+    SB --> DSA["DirectorSessionAdapter (director-session-adapter/)"]
+    DSA --> CLAUDE_A["claude.ts — stream-json 双向协议"]
+    DSA --> CODEX_A["codex-app-server.ts — App Server JSON-RPC 协议"]
+    DSA --> KIMI_A["kimi.ts — stream-json stdin/stdout 协议"]
+    DSA --> DR["DirectorRuntime (director-runtime/)"]
+    DR --> CLAUDE_R["claude.ts — daemon 进程（FIFO named pipe，长驻）"]
+    DR --> CODEX_R["codex-app-server.ts — App Server JSON-RPC runtime（主线）"]
+    DR --> KIMI_R["kimi.ts — daemon 进程（stdin/stdout pipe，长驻）"]
 ```
 
 ### SessionBridge
@@ -361,11 +353,12 @@ DirectorPool 位于 SessionManager 下方，只保存 runtime entry、queue、st
 
 长驻 Director 的上下文窗口会持续膨胀。FLUSH 定期重启认知，进程不死：
 
-```
-1. Drain    — 等待 in-flight 消息处理完成
-2. Checkpoint — Director 将工作状态保存到 daily/state.md
-3. Reset    — kill 进程 + 清空 session
-4. Bootstrap — 新 Director 读取 state.md 恢复上下文
+```mermaid
+flowchart LR
+    D1["1. Drain — 等待 in-flight 消息处理完成"]
+    D1 --> D2["2. Checkpoint — Director 将工作状态保存到 daily/state.md"]
+    D2 --> D3["3. Reset — kill 进程 + 清空 session"]
+    D3 --> D4["4. Bootstrap — 新 Director 读取 state.md 恢复上下文"]
 ```
 
 **触发条件**（满足任一即触发）：
@@ -379,14 +372,12 @@ DirectorPool 位于 SessionManager 下方，只保存 runtime entry、queue、st
 
 后台任务是隔离执行单元，不是所有自动化推进的默认形态：
 
-```
-Agent ──create_task──→ Shell (task-runner)
-                               │
-                   spawn agent process / temporary Codex App Server
-                               │
-                   产出写入 outbox/YYYY-MM-DD/
-                               │
-                   回调：优先注入 source sessionId，失效才回到 workspace default session
+```mermaid
+flowchart TD
+    AGENT["Agent"] --> |create_task| SHELL["Shell (task-runner)"]
+    SHELL --> SPAWN["spawn agent process /\ntemporary Codex App Server"]
+    SPAWN --> OUT["产出写入 outbox/YYYY-MM-DD/"]
+    OUT --> CB["回调：优先注入 source sessionId，\n失效才回到 workspace default session"]
 ```
 
 - 任务对 Claude Code 通过 MCP Server（`task-mcp-server.ts`）暴露；对 Codex App Server 默认通过 dynamic tools 暴露，由 runtime 直接处理 `item/tool/call`
@@ -400,13 +391,13 @@ Agent ──create_task──→ Shell (task-runner)
 
 推荐拓扑：
 
-```
-cron tick
-  └─提醒 master Codex thread 继续推进
-       ├─读取 blueprint / .ops/state / workspace context
-       ├─检查 worker lane 状态和 no-overlap
-       ├─需要小步推进：直接让长程 worker thread 继续 turn
-       └─需要大块/并行/隔离：才 create_task 创建临时任务
+```mermaid
+flowchart TD
+    CRON["cron tick"] --> MASTER["提醒 master Codex thread 继续推进"]
+    MASTER --> READ["读取 blueprint / .ops/state / workspace context"]
+    MASTER --> CHECK["检查 worker lane 状态和 no-overlap"]
+    MASTER --> SMALL["需要小步推进：\n直接让长程 worker thread 继续 turn"]
+    MASTER --> BIG["需要大块/并行/隔离：\n才 create_task 创建临时任务"]
 ```
 
 原则：
@@ -439,16 +430,19 @@ cron tick
 
 ## 进程容灾
 
-```
-Shell 崩溃时：
-  Claude Agent (detached)     → 还活着，通过 named pipe 等待重连
-  Codex Agent                 → 无常驻进程，无影响
-  子角色任务 (detached, -p)    → 还活着，结果写 outbox/
-
-Shell 重启：
-  → SessionManager.restoreEntries()：从 SQLite 恢复活跃 session
-  → Claude Agent：重新 open named pipe 连接存活进程
-  → 如果 Agent 也崩了：spawn 新 Agent，读 context.md 恢复
+```mermaid
+flowchart TD
+    subgraph CRASH["Shell 崩溃时"]
+        C1["Claude Agent (detached) → 还活着，通过 named pipe 等待重连"]
+        C2["Codex Agent → 无常驻进程，无影响"]
+        C3["子角色任务 (detached, -p) → 还活着，结果写 outbox/"]
+    end
+    subgraph RESTART["Shell 重启"]
+        R1["SessionManager.restoreEntries()\n从 SQLite 恢复活跃 session"]
+        R1 --> R2["Claude Agent：重新 open named pipe 连接存活进程"]
+        R2 --> R3["如果 Agent 也崩了：spawn 新 Agent，读 context.md 恢复"]
+    end
+    CRASH --> RESTART
 ```
 
 ## Web Console
