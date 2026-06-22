@@ -19,6 +19,12 @@ state/
 # Deploy config (local only, contains server address)
 web-v2/.deploy.env
 
+# MCP config (local only)
+.mcp.json
+
+# Outbox (runtime artifacts)
+outbox/
+
 # OS
 .DS_Store
 
