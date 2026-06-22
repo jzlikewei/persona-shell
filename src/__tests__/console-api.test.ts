@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace } from '../console-api.js';
+import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace, resolveAllowedProjectPath } from '../console-api.js';
 
 describe('console API contract', () => {
   test('send requires sessionId and text', () => {
@@ -46,5 +46,18 @@ describe('console API contract', () => {
   test('sessions use workspace query and default to main', () => {
     expect(parseSessionsWorkspace(new URL('http://local/api/sessions?workspace=project-a&director=old'))).toBe('project-a');
     expect(parseSessionsWorkspace(new URL('http://local/api/sessions?director=old'))).toBe('main');
+  });
+
+  test('project file paths are limited to allowed roots', () => {
+    expect(resolveAllowedProjectPath('/repo/app/src/index.ts', ['/repo/app'])).toEqual({
+      root: '/repo/app',
+      path: '/repo/app/src/index.ts',
+    });
+    expect(resolveAllowedProjectPath('/repo/app2/src/index.ts', ['/repo/app'])).toBeNull();
+    expect(resolveAllowedProjectPath('/repo/app/src/index.ts', ['/repo/app'], { requireRoot: true })).toBeNull();
+    expect(resolveAllowedProjectPath('/repo/app', ['/repo/app'], { requireRoot: true })).toEqual({
+      root: '/repo/app',
+      path: '/repo/app',
+    });
   });
 });

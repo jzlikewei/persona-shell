@@ -15,7 +15,7 @@ import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
 import { defaultConfigPath, resolveAgentProvider, type Config } from './config.js';
 import type { TaskRunner } from './task/task-runner.js';
-import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, updateWorkspace as updateWorkspaceInDb, createWorkspace as createWorkspaceInDb, buildTaskParentMetadata, type TaskExtra } from './task/task-store.js';
+import { createTask, getTask, listTasks, updateTask, cancelTask as cancelTaskInDb, getState, setState, deleteState, previewTaskCleanup, cleanupTaskHistory, type TaskCleanupStatus, type CreateTaskInput, createCronJob, getCronJob, listCronJobs, updateCronJob, deleteCronJob, toggleCronJob, localNow, type CreateCronJobInput, type CronJob, getWorkspace, getWorkspaceSessionStats, hasAnySessionHistory, listSessionsFromDb, listWorkspaces, setSessionNameInDb, getSessionRecord, archiveSession as archiveSessionInDb, renameWorkspace as renameWorkspaceInDb, updateWorkspace as updateWorkspaceInDb, createWorkspace as createWorkspaceInDb, buildTaskParentMetadata, type TaskExtra } from './task/task-store.js';
 import type { SessionManager } from './session-manager.js';
 import type { WorkspaceRegistry } from './workspace-registry.js';
 import { listPersonaRoles, buildPersonaPromptBundle, sessionLinkKey, upsertSessionLink, type PersonaSessionLink } from './persona-orchestration.js';
@@ -23,7 +23,7 @@ import { getLogDir } from './logger.js';
 import { resolveCronMessage } from './prompt-loader.js';
 import { extractBashCommand, isBashAction, runBashAction } from './task/shell-bash.js';
 import { CodexThreadInjector } from './codex-thread-injector.js';
-import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace } from './console-api.js';
+import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace, resolveAllowedProjectPath } from './console-api.js';
 
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
 interface WsConnection {
@@ -841,6 +841,25 @@ export function startConsole(
     const candidate = rawPath.startsWith('/') ? resolve(rawPath) : resolve(resolvedRoot, rawPath);
     if (!isInside(resolvedRoot, candidate)) throw new Error('Path outside root');
     return candidate;
+  }
+
+  function allowedProjectRoots(): string[] {
+    const cfg = currentConfig();
+    const roots = new Set<string>([
+      process.cwd(),
+      cfg.director.persona_dir,
+    ]);
+    for (const provider of Object.values(cfg.agents.providers)) {
+      if (provider.cwd) roots.add(resolve(expandConsolePath(provider.cwd)));
+    }
+    for (const workspace of listWorkspaces()) {
+      if (workspace.cwd) roots.add(resolve(expandConsolePath(workspace.cwd)));
+    }
+    return [...roots];
+  }
+
+  function resolveAllowedProjectRoot(rawRoot: string | null): string | null {
+    return resolveAllowedProjectPath(rawRoot, allowedProjectRoots(), { requireRoot: true })?.root ?? null;
   }
 
   function listProjectTree(root: string, dir: string, maxDepth: number): ProjectTreeEntry[] {
@@ -2877,7 +2896,8 @@ export function startConsole(
           if (url.pathname === '/api/files/tree' && req.method === 'GET') {
             const rawRoot = url.searchParams.get('root');
             if (!rawRoot) return Response.json({ error: 'root is required' }, { status: 400 });
-            const root = resolve(rawRoot);
+            const root = resolveAllowedProjectRoot(rawRoot);
+            if (!root) return Response.json({ error: `Project root not allowed: ${resolve(rawRoot)}` }, { status: 403 });
             if (!existsSync(root) || !statSync(root).isDirectory()) {
               return Response.json({ error: 'Not a directory' }, { status: 404 });
             }
@@ -2902,7 +2922,15 @@ export function startConsole(
             const rawRoot = url.searchParams.get('root');
             let path: string;
             try {
-              path = rawRoot ? resolveProjectChild(resolve(rawRoot), rawPath) : resolve(rawPath);
+              if (rawRoot) {
+                const root = resolveAllowedProjectRoot(rawRoot);
+                if (!root) return Response.json({ error: `Project root not allowed: ${resolve(rawRoot)}` }, { status: 403 });
+                path = resolveProjectChild(root, rawPath);
+              } else {
+                const resolved = resolveAllowedProjectPath(rawPath, allowedProjectRoots());
+                if (!resolved) return Response.json({ error: `Project path not allowed: ${resolve(rawPath)}` }, { status: 403 });
+                path = resolved.path;
+              }
             } catch {
               return Response.json({ error: 'Path outside root' }, { status: 400 });
             }

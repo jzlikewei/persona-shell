@@ -313,6 +313,10 @@ SessionBridge (session-bridge.ts)
 {"type":"user","message":{"role":"user","content":"消息内容"}}
 ```
 
+图片附件：FIFO 只传文本路径引用，Director 通过 Read tool 查看图片。
+不使用 base64 内联——macOS FIFO 缓冲区仅 8 KB，一张截图 base64 后 200 KB+ 会阻塞写入。
+（Codex adapter 用 `{type:"localImage", path}` 传路径，但 Claude CLI 不支持该格式。）
+
 输出（读 director-out）：
 ```json
 {"type":"system","subtype":"init","session_id":"xxx"}

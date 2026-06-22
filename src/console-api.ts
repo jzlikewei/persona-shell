@@ -1,3 +1,5 @@
+import { resolve } from 'path';
+
 export interface SendApiAttachmentPayload {
   type: 'image' | 'file' | 'audio';
   path: string;
@@ -47,4 +49,26 @@ export function parseMessagesSessionId(url: URL): string | null {
 
 export function parseSessionsWorkspace(url: URL): string {
   return url.searchParams.get('workspace')?.trim() || 'main';
+}
+
+export function resolveAllowedProjectPath(
+  rawPath: string | null,
+  allowedRoots: string[],
+  opts: { defaultRoot?: string; requireRoot?: boolean } = {},
+): { root: string; path: string } | null {
+  const roots = [...new Set(allowedRoots.map((root) => resolvePath(root)).filter(Boolean))];
+  const raw = rawPath?.trim() ?? '';
+  const requested = raw ? resolvePath(raw) : opts.defaultRoot ? resolvePath(opts.defaultRoot) : '';
+  const root = roots.find((candidateRoot) => isInsidePath(candidateRoot, requested));
+  if (!root) return null;
+  if (opts.requireRoot && requested !== root) return null;
+  return { root, path: requested };
+}
+
+function resolvePath(path: string): string {
+  return resolve(path);
+}
+
+function isInsidePath(root: string, candidate: string): boolean {
+  return candidate === root || candidate.startsWith(root.endsWith('/') ? root : `${root}/`);
 }

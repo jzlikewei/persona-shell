@@ -7,6 +7,7 @@
     "init": "sh scripts/init.sh",
     "build": "bun build src/index.ts --outdir dist --target node",
     "check": "tsc --noEmit && sh scripts/check-no-any.sh",
+    "test": "bun test src/__tests__ web-v2/__tests__",
     "smoke:workspace-routing": "bun test src/__tests__/workspace-routing-smoke.test.ts",
     "smoke:web": "bun scripts/smoke-web-console.ts",
     "smoke:goal-workflow": "bun scripts/smoke-goal-workflow.ts",

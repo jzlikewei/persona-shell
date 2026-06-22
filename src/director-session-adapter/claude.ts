@@ -1,5 +1,4 @@
 import { join } from 'path';
-import { readFileSync } from 'fs';
 import { ClaudeDirectorRuntime } from '../director-runtime/claude.js';
 import type { DirectorSessionAdapter, DirectorSessionAdapterHooks, DirectorSessionAdapterOptions } from './index.js';
 import { attachReadHandle } from './index.js';
@@ -44,9 +43,31 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
     return this.runtime.isAlive();
   }
 
+  /**
+   * Send a user message to the Claude CLI process via FIFO pipe.
+   *
+   * Architecture note — why images use file-path references instead of inline base64:
+   *
+   * Claude CLI's stream-json input protocol supports base64-encoded image content
+   * blocks, and that is exactly how the interactive terminal sends images. However,
+   * pshell communicates with the Claude process through a FIFO named pipe, and
+   * macOS FIFO buffers are only ~8 KB. A single screenshot (150 KB raw → 200 KB+
+   * base64 JSON) exceeds this buffer by 25×. If the Claude process is not actively
+   * reading at the exact moment we write (e.g. it just finished a turn and hasn't
+   * re-entered its stdin read loop), the write() syscall blocks indefinitely,
+   * freezing the entire bridge and the user sees "stuck / 卡死".
+   *
+   * The Codex adapter avoids this with `{type:"localImage", path}`, but Claude CLI
+   * does not support that format — it passes the JSON straight to the API, which
+   * returns 400.
+   *
+   * So we fall back to a text description with the local file path. The Director
+   * can then use the Read tool to view the image, which works reliably because
+   * Read goes through the Claude Code tool system (not through the FIFO).
+   */
   async send(input: DirectorSendInput): Promise<void> {
     const { text, attachments } = normalizeDirectorInput(input);
-    const content = buildMultimodalContent(text, attachments);
+    const content = buildTextWithAttachmentPaths(text, attachments);
     const msg = { type: 'user', message: { role: 'user', content } };
     await this.runtime.write(JSON.stringify(msg) + '\n');
   }
@@ -279,46 +300,31 @@ export class ClaudeSessionAdapter implements DirectorSessionAdapter {
   }
 }
 
-type ContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
-
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
-
-function imageMimeType(filePath: string): string {
-  const ext = filePath.toLowerCase().split('.').pop() ?? '';
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  if (ext === 'gif') return 'image/gif';
-  if (ext === 'webp') return 'image/webp';
-  return 'image/png';
-}
-
-export function buildMultimodalContent(
+/**
+ * Build a plain-text message that tells the Director about attached files by path.
+ *
+ * Images are described with their absolute path so the Director can use the Read
+ * tool (which handles images natively) to view them. This keeps the FIFO payload
+ * small — only a few hundred bytes regardless of image size.
+ *
+ * See the `send()` method for the full rationale on why we don't inline base64.
+ */
+function buildTextWithAttachmentPaths(
   text: string,
   attachments: DirectorInputAttachment[] | undefined,
-): string | ContentBlock[] {
-  const images = attachments?.filter((a) => {
-    if (a.type === 'image') return true;
-    const ext = a.path.toLowerCase().split('.').pop() ?? '';
-    return IMAGE_EXTS.has(ext);
-  });
-  const nonImages = attachments?.filter((a) => !images?.includes(a));
-  const attachmentFallback = nonImages?.length
-    ? ['附件：', ...nonImages.map((a) => `- ${a.name ?? a.path}: ${a.path}`)].join('\n')
-    : '';
-  if (!images?.length) return [text, attachmentFallback].filter(Boolean).join('\n\n');
+): string {
+  if (!attachments?.length) return text;
 
-  const blocks: ContentBlock[] = [];
-  if (text) blocks.push({ type: 'text', text });
-  for (const img of images) {
-    try {
-      const data = readFileSync(img.path).toString('base64');
-      blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mime ?? imageMimeType(img.path), data } });
-    } catch {
-      blocks.push({ type: 'text', text: `[图片加载失败: ${img.path}]` });
+  const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'ico']);
+  const lines: string[] = [];
+  for (const a of attachments) {
+    const ext = a.path.toLowerCase().split('.').pop() ?? '';
+    const isImage = a.type === 'image' || IMAGE_EXTS.has(ext);
+    if (isImage) {
+      lines.push(`[图片附件] ${a.name ?? a.path}\n  路径: ${a.path}\n  (使用 Read 工具查看此图片)`);
+    } else {
+      lines.push(`[文件附件] ${a.name ?? a.path}\n  路径: ${a.path}`);
     }
   }
-
-  if (attachmentFallback) blocks.push({ type: 'text', text: attachmentFallback });
-  return blocks;
+  return [text, ...lines].filter(Boolean).join('\n\n');
 }

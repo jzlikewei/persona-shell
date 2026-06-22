@@ -216,7 +216,7 @@ curl -sk -u "pshell:your-token" -o /dev/null -w "%{http_code}" https://your-doma
 # 期望: 200
 ```
 
-## 前端自动部署
+## 前端静态部署
 
 Nginx 推荐配置为：静态文件从服务器本地 serve（`/assets/`、`/index.html`），只有 `/api/` 和 `/ws` 走隧道。这样前端加载不经过隧道，速度更快。
 
@@ -270,18 +270,17 @@ server {
 }
 ```
 
-### 自动同步
+### 手动同步
 
-`ensureWebV2Dist` 在每次构建前端后，会自动检查 `web-v2/.deploy.env`，如果存在就 rsync 到远程服务器。这是 fire-and-forget，不阻塞启动。
+Persona Shell 启动时只负责构建和托管本机 `web-v2/dist`。远程静态站点同步走手动命令或独立运维脚本，避免启动本地服务时触发远程写入。
 
-配置方法（`web-v2/.deploy.env`，已 gitignore，不会进仓库）：
-
-```env
-DEPLOY_HOST=user@your-server
-DEPLOY_PATH=/var/www/pshell-ui
+```bash
+cd ~/github/jzlikewei/persona-shell/web-v2
+bun run build
+rsync -az --delete dist/ user@your-server:/var/www/pshell-ui/
 ```
 
-无此文件时自动跳过，对其他用户完全透明。
+`/api/` 和 `/ws` 仍通过 SSH 隧道回到本机 Shell，静态资源由公网服务器直接提供。
 
 ## 安全注意事项
 
