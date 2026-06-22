@@ -7,7 +7,7 @@ import type { DirectorInputAttachment } from './director-input.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import type { CardAction } from './messaging/messaging.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
-import { createSessionRecord, getSessionRecord, archiveSession as archiveSessionInDb, listSessionRecords, setDefaultSession, type SessionRow } from './task/task-store.js';
+import { createSessionRecord, getSessionRecord, archiveSession as archiveSessionInDb, listSessionRecords, setDefaultSession, getWorkspace, type SessionRow } from './task/task-store.js';
 
 export interface SessionEntry {
   sessionId: string;
@@ -226,6 +226,7 @@ export class SessionManager extends EventEmitter {
   async createNewSession(workspaceName: string, opts: {
     feishuChatId: string;
     agentName?: string;
+    model?: string;
   }): Promise<SessionEntry> {
     const workspace = this.workspaceRegistry.getOrCreate(workspaceName);
     const agentName = opts.agentName ?? workspace.agent ?? undefined;
@@ -234,6 +235,7 @@ export class SessionManager extends EventEmitter {
       workspaceName: workspaceName,
       feishuChatId: opts.feishuChatId,
       agentName,
+      model: opts.model,
     });
     let sessionId = entry.bridge.getStatus().sessionId;
     if (!sessionId) {
@@ -264,7 +266,7 @@ export class SessionManager extends EventEmitter {
         sessionId,
         workspace,
         role: entry.bridge.getPersonaRole(),
-        cwd: entry.bridge.getWorkspaceCwd(),
+        cwd: entry.bridge.getWorkspaceCwd() ?? getWorkspace(workspace)?.cwd ?? undefined,
         agentName: entry.bridge.getAgentName(),
         agentType: entry.bridge.getDirectorAgentType(),
         model: entry.bridge.getDirectorAgentModel(),

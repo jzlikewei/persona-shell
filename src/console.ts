@@ -1376,6 +1376,7 @@ export function startConsole(
               type: provider.type,
               command: provider.command,
               model: provider.model ?? null,
+              supportedModels: provider.supported_models ?? null,
               sandbox: provider.sandbox ?? null,
               approval: provider.approval ?? null,
               effort: provider.effort ?? null,
@@ -3512,6 +3513,7 @@ export function startConsole(
             if (!record?.agent_type || record.agent_type === 'claude') {
               const cwd = sessionManager?.getSession(sessionId)?.bridge.getWorkspaceCwd()
                 ?? record?.cwd
+                ?? (record?.workspace ? getWorkspace(record.workspace)?.cwd : undefined)
                 ?? (record?.workspace ? join(config.director.persona_dir, 'workspaces', record.workspace) : undefined);
               if (cwd) {
                 const nativeMessages = parseClaudeTranscript(sessionId, cwd, limit);
@@ -4086,7 +4088,7 @@ export function startConsole(
           // Web session API routes
           if (url.pathname === '/api/sessions' && req.method === 'POST') {
             try {
-              const body = await req.json() as { workspace: string; agent?: string };
+              const body = await req.json() as { workspace: string; agent?: string; model?: string };
               if (!body.workspace) {
                 return Response.json({ ok: false, error: 'workspace is required' }, { status: 400 });
               }
@@ -4110,6 +4112,7 @@ export function startConsole(
               const entry = await sessionManager.createNewSession(wsName, {
                 feishuChatId: 'web-console',
                 agentName: body.agent,
+                model: body.model,
               });
               writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
               return Response.json({
