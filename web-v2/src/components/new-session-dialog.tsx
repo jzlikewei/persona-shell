@@ -16,6 +16,7 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
   const [sessionName, setSessionName] = useState('')
   const [selectedAgent, setSelectedAgent] = useState<string | undefined>(defaultAgent)
   const [modelInput, setModelInput] = useState('')
+  const [customModelMode, setCustomModelMode] = useState(false)
   const { agents } = useAgents()
   const agentNames = Object.keys(agents)
   const currentAgent = selectedAgent ? agents[selectedAgent] : undefined
@@ -26,12 +27,14 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
       setSessionName('')
       setSelectedAgent(defaultAgent)
       setModelInput('')
+      setCustomModelMode(false)
     }
   }, [open, defaultAgent])
 
   // Reset model when agent changes
   useEffect(() => {
     setModelInput('')
+    setCustomModelMode(false)
   }, [selectedAgent])
 
   if (!open) return null
@@ -89,27 +92,50 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
 
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">Model</label>
-            <div className="relative">
-              <Input
-                list="model-options"
-                placeholder={currentAgent?.model ? `默认: ${currentAgent.model}` : '可选，留空使用默认'}
+            {supportedModels.length > 0 && !customModelMode ? (
+              <select
                 value={modelInput}
-                onChange={e => setModelInput(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    document.getElementById('new-session-create-btn')?.click()
+                onChange={e => {
+                  if (e.target.value === '__custom__') {
+                    setCustomModelMode(true)
+                    setModelInput('')
+                  } else {
+                    setModelInput(e.target.value)
                   }
                 }}
-              />
-              {supportedModels.length > 0 && (
-                <datalist id="model-options">
-                  {supportedModels.map(m => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-              )}
-            </div>
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                <option value="">默认{currentAgent?.model ? ` (${currentAgent.model})` : ''}</option>
+                {supportedModels.map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+                <option value="__custom__">自定义...</option>
+              </select>
+            ) : (
+              <div className="flex gap-2">
+                <Input
+                  placeholder={currentAgent?.model ? `默认: ${currentAgent.model}` : '输入 model 名称'}
+                  value={modelInput}
+                  onChange={e => setModelInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      document.getElementById('new-session-create-btn')?.click()
+                    }
+                  }}
+                />
+                {supportedModels.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => { setCustomModelMode(false); setModelInput('') }}
+                  >
+                    列表
+                  </Button>
+                )}
+              </div>
+            )}
             {modelValue && !supportedModels.includes(modelValue) && (
               <p className="text-xs text-muted-foreground">新 model，将自动保存到配置</p>
             )}
