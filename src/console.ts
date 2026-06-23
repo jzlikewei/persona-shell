@@ -4118,7 +4118,13 @@ export function startConsole(
               // Persist new model to config.yaml supported_models if not already listed
               if (body.model?.trim()) {
                 const agentName = body.agent ?? currentConfig().agents.defaults.default ?? 'claude';
-                try { appendSupportedModel(agentName, body.model.trim()); } catch { /* best-effort */ }
+                try {
+                  const saved = appendSupportedModel(agentName, body.model.trim());
+                  if (saved) console.log(`[api] Saved model "${body.model}" to ${agentName}.supported_models`);
+                  else console.log(`[api] Model "${body.model}" already in ${agentName}.supported_models or provider not found`);
+                } catch (e) {
+                  console.error(`[api] Failed to save model to config:`, e);
+                }
               }
               return Response.json({
                 ok: true,

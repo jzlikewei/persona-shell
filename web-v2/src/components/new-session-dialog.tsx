@@ -110,7 +110,7 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
                 </datalist>
               )}
             </div>
-            {modelValue && !supportedModels.includes(modelValue) && supportedModels.length > 0 && (
+            {modelValue && !supportedModels.includes(modelValue) && (
               <p className="text-xs text-muted-foreground">新 model，将自动保存到配置</p>
             )}
           </div>
