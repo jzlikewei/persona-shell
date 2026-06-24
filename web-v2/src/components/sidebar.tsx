@@ -1,9 +1,10 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import {
   Archive,
   ChevronRight,
   Eye,
   EyeOff,
+  Pencil,
   Plus,
   Settings2,
 } from 'lucide-react'
@@ -79,6 +80,7 @@ export function Sidebar({
   onConfigureWorkspace,
   onCreateSession,
   onArchiveSession,
+  onRenameSession,
   onBindProject,
   onToggleHidden,
 }: {
@@ -96,11 +98,31 @@ export function Sidebar({
   onConfigureWorkspace: (workspace: WorkspaceInfo) => void
   onCreateSession: (workspace: WorkspaceInfo) => void
   onArchiveSession: (session: Session) => void
+  onRenameSession: (session: Session, name: string) => void
   onBindProject: (project: ProjectInfo) => void
   onToggleHidden: (workspace: WorkspaceInfo) => void
 }) {
   const title = mode === 'projects' ? 'Projects' : 'Workspaces'
   const [hiddenWorkspacesOpen, setHiddenWorkspacesOpen] = useState(false)
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState('')
+  const editInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (editingSessionId && editInputRef.current) {
+      editInputRef.current.focus()
+      editInputRef.current.select()
+    }
+  }, [editingSessionId])
+
+  const commitRename = (session: Session) => {
+    const trimmed = editingName.trim()
+    setEditingSessionId(null)
+    if (trimmed && trimmed !== (session.label || session.name || session.id)) {
+      onRenameSession(session, trimmed)
+    }
+  }
+
   const visibleWorkspaces = workspaces.filter(workspace =>
     workspace.source === 'main' || !workspace.hidden
   )
@@ -196,27 +218,69 @@ export function Sidebar({
                         <div className="mb-1 ml-3 space-y-0.5 border-l border-[#45475a] pl-2 pt-0.5">
                           {sessions.map(session => {
                             const selected = activeSession === session.id
+                            const isEditing = editingSessionId === session.id
+                            const displayName = session.label || session.name || session.id
                             return (
                               <div
                                 key={session.id}
                                 className={cn(
-                                  'flex w-full items-center gap-1.5 rounded font-mono text-[11px] transition-colors',
+                                  'group flex w-full items-center gap-1.5 rounded font-mono text-[11px] transition-colors',
                                   selected
                                     ? 'bg-[#45475a] text-[#cdd6f4]'
                                     : 'text-[#7f849c] hover:bg-[#313244] hover:text-[#cdd6f4]'
                                 )}
-                                title={session.label || session.name || session.id}
+                                title={displayName}
                               >
-                                <button
-                                  onClick={() => setActiveSession(session.id)}
-                                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left"
-                                >
-                                  <span className={cn('size-[6px] shrink-0 rounded-full', session.alive ? 'bg-[#a6e3a1]' : 'bg-[#6c7086]')} />
-                                  <span className="min-w-0 flex-1 truncate">{session.label || session.name || session.id}</span>
-                                </button>
+                                {isEditing ? (
+                                  <div className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-0.5">
+                                    <span className={cn('size-[6px] shrink-0 rounded-full', session.alive ? 'bg-[#a6e3a1]' : 'bg-[#6c7086]')} />
+                                    <input
+                                      ref={editInputRef}
+                                      value={editingName}
+                                      onChange={e => setEditingName(e.target.value)}
+                                      onBlur={() => commitRename(session)}
+                                      onKeyDown={e => {
+                                        if (e.key === 'Enter') commitRename(session)
+                                        if (e.key === 'Escape') setEditingSessionId(null)
+                                      }}
+                                      className="min-w-0 flex-1 rounded border border-[#585b70] bg-[#1e1e2e] px-1 py-0.5 text-[11px] text-[#cdd6f4] outline-none focus:border-[#cba6f7]"
+                                      maxLength={80}
+                                    />
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => setActiveSession(session.id)}
+                                    onDoubleClick={(e) => {
+                                      e.preventDefault()
+                                      setEditingName(displayName)
+                                      setEditingSessionId(session.id)
+                                    }}
+                                    className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left"
+                                  >
+                                    <span className={cn('size-[6px] shrink-0 rounded-full', session.alive ? 'bg-[#a6e3a1]' : 'bg-[#6c7086]')} />
+                                    <span className="min-w-0 flex-1 truncate">{displayName}</span>
+                                  </button>
+                                )}
+                                {!isEditing && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setEditingName(displayName)
+                                      setEditingSessionId(session.id)
+                                    }}
+                                    className="shrink-0 rounded p-1 text-[#6c7086] opacity-0 transition-opacity hover:bg-[#313244] hover:text-[#cba6f7] group-hover:opacity-100"
+                                    title="重命名 session"
+                                    aria-label="Rename session"
+                                  >
+                                    <Pencil className="size-3" />
+                                  </button>
+                                )}
                                 <button
                                   onClick={(e) => { e.stopPropagation(); onArchiveSession(session) }}
-                                  className="shrink-0 rounded p-1 text-[#6c7086] hover:bg-[#313244] hover:text-[#f38ba8]"
+                                  className={cn(
+                                    'shrink-0 rounded p-1 text-[#6c7086] hover:bg-[#313244] hover:text-[#f38ba8]',
+                                    !isEditing && 'opacity-0 transition-opacity group-hover:opacity-100'
+                                  )}
                                   title="归档 session"
                                   aria-label="Archive session"
                                 >

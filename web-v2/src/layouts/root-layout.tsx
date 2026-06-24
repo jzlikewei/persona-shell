@@ -153,6 +153,10 @@ export function RootLayout() {
             onConfigureWorkspace={handleConfigureWorkspace}
             onCreateSession={(ws) => setNewSessionTarget(ws)}
             onArchiveSession={(s) => setArchiveTarget(s)}
+            onRenameSession={async (s, name) => {
+              const ok = await sessionsMut.rename(s.id, name)
+              if (ok) void loadSessions()
+            }}
             onBindProject={handleBindProject}
             onToggleHidden={(ws) => setWorkspaceVisibility(ws.name, !ws.hidden)}
           />
@@ -184,6 +188,10 @@ export function RootLayout() {
                 onConfigureWorkspace={handleConfigureWorkspace}
                 onCreateSession={(ws) => { setNewSessionTarget(ws); setSidebarOpen(false) }}
                 onArchiveSession={(s) => { setArchiveTarget(s); setSidebarOpen(false) }}
+                onRenameSession={async (s, name) => {
+                  const ok = await sessionsMut.rename(s.id, name)
+                  if (ok) void loadSessions()
+                }}
                 onBindProject={handleBindProject}
                 onToggleHidden={(ws) => setWorkspaceVisibility(ws.name, !ws.hidden)}
               />
