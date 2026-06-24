@@ -12,7 +12,7 @@ import { MessagePagination } from '@/components/message-pagination'
 import { DateSeparator } from '@/components/date-separator'
 import { useApi } from '@/hooks/use-api'
 import { useChat, type ChatAttachment, type ChatMessage, type ChatToolCall, type ChatWorkflow, type ChatWorkflowGoal } from '@/hooks/use-chat'
-import { isWorkflowActive } from '@/hooks/workflow-status'
+import { isGoalCompletedStatus, isWorkflowActive } from '@/hooks/workflow-status'
 import type { ShellOutletContext } from '@/layouts/root-layout'
 import { cn } from '@/lib/utils'
 
@@ -260,10 +260,11 @@ function formatGoalDuration(seconds?: number) {
   return `${secs}s`
 }
 
-const GoalStatusBar = memo(function GoalStatusBar({ goal }: { goal?: ChatWorkflowGoal | null }) {
+const GoalStatusBar = memo(function GoalStatusBar({ goal, onDismiss }: { goal?: ChatWorkflowGoal | null; onDismiss?: () => void }) {
   if (!goal?.objective) return null
   const status = goal.status ?? 'active'
   const duration = formatGoalDuration(goal.timeUsedSeconds)
+  const dismissible = isGoalCompletedStatus(status) && !!onDismiss
   return (
     <div className="flex items-center gap-2 rounded-full border border-[#45475a] bg-[#1e1e2e] px-3 py-2 font-mono text-xs text-[#a6adc8] shadow-sm">
       <Target className={cn('size-4 shrink-0', statusTone(status))} />
@@ -271,6 +272,17 @@ const GoalStatusBar = memo(function GoalStatusBar({ goal }: { goal?: ChatWorkflo
       <span className="min-w-0 flex-1 truncate text-[#bac2de]">{goal.objective}</span>
       {duration && <span className="shrink-0 text-[#7f849c]">{duration}</span>}
       <span className={cn('shrink-0 font-bold', statusTone(status))}>{status}</span>
+      {dismissible && (
+        <button
+          type="button"
+          aria-label="隐藏已完成目标"
+          title="隐藏已完成目标"
+          onClick={onDismiss}
+          className="ml-1 inline-flex size-5 shrink-0 items-center justify-center rounded-full text-[#7f849c] transition hover:bg-[#313244] hover:text-[#cdd6f4]"
+        >
+          ×
+        </button>
+      )}
     </div>
   )
 })
@@ -497,6 +509,33 @@ function InitialSessionLoading({ sessionLabel, sessionId }: { sessionLabel?: str
   )
 }
 
+function goalDismissStorageKey(sessionId?: string | null) {
+  return sessionId ? `persona-shell:v2:dismissed-goals:${sessionId}` : null
+}
+
+function goalDismissIdentity(goal?: ChatWorkflowGoal | null) {
+  const objective = goal?.objective?.trim()
+  return objective ? objective : null
+}
+
+function readDismissedGoals(storageKey: string | null) {
+  if (!storageKey) return new Set<string>()
+  try {
+    const raw = localStorage.getItem(storageKey)
+    const parsed = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(parsed) ? parsed.filter(item => typeof item === 'string') : [])
+  } catch {
+    return new Set<string>()
+  }
+}
+
+function writeDismissedGoals(storageKey: string | null, goals: Set<string>) {
+  if (!storageKey) return
+  const values = [...goals].slice(-50)
+  if (values.length === 0) localStorage.removeItem(storageKey)
+  else localStorage.setItem(storageKey, JSON.stringify(values))
+}
+
 export function ChatPage() {
   const {
     activeWorkspace,
@@ -513,10 +552,12 @@ export function ChatPage() {
   const livePhase = currentTurn?.phase ?? turnPhase
   const activeWorkflow = isWorkflowActive(liveWorkflow)
   const draftKey = activeSession ? `persona-shell:v2:draft:${activeSession}` : null
+  const dismissedGoalsStorageKey = goalDismissStorageKey(activeSession)
   const [input, setInput] = useState(() => {
     if (!draftKey) return ''
     return localStorage.getItem(draftKey) ?? ''
   })
+  const [dismissedGoals, setDismissedGoals] = useState<Set<string>>(() => readDismissedGoals(dismissedGoalsStorageKey))
 
   useEffect(() => {
     if (draftKey) {
@@ -526,6 +567,10 @@ export function ChatPage() {
       setInput('')
     }
   }, [draftKey])
+
+  useEffect(() => {
+    setDismissedGoals(readDismissedGoals(dismissedGoalsStorageKey))
+  }, [dismissedGoalsStorageKey])
 
   const updateInput = useCallback((value: string) => {
     setInput(value)
@@ -566,6 +611,22 @@ export function ChatPage() {
     !liveText &&
     !activity &&
     !livePhase
+  const threadGoalDismissIdentity = useMemo(() => goalDismissIdentity(threadGoal), [threadGoal?.objective])
+  const completedThreadGoalDismissed = !!(
+    threadGoalDismissIdentity &&
+    isGoalCompletedStatus(threadGoal?.status) &&
+    dismissedGoals.has(threadGoalDismissIdentity)
+  )
+  const visibleThreadGoal = completedThreadGoalDismissed ? null : threadGoal
+  const dismissCompletedThreadGoal = useCallback(() => {
+    if (!threadGoalDismissIdentity || !isGoalCompletedStatus(threadGoal?.status)) return
+    setDismissedGoals(previous => {
+      const next = new Set(previous)
+      next.add(threadGoalDismissIdentity)
+      writeDismissedGoals(dismissedGoalsStorageKey, next)
+      return next
+    })
+  }, [dismissedGoalsStorageKey, threadGoal?.status, threadGoalDismissIdentity])
 
   useEffect(() => {
     pendingInitialBottomSessionRef.current = activeSession ?? null
@@ -761,7 +822,7 @@ export function ChatPage() {
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
       >
-        <GoalStatusBar goal={threadGoal} />
+        <GoalStatusBar goal={visibleThreadGoal} onDismiss={dismissCompletedThreadGoal} />
 
         {(attachments.length > 0 || uploadError) && (
           <div className="flex flex-wrap gap-1.5">

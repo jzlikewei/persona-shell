@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from 'bun:test'
 import { mergeChatToolCall, type ChatToolCall } from '../src/hooks/chat-tools'
-import { isWorkflowActive, turnStatusFromGoalStatus } from '../src/hooks/workflow-status'
+import { isGoalCompletedStatus, isWorkflowActive, turnStatusFromGoalStatus } from '../src/hooks/workflow-status'
 
 // ── helpers that mirror use-chat.ts inline transforms ──
 
@@ -174,6 +174,10 @@ describe('goal workflow status normalization', () => {
     expect(turnStatusFromGoalStatus('complete')).toBe('completed')
     expect(turnStatusFromGoalStatus('completed')).toBe('completed')
     expect(turnStatusFromGoalStatus('done')).toBe('completed')
+    expect(isGoalCompletedStatus('complete')).toBe(true)
+    expect(isGoalCompletedStatus('completed')).toBe(true)
+    expect(isGoalCompletedStatus('done')).toBe(true)
+    expect(isGoalCompletedStatus('active')).toBe(false)
     expect(turnStatusFromGoalStatus('blocked')).toBe('blocked')
     expect(isWorkflowActive({ turnId: 'turn-1', goal: { status: 'complete' }, turnStatus: 'completed' })).toBe(false)
     expect(isWorkflowActive({ turnId: 'turn-1', goal: { status: 'blocked' }, turnStatus: 'blocked' })).toBe(false)
