@@ -9,7 +9,7 @@ import type { DirectorInputAttachment } from './director-input.js';
 import type { AssistantTurnEvent, DirectorToolCall } from './director-session-adapter/index.js';
 import { parseConversationLog, parseConversationLogFiles, parseTaskLog, splitUserMessageContent } from './log-parser.js';
 import { parseClaudeTranscript } from './claude-transcript-reader.js';
-import { parseCodexTranscript } from './codex-transcript-reader.js';
+import { parseCodexTranscript, readCodexTranscriptModel } from './codex-transcript-reader.js';
 
 import type { SessionBridge } from './session-bridge.js';
 import type { MessageQueue } from './queue.js';
@@ -3643,6 +3643,11 @@ export function startConsole(
               model: r.model ?? undefined,
             }));
 
+            for (const s of sessions) {
+              if (s.model || s.agentType !== 'codex-app-server') continue;
+              s.model = readCodexTranscriptModel(s.sessionId);
+            }
+
             // Merge live status by stable sessionId. Do not infer workspace sessions
             // from AgentRuntimePool workspaceName/routingKey; SessionManager is the domain boundary.
             for (const s of sessions) {
@@ -3655,7 +3660,7 @@ export function startConsole(
               s.cwd = liveEntry?.bridge.getWorkspaceCwd();
               s.agentName = ds.agentName;
               s.agentType = ds.agentType;
-              s.model = ds.agentModel ?? undefined;
+              s.model = ds.agentModel ?? s.model ?? undefined;
             }
 
             const mainStatus = wsName === 'main' ? director.getStatus() : null;
@@ -3675,7 +3680,9 @@ export function startConsole(
                   lastMessageAt: new Date().toISOString(),
                   agentName: mainStatus.agentName,
                   agentType: mainStatus.agentType,
-                  model: mainStatus.agentModel ?? undefined,
+                  model: mainStatus.agentModel
+                    ?? readCodexTranscriptModel(mainStatus.sessionId)
+                    ?? undefined,
                 });
               }
             }

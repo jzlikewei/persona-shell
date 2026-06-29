@@ -18,6 +18,7 @@ type TranscriptCacheEntry = {
   size: number;
   mtimeMs: number;
   messages: ConversationMessage[];
+  model?: string;
 };
 
 const transcriptPathCache = new Map<string, string | null>();
@@ -105,6 +106,24 @@ function stringifyPreview(value: unknown, maxLength = 900): string | undefined {
   return trimmed.length > maxLength ? trimmed.slice(0, maxLength) + '…' : trimmed;
 }
 
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  const raw = value[key];
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+
+function recordField(value: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  const raw = value[key];
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
+}
+
+function extractTurnModel(payload: Record<string, unknown>): string | undefined {
+  const direct = stringField(payload, 'model');
+  if (direct) return direct;
+  const collaborationMode = recordField(payload, 'collaboration_mode');
+  const settings = collaborationMode ? recordField(collaborationMode, 'settings') : undefined;
+  return settings ? stringField(settings, 'model') : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Main parser
 // ---------------------------------------------------------------------------
@@ -147,6 +166,7 @@ export function parseCodexTranscript(
 
   // Track tool call outputs by call_id
   const toolOutputs = new Map<string, { output: string; isError: boolean }>();
+  let latestModel: string | undefined;
 
   // Collect turns separated by task_complete events
   const turns: TurnAccum[] = [];
@@ -199,6 +219,15 @@ export function parseCodexTranscript(
     }
 
     if (!currentTurn) continue;
+
+    if (type === 'turn_context') {
+      const model = extractTurnModel(payload);
+      if (model) {
+        currentTurn.model = model;
+        latestModel = model;
+      }
+      continue;
+    }
 
     // --- response_item with role=user, type=message: user message ---
     if (type === 'response_item' && payloadType === 'message') {
@@ -334,6 +363,40 @@ export function parseCodexTranscript(
     size: stat.size,
     mtimeMs: stat.mtimeMs,
     messages,
+    model: latestModel,
   });
   return messages.length ? messages.slice(-limit).reverse() : null;
+}
+
+export function readCodexTranscriptModel(
+  sessionId: string,
+  sessionsDir?: string,
+): string | undefined {
+  const filePath = findTranscriptFile(sessionId, sessionsDir);
+  if (!filePath) return undefined;
+
+  const stat = statSync(filePath);
+  const cacheKey = `${sessionId}:${filePath}`;
+  const cached = transcriptParseCache.get(cacheKey);
+  if (cached && cached.filePath === filePath && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
+    if (cached.model) return cached.model;
+    const fromMessages = [...cached.messages].reverse().find((message) => message.direction === 'out' && message.model)?.model;
+    if (fromMessages) return fromMessages;
+  }
+
+  const raw = readTail(filePath, MAX_TRANSCRIPT_BYTES);
+  if (!raw.trim()) return undefined;
+
+  let latestModel: string | undefined;
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let evt: Record<string, unknown>;
+    try { evt = JSON.parse(line); } catch { continue; }
+    if (evt.type !== 'turn_context') continue;
+    const payload = evt.payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    const model = extractTurnModel(payload as Record<string, unknown>);
+    if (model) latestModel = model;
+  }
+  return latestModel;
 }
