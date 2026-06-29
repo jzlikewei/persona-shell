@@ -4,6 +4,7 @@ import { AgentRuntimePool } from './agent-runtime-pool.js';
 import { SessionManager } from './session-manager.js';
 import { WorkspaceRegistry } from './workspace-registry.js';
 import { createFeishuClient } from './messaging/feishu.js';
+import { createWeixinClient } from './messaging/weixin/index.js';
 import { MessagingRouter } from './messaging/messaging-router.js';
 import type { IncomingMessage, StreamingReplyHandle, CardAction, MessagingClient } from './messaging/messaging.js';
 import type { DirectorInputAttachment } from './director-input.js';
@@ -105,6 +106,27 @@ async function main() {
     });
     messaging = new MessagingRouter(feishu);
   }
+
+  // Conditionally add WeChat channel
+  if (config.weixin.enabled) {
+    const weixinClient = createWeixinClient({
+      enabled: true,
+      stateDir: config.weixin.state_dir,
+      accounts: config.weixin.accounts,
+      pollTimeoutMs: config.weixin.poll_timeout_ms,
+      retryDelayMs: config.weixin.retry_delay_ms,
+      backoffDelayMs: config.weixin.backoff_delay_ms,
+      attachmentDir: config.weixin.attachment_dir,
+      cdnBaseUrl: config.weixin.cdn_base_url,
+      botAgent: config.weixin.bot_agent,
+      appId: config.weixin.ilink_app_id,
+      clientVersion: config.weixin.client_version,
+      streamingReplyEnabled: config.weixin.streaming_reply_enabled,
+    });
+    messaging.addClient(weixinClient);
+    console.log('[shell] WeChat channel enabled');
+  }
+
   const startTime = Date.now();
   const streamingReplies = new Map<string, StreamingReplyHandle>();
   const systemStreamingReplies = new Map<string, StreamingReplyHandle>();
@@ -1326,8 +1348,10 @@ async function main() {
     // Helper: resolve the target Director/queue for the current message context
     const getTargetEntry = () => routingKey ? sessionManager.runtimeGet(routingKey) : undefined;
 
-    /** 本体检查：配置了 master_id 时，仅本体可执行危险命令 */
-    const isMaster = !config.feishu.master_id || msg.senderOpenId === config.feishu.master_id;
+    /** 本体检查：按通道判断。微信通道检查 weixin.master_user_ids，飞书通道检查 feishu.master_id */
+    const isMaster = msg.channel === 'weixin'
+      ? (config.weixin.master_user_ids.length === 0 || config.weixin.master_user_ids.includes(msg.senderOpenId ?? ''))
+      : (!config.feishu.master_id || msg.senderOpenId === config.feishu.master_id);
 
     // /config — Feishu control card for current chat workspace. Workspace identity
     // stays tied to the group name; first phase only controls session / agent / cwd.
@@ -1866,7 +1890,7 @@ async function main() {
     if (runningTaskIds.length > 0) {
       console.log(`[shell] Orphaning ${runningTaskIds.length} running task(s): ${runningTaskIds.join(', ')} (will re-adopt on restart)`);
     }
-    await Promise.allSettled([sessionManager.detachAll(), director.stop()]);
+    await Promise.allSettled([sessionManager.detachAll(), director.stop(), messaging.stop()]);
     process.exit(0);
   }
 

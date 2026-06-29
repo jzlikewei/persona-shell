@@ -100,6 +100,21 @@ export interface Config {
     level: string;
     queue_log: string;
   };
+  weixin: {
+    enabled: boolean;
+    state_dir: string;
+    accounts: string[];
+    poll_timeout_ms: number;
+    retry_delay_ms: number;
+    backoff_delay_ms: number;
+    attachment_dir: string;
+    cdn_base_url: string;
+    bot_agent: string;
+    ilink_app_id: string;
+    client_version: string;
+    streaming_reply_enabled: boolean;
+    master_user_ids: string[];
+  };
 }
 
 function expandHome(p: string): string {
@@ -351,6 +366,21 @@ export function loadConfig(path?: string): Config {
     logging: {
       level: yaml.logging?.level ?? 'info',
       queue_log: yaml.logging?.queue_log ?? 'logs/queue.log',
+    },
+    weixin: {
+      enabled: yaml.weixin?.enabled === true,
+      state_dir: expandHome(yaml.weixin?.state_dir ?? '~/.persona/weixin'),
+      accounts: Array.isArray(yaml.weixin?.accounts) ? yaml.weixin.accounts : [],
+      poll_timeout_ms: positiveNumber(yaml.weixin?.poll_timeout_ms) ?? 35_000,
+      retry_delay_ms: positiveNumber(yaml.weixin?.retry_delay_ms) ?? 2_000,
+      backoff_delay_ms: positiveNumber(yaml.weixin?.backoff_delay_ms) ?? 30_000,
+      attachment_dir: expandHome(yaml.weixin?.attachment_dir ?? '~/.persona/attachments/weixin'),
+      cdn_base_url: yaml.weixin?.cdn_base_url ?? 'https://novac2c.cdn.weixin.qq.com/c2c',
+      bot_agent: yaml.weixin?.bot_agent ?? 'PersonaShell/0.1.0',
+      ilink_app_id: yaml.weixin?.ilink_app_id ?? 'bot',
+      client_version: yaml.weixin?.client_version ?? '2.4.4',
+      streaming_reply_enabled: yaml.weixin?.streaming_reply_enabled === true,
+      master_user_ids: Array.isArray(yaml.weixin?.master_user_ids) ? yaml.weixin.master_user_ids : [],
     },
   };
 }

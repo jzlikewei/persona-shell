@@ -18,6 +18,7 @@ export class MessagingRouter implements MessagingClient {
   private handler: MessageHandler | null = null;
   private cardActionHandlers: CardActionHandler[] = [];
   private messageOrigin = new Map<string, MessagingClient>();
+  private lastP2pChatId: string | null = null;
 
   constructor(primary: MessagingClient) {
     this.primary = primary;
@@ -32,6 +33,9 @@ export class MessagingRouter implements MessagingClient {
         const first = this.messageOrigin.keys().next().value as string;
         this.messageOrigin.delete(first);
       }
+      if (msg.chatType === 'p2p') {
+        this.lastP2pChatId = msg.chatId;
+      }
       this.handler?.(msg);
     });
     for (const handler of this.cardActionHandlers) {
@@ -43,6 +47,10 @@ export class MessagingRouter implements MessagingClient {
     for (const client of this.clients) {
       client.start();
     }
+  }
+
+  async stop(): Promise<void> {
+    await Promise.allSettled(this.clients.map(c => c.stop?.()));
   }
 
   onMessage(handler: MessageHandler): void {
@@ -62,12 +70,13 @@ export class MessagingRouter implements MessagingClient {
   }
 
   async sendMessage(chatId: string, text: string): Promise<string | null> {
-    return this.primary.sendMessage(chatId, text);
+    return this.resolveClientByChatId(chatId).sendMessage(chatId, text);
   }
 
   async sendInteractiveCard(chatId: string, card: unknown): Promise<string | null> {
-    if (!this.primary.sendInteractiveCard) return null;
-    return this.primary.sendInteractiveCard(chatId, card);
+    const client = this.resolveClientByChatId(chatId);
+    if (!client.sendInteractiveCard) return null;
+    return client.sendInteractiveCard(chatId, card);
   }
 
   async updateInteractiveCard(messageId: string, card: unknown): Promise<void> {
@@ -97,20 +106,27 @@ export class MessagingRouter implements MessagingClient {
   }
 
   async uploadAndSendImage(chatId: string, filePath: string): Promise<string | null> {
-    return this.primary.uploadAndSendImage(chatId, filePath);
+    return this.resolveClientByChatId(chatId).uploadAndSendImage(chatId, filePath);
   }
 
   async uploadAndSendFile(chatId: string, filePath: string): Promise<string | null> {
-    return this.primary.uploadAndSendFile(chatId, filePath);
+    return this.resolveClientByChatId(chatId).uploadAndSendFile(chatId, filePath);
   }
 
   getLastChatId(): string | null {
-    return this.primary.getLastChatId();
+    return this.lastP2pChatId ?? this.primary.getLastChatId();
   }
 
   getConnectionStatus(): 'connected' | 'disconnected' {
     return this.clients.some(c => c.getConnectionStatus() === 'connected')
       ? 'connected'
       : 'disconnected';
+  }
+
+  private resolveClientByChatId(chatId: string): MessagingClient {
+    for (const client of this.clients) {
+      if (client.canHandleChatId?.(chatId)) return client;
+    }
+    return this.primary;
   }
 }
