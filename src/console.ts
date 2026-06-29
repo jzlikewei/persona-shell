@@ -2092,6 +2092,7 @@ export function startConsole(
   }
 
   type RuntimeDirectorCommand = 'flush' | 'clear' | 'esc' | 'session-restart' | 'detach';
+  type WebChatSlashCommand = Exclude<RuntimeDirectorCommand, 'detach'>;
 
   function normalizeRuntimeDirectorCommand(command: string): RuntimeDirectorCommand {
     const normalized = command.trim() === 'restart' ? 'session-restart' : command.trim();
@@ -2107,6 +2108,16 @@ export function startConsole(
     if (command === 'session-restart') return 'director.restart';
     if (command === 'esc') return 'director.esc';
     return `director.${command}`;
+  }
+
+  function parseWebChatSlashCommand(text: string): WebChatSlashCommand | null {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('/')) return null;
+    const normalized = trimmed.slice(1) === 'restart' ? 'session-restart' : trimmed.slice(1);
+    if (normalized === 'flush' || normalized === 'clear' || normalized === 'esc' || normalized === 'session-restart') {
+      return normalized;
+    }
+    return null;
   }
 
   /**
@@ -2208,6 +2219,77 @@ export function startConsole(
       ...(result!.detail ?? {}),
     });
     return { ok: result!.ok, runtime_label: targetLabel, command: normalized, message: result!.message, ...(result!.detail ?? {}) };
+  }
+
+  function sendWebChatReply(messageId: string, text: string, fallbackWs?: WsConnection): void {
+    const payload = JSON.stringify({ type: 'chat_reply', messageId, text });
+    const entry = messageWsMap.get(messageId);
+    if (entry) {
+      try {
+        entry.ws.send(payload);
+      } catch {
+        // Ignore disconnected client, fallback below if available.
+      }
+      messageWsMap.delete(messageId);
+      return;
+    }
+    if (fallbackWs) {
+      try {
+        fallbackWs.send(payload);
+      } catch {
+        // Ignore disconnected fallback client.
+      }
+    }
+  }
+
+  async function resolveWebCommandTarget(sessionId: string): Promise<{ label: string; sessionId: string }> {
+    const mainSessionId = director.getStatus().sessionId;
+    if (mainSessionId && sessionId === mainSessionId) {
+      return { label: 'main', sessionId };
+    }
+    if (!sessionManager) {
+      const err = new Error('Session manager not available') as Error & { status?: number };
+      err.status = 503;
+      throw err;
+    }
+    const live = sessionManager.getSession(sessionId);
+    if (live) {
+      return { label: live.bridge.label, sessionId: live.sessionId };
+    }
+
+    const dbRecord = getSessionRecord(sessionId);
+    if (dbRecord?.workspace && !dbRecord.archived) {
+      const workspaceAgent = getWorkspace(dbRecord.workspace)?.agent ?? undefined;
+      const revived = await sessionManager.reviveSession(sessionId, {
+        feishuChatId: 'web-console',
+        agentName: dbRecord.agent_name ?? workspaceAgent,
+      });
+      if (revived?.sessionId) {
+        return { label: revived.bridge.label, sessionId: revived.sessionId };
+      }
+    }
+
+    const err = new Error(`Session "${sessionId}" not found`) as Error & { status?: number };
+    err.status = 404;
+    throw err;
+  }
+
+  async function maybeHandleWebSlashCommand(input: {
+    sessionId: string;
+    text: string;
+    messageId: string;
+    ws?: WsConnection;
+  }): Promise<Record<string, unknown> | null> {
+    const command = parseWebChatSlashCommand(input.text);
+    if (!command) return null;
+    const target = await resolveWebCommandTarget(input.sessionId);
+    const result = await executeDirectorCommand(target.label, command);
+    sendWebChatReply(input.messageId, String(result.message ?? ''), input.ws);
+    return {
+      ...result,
+      intercepted: true,
+      sessionId: target.sessionId,
+    };
   }
 
   function stateFilePath(kind: 'state' | 'todo'): string {
@@ -3076,6 +3158,16 @@ export function startConsole(
             if (webClient) messageWsMap.set(messageId, { ws: webClient, createdAt: Date.now() });
 
             try {
+              const handled = await maybeHandleWebSlashCommand({
+                sessionId,
+                text,
+                messageId,
+                ws: webClient,
+              });
+              if (handled) {
+                return Response.json({ ok: true, ...handled });
+              }
+
               const mainSessionId = director.getStatus().sessionId;
               if (mainSessionId && sessionId === mainSessionId) {
                 for (const handler of chatHandlers) {
@@ -4267,6 +4359,13 @@ export function startConsole(
               const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
               messageWsMap.set(messageId, { ws, createdAt: Date.now() });
               try {
+                const handled = await maybeHandleWebSlashCommand({
+                  sessionId: targetSessionId,
+                  text: msg.text,
+                  messageId,
+                  ws,
+                });
+                if (handled) return;
                 await sessionManager.send(targetSessionId, quotedText ? formatWebQuote(quotedText) + msg.text : msg.text, messageId, { webOnly: true });
               } catch (err) {
                 console.error(`[console] Web chat send to session "${targetSessionId}" failed:`, err);
@@ -4279,6 +4378,13 @@ export function startConsole(
             // Fall back to main Director via MessagingClient handler
             const messageId = msg.messageId || `web-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
             messageWsMap.set(messageId, { ws, createdAt: Date.now() });
+            const handled = await maybeHandleWebSlashCommand({
+              sessionId: director.getStatus().sessionId ?? '',
+              text: msg.text,
+              messageId,
+              ws,
+            });
+            if (handled) return;
             for (const handler of chatHandlers) {
               try {
                 await handler({
