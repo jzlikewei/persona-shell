@@ -119,7 +119,9 @@ export function useSessions(workspace?: string) {
       const eventSessionId = typeof data.sessionId === 'string' && data.sessionId ? data.sessionId : undefined
       if (!eventSessionId) return
       setSessions(prev => {
-        if (prev.length > 0 && !prev.some(s => s.id === eventSessionId)) return prev
+        // Only auto-switch to a NEW session that doesn't exist in the list yet.
+        // If the session already exists, don't hijack the user's current view.
+        if (prev.length > 0 && prev.some(s => s.id === eventSessionId)) return prev
         localStorage.setItem(storageKey, eventSessionId)
         setActiveSessionState(eventSessionId)
         return prev
