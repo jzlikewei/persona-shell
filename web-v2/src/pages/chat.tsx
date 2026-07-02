@@ -139,6 +139,9 @@ const MarkdownContent = memo(function MarkdownContent({ content, onFileClick }: 
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, REHYPE_HIGHLIGHT_OPTIONS]]}
         components={{
+          a({ href, children, ...props }) {
+            return <a href={href} target="_blank" rel="noopener noreferrer" {...props}>{children}</a>
+          },
           pre({ children }) {
             return <>{children}</>
           },
