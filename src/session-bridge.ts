@@ -101,6 +101,8 @@ export interface SessionBridgeOptions {
   agentName?: string;
   /** Override the provider's default model for this session. */
   model?: string;
+  /** Override Codex app-server reasoning effort for this session. */
+  reasoningEffort?: string;
   /** Seed an existing provider session/thread id before adapter startup.
    *  Used by sessionId-first revive paths where the user-facing sessionId is
    *  the durable identity and pool routingKey is only a runtime detail. */
@@ -191,8 +193,12 @@ export class SessionBridge extends EventEmitter {
     this.sessionFile = this.isMain ? join(pipeDir, 'director-session') : join(pipeDir, 'session');
 
     const resolvedAgent = this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName));
-    // Allow session-level model override (from Web Console "new session" dialog)
+    // Allow session-level model/reasoning override (from Web Console "new session" dialog)
     if (options.model) resolvedAgent.model = options.model;
+    if (options.reasoningEffort) {
+      if (resolvedAgent.type !== 'codex-app-server') throw new Error('reasoning_effort is only supported by codex-app-server');
+      resolvedAgent.reasoning_effort = options.reasoningEffort;
+    }
 
     const adapterOptions: DirectorSessionAdapterOptions = {
       label: this.label,
@@ -230,6 +236,10 @@ export class SessionBridge extends EventEmitter {
     const persistedAgentName = this.readPersistedDirectorAgentName();
     this.directorAgent = this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName ?? persistedAgentName));
     if (options.model) this.directorAgent.model = options.model;
+    if (options.reasoningEffort) {
+      if (this.directorAgent.type !== 'codex-app-server') throw new Error('reasoning_effort is only supported by codex-app-server');
+      this.directorAgent.reasoning_effort = options.reasoningEffort;
+    }
     this.personaRole = this.readPersistedPersonaRole() ?? 'director';
     this.adapter = this.adapterFactory(this.directorAgent);
   }
@@ -608,7 +618,11 @@ export class SessionBridge extends EventEmitter {
   }
 
   getDirectorAgentModel(): string | undefined {
-    return this.directorAgent.model;
+    return this.adapter.getEffectiveSettings?.().model ?? this.directorAgent.model;
+  }
+
+  getDirectorReasoningEffort(): string | undefined {
+    return this.adapter.getEffectiveSettings?.().reasoningEffort ?? this.directorAgent.reasoning_effort;
   }
 
   getPersonaRole(): string {
@@ -1968,16 +1982,29 @@ export class SessionBridge extends EventEmitter {
   }
 
   /** Kill the Director process, restart, and bootstrap with workspace context. */
-  async resetSession(): Promise<void> {
+  async resetSession(options?: { agentName?: string; model?: string; reasoningEffort?: string }): Promise<void> {
     if (this.flushing) {
       console.log(`[bridge:${this.label}] resetSession skipped: flush in progress`);
       return;
+    }
+    let nextAgent = options?.agentName
+      ? this.withSessionCwd(resolveAgentProvider(this.getFreshAgents(), 'director', options.agentName))
+      : { ...this.directorAgent };
+    if (options?.model) nextAgent.model = options.model;
+    if (options?.reasoningEffort) {
+      if (nextAgent.type !== 'codex-app-server') throw new Error('reasoning_effort is only supported by codex-app-server');
+      nextAgent.reasoning_effort = options.reasoningEffort;
+    } else if (options && nextAgent.type === 'codex-app-server') {
+      delete nextAgent.reasoning_effort;
     }
     this.flushing = true;
     this.expectedStaleCloses++;
     this.adapter.terminate('SIGTERM');
     this.clearSession();
+    this.directorAgent = nextAgent;
+    this.adapter = this.adapterFactory(this.directorAgent);
     await this.restart('new-session');
+    this.persistDirectorAgentName(this.directorAgent.name);
     this.finishFlush();
 
     if (!this.isMain) {

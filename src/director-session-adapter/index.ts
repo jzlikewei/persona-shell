@@ -101,6 +101,7 @@ export interface DirectorSessionAdapter {
   start(): Promise<boolean>;
   isReady(): boolean;
   getStatus(): DirectorRuntimeStatus;
+  getEffectiveSettings?(): { model?: string; reasoningEffort?: string };
   hasActiveTurn(): boolean;
   send(input: DirectorSendInput): Promise<DirectorSendResult | void>;
   interrupt(): void;

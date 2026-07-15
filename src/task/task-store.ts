@@ -34,6 +34,7 @@ export interface TaskExtra {
 
   // --- model / project ---
   model?: string;
+  reasoning_effort?: string;
   project_dir?: string;
 
   // --- codex integration ---
@@ -76,6 +77,7 @@ export interface CreateTaskInput {
   role: string;
   agent?: string;
   model?: string;
+  reasoning_effort?: string;
   description: string;
   prompt: string;
   max_retry?: number;
@@ -415,6 +417,7 @@ export function createTask(input: CreateTaskInput): Task {
   const extraObj: TaskExtra = { ...input.extra };
   if (input.project_dir) extraObj.project_dir = input.project_dir;
   if (input.model) extraObj.model = input.model;
+  if (input.reasoning_effort) extraObj.reasoning_effort = input.reasoning_effort;
   const extra = Object.keys(extraObj).length > 0 ? JSON.stringify(extraObj) : null;
   const sourceSessionId = input.source_session_id?.trim() || null;
   const workspace = input.workspace?.trim() || null;

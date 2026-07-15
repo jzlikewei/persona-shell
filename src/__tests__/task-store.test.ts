@@ -93,6 +93,18 @@ describe('task-store', () => {
       expect(task.extra).toEqual(extra);
     });
 
+    test('persists model and reasoning effort in extra', () => {
+      const task = createTask({
+        type: 'role',
+        role: 'executor',
+        description: 'test',
+        prompt: 'prompt',
+        model: 'gpt-5.4',
+        reasoning_effort: 'high',
+      });
+      expect(task.extra).toEqual({ model: 'gpt-5.4', reasoning_effort: 'high' });
+    });
+
     test('stores source_session_id and workspace while ignoring source_director', () => {
       const task = createTask({
         type: 'role',

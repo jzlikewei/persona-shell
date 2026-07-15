@@ -227,6 +227,7 @@ export class SessionManager extends EventEmitter {
     feishuChatId: string;
     agentName?: string;
     model?: string;
+    reasoningEffort?: string;
   }): Promise<SessionEntry> {
     const workspace = this.workspaceRegistry.getOrCreate(workspaceName);
     const agentName = opts.agentName ?? workspace.agent ?? undefined;
@@ -236,6 +237,7 @@ export class SessionManager extends EventEmitter {
       feishuChatId: opts.feishuChatId,
       agentName,
       model: opts.model,
+      reasoningEffort: opts.reasoningEffort,
     });
     let sessionId = entry.bridge.getStatus().sessionId;
     if (!sessionId) {

@@ -31,6 +31,7 @@ export const PERSONA_DYNAMIC_TOOLS: DynamicToolSchema[] = [
         role: { type: 'string', description: '角色名，如 explorer / executor / introspector' },
         agent: { type: 'string', description: '可选 agent provider 名称' },
         model: { type: 'string', description: '可选 model 名称' },
+        reasoning_effort: { type: 'string', description: '可选 Codex reasoning effort；按所选 model 的能力校验' },
         description: { type: 'string', description: '简短描述' },
         prompt: { type: 'string', description: '完整任务 briefing' },
         project_dir: { type: 'string', description: '可选项目工作目录' },
@@ -153,6 +154,7 @@ export interface PersonaDynamicToolDeps {
     role: string;
     agent?: string;
     model?: string;
+    reasoningEffort?: string;
     prompt: string;
     description: string;
     projectDir?: string;
@@ -167,6 +169,15 @@ export interface PersonaDynamicToolDeps {
 
 function recordToString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function requiredOptionalString(args: Record<string, unknown>, key: string): string | undefined {
+  if (!Object.prototype.hasOwnProperty.call(args, key)) return undefined;
+  const value = args[key];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${key} must be a non-empty string`);
+  }
+  return value.trim();
 }
 
 function recordToNumber(value: unknown): number | undefined {
@@ -206,13 +217,15 @@ export async function handlePersonaDynamicToolCall(
       if (!role || !description || !prompt) {
         return { success: false, text: 'role, description, prompt are required' };
       }
-      const model = recordToString(args.model);
+      const model = requiredOptionalString(args, 'model');
+      const reasoningEffort = requiredOptionalString(args, 'reasoning_effort');
       const projectDir = recordToString(args.project_dir);
       const task = deps.createTask({
         type: 'role',
         role,
         agent: recordToString(args.agent),
         model,
+        reasoning_effort: reasoningEffort,
         description,
         prompt,
         project_dir: projectDir,
@@ -222,6 +235,7 @@ export async function handlePersonaDynamicToolCall(
         source_session_id: call.sourceSessionId ?? undefined,
         extra: {
           ...(model ? { model } : {}),
+          ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
           ...(projectDir ? { project_dir: projectDir } : {}),
           parent_workspace: call.workspace,
           parent_session_id: call.sourceSessionId,
@@ -232,6 +246,7 @@ export async function handlePersonaDynamicToolCall(
         role: task.role,
         agent: task.agent ?? undefined,
         model,
+        reasoningEffort,
         prompt: task.prompt,
         description: task.description,
         projectDir,

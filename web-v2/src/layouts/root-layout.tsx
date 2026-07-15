@@ -268,11 +268,11 @@ export function RootLayout() {
         onOpenChange={(open) => { if (!open) setNewSessionTarget(null) }}
         workspace={newSessionTarget?.source === 'main' ? 'main' : newSessionTarget?.name ?? ''}
         defaultAgent={newSessionTarget?.agent}
-        onCreate={async ({ agent, sessionName, model }) => {
+        onCreate={async ({ agent, sessionName, model, reasoningEffort }) => {
           if (!newSessionTarget) return
           const targetWorkspaceName = newSessionTarget.source === 'main' ? 'main' : newSessionTarget.name
           const result = await sessionsMut.create(
-            { workspace: targetWorkspaceName, agent, model },
+            { workspace: targetWorkspaceName, agent, model, reasoningEffort },
             { onSuccess: () => { void loadSessions() } }
           )
           if (result?.sessionId) {

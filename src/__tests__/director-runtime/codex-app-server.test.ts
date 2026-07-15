@@ -201,6 +201,8 @@ describe('CodexAppServerRuntime', () => {
           type: 'codex-app-server',
           command: 'codex',
           name: 'codex-live',
+          model: 'gpt-5.4',
+          reasoning_effort: 'high',
           cwd: '/tmp/persona-codex-workspace',
         },
         personaRole: 'director',
@@ -230,6 +232,8 @@ describe('CodexAppServerRuntime', () => {
 
     expect(runtimePrivate.threadOptions()).toMatchObject({
       cwd: '/tmp/persona-codex-workspace',
+      model: 'gpt-5.4',
+      config: { model_reasoning_effort: 'high' },
       sessionStartSource: 'startup',
       threadSource: 'user',
     });

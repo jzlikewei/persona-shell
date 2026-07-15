@@ -22,6 +22,7 @@ export interface RunTaskInput {
   role: string;
   agent?: string;
   model?: string;
+  reasoningEffort?: string;
   prompt: string;
   description?: string;
   projectDir?: string;
@@ -95,6 +96,10 @@ export class TaskRunner extends EventEmitter {
         : this.config.agents;
       agent = resolveAgentProvider(agents, input.role, input.agent);
       if (input.model) agent = { ...agent, model: input.model };
+      if (input.reasoningEffort && agent.type !== 'codex-app-server') {
+        throw new Error('reasoning_effort is only supported by codex-app-server');
+      }
+      if (input.reasoningEffort) agent = { ...agent, reasoning_effort: input.reasoningEffort };
     } catch (err) {
       const result: TaskResult = {
         taskId: input.taskId,

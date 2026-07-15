@@ -56,6 +56,10 @@ export class CodexAppServerSessionAdapter implements DirectorSessionAdapter {
     return this.runtime.getStatus();
   }
 
+  getEffectiveSettings() {
+    return this.runtime.getEffectiveSettings();
+  }
+
   hasActiveTurn(): boolean {
     return this.runtime.hasActiveTurn();
   }

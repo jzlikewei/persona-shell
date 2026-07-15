@@ -942,7 +942,7 @@ async function main() {
     if (task && task.retry_count < task.max_retry && result.error !== 'cancelled') {
       updateTask(result.taskId, { retry_count: task.retry_count + 1, status: 'dispatched' });
       console.log(`[shell] Retrying task ${result.taskId} (attempt ${task.retry_count + 1}/${task.max_retry})`);
-      taskRunner.runTask({ taskId: result.taskId, role: task.role, agent: task.agent ?? undefined, model: task.extra?.model, prompt: task.prompt, description: task.description, projectDir: task.extra?.project_dir });
+      taskRunner.runTask({ taskId: result.taskId, role: task.role, agent: task.agent ?? undefined, model: task.extra?.model, reasoningEffort: task.extra?.reasoning_effort, prompt: task.prompt, description: task.description, projectDir: task.extra?.project_dir });
       return;
     }
 

@@ -53,6 +53,15 @@ interface TurnRecord {
   error?: unknown;
 }
 
+export interface CodexModelCatalogEntry {
+  model: string;
+  displayName?: string;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort?: string;
+  isDefault?: boolean;
+  hidden?: boolean;
+}
+
 export interface CodexAppServerRuntimeHooks {
   getSessionId(): string | null;
   getSessionName(): string | null;
@@ -115,6 +124,8 @@ export class CodexAppServerRuntime {
   private activeResponse = '';
   private activeDeltaCount = 0;
   private currentTurnStartedAt: number | null = null;
+  private effectiveModel: string | undefined;
+  private effectiveReasoningEffort: string | undefined;
   private liveToolOutputs = new Map<string, string>();
   private starting: Promise<boolean> | null = null;
 
@@ -131,6 +142,12 @@ export class CodexAppServerRuntime {
     return this.starting;
   }
 
+  async startDiscovery(): Promise<void> {
+    if (this.isTransportReady()) return;
+    this.spawnChild();
+    await this.initializeTransport();
+  }
+
   isReady(): boolean {
     return Boolean(this.child?.pid && !this.child.killed && this.initialized && this.threadReady);
   }
@@ -141,6 +158,51 @@ export class CodexAppServerRuntime {
 
   hasActiveTurn(): boolean {
     return this.activeTurnId !== null;
+  }
+
+  getEffectiveSettings(): { model?: string; reasoningEffort?: string } {
+    return {
+      ...(this.effectiveModel ? { model: this.effectiveModel } : {}),
+      ...(this.effectiveReasoningEffort ? { reasoningEffort: this.effectiveReasoningEffort } : {}),
+    };
+  }
+
+  async listModels(includeHidden = false): Promise<CodexModelCatalogEntry[]> {
+    if (!this.isTransportReady()) throw new Error('codex app-server is not ready');
+    const result = this.asRecord(await this.request('model/list', { includeHidden, limit: 100 }));
+    const rawItems = Array.isArray(result.data) ? result.data : Array.isArray(result.models) ? result.models : [];
+    return rawItems.flatMap((item) => {
+      const entry = this.asRecord(item);
+      if (typeof entry.model !== 'string' || !entry.model.trim()) return [];
+      const efforts = Array.isArray(entry.supportedReasoningEfforts)
+        ? entry.supportedReasoningEfforts.flatMap((value) => {
+          if (typeof value === 'string') return [value];
+          const record = this.asRecord(value);
+          return typeof record.effort === 'string' ? [record.effort] : [];
+        })
+        : [];
+      return [{
+        model: entry.model,
+        ...(typeof entry.displayName === 'string' ? { displayName: entry.displayName } : {}),
+        supportedReasoningEfforts: efforts,
+        ...(typeof entry.defaultReasoningEffort === 'string' ? { defaultReasoningEffort: entry.defaultReasoningEffort } : {}),
+        ...(typeof entry.isDefault === 'boolean' ? { isDefault: entry.isDefault } : {}),
+        ...(typeof entry.hidden === 'boolean' ? { hidden: entry.hidden } : {}),
+      }];
+    });
+  }
+
+  async resolveModelSettings(model?: string, reasoningEffort?: string): Promise<{ model: string; reasoningEffort?: string }> {
+    const catalog = await this.listModels(false);
+    const selectedModel = model?.trim() || catalog.find((entry) => entry.isDefault)?.model;
+    if (!selectedModel) throw new Error('codex model/list did not provide a default model');
+    const entry = catalog.find((candidate) => candidate.model === selectedModel);
+    if (!entry) throw new Error(`unsupported Codex model: ${selectedModel}`);
+    const selectedEffort = reasoningEffort?.trim() || entry.defaultReasoningEffort;
+    if (selectedEffort && !entry.supportedReasoningEfforts.includes(selectedEffort)) {
+      throw new Error(`reasoning_effort "${selectedEffort}" is not supported by Codex model "${selectedModel}"`);
+    }
+    return { model: selectedModel, ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}) };
   }
 
   getStatus(): DirectorRuntimeStatus {
@@ -186,6 +248,7 @@ export class CodexAppServerRuntime {
       approvalPolicy: this.options.agent.approval ?? 'never',
       sandboxPolicy: this.toSandboxPolicy(this.options.agent.sandbox),
       ...(this.options.agent.model ? { model: this.options.agent.model } : {}),
+      ...(this.options.agent.reasoning_effort ? { effort: this.options.agent.reasoning_effort } : {}),
     });
 
     const turnId = this.getTurnId(result);
@@ -249,21 +312,7 @@ export class CodexAppServerRuntime {
     if (!restoredName) this.hooks.setSessionName(sessionName);
 
     this.spawnChild();
-
-    await this.request('initialize', {
-      clientInfo: {
-        name: 'persona-shell',
-        title: 'persona-shell',
-        version: '0.1.0',
-      },
-      capabilities: {
-        experimentalApi: true,
-        requestAttestation: false,
-        optOutNotificationMethods: [],
-      },
-    });
-    this.notify('initialized');
-    this.initialized = true;
+    await this.initializeTransport();
 
     if (restoredSession) {
       try {
@@ -272,6 +321,7 @@ export class CodexAppServerRuntime {
           ...this.threadOptions(),
         });
         const threadId = this.getThreadId(resumed) ?? restoredSession;
+        this.captureEffectiveSettings(resumed);
         this.hooks.persistSession(threadId, sessionName);
         await this.setThreadName(threadId, sessionName);
         this.threadReady = true;
@@ -296,9 +346,27 @@ export class CodexAppServerRuntime {
     });
     const threadId = this.getThreadId(started);
     if (!threadId) throw new Error('codex app-server thread/start did not return a thread id');
+    this.captureEffectiveSettings(started);
     this.hooks.persistSession(threadId, sessionName);
     await this.setThreadName(threadId, sessionName);
     this.threadReady = true;
+  }
+
+  private async initializeTransport(): Promise<void> {
+    await this.request('initialize', {
+      clientInfo: {
+        name: 'persona-shell',
+        title: 'persona-shell',
+        version: '0.1.0',
+      },
+      capabilities: {
+        experimentalApi: true,
+        requestAttestation: false,
+        optOutNotificationMethods: [],
+      },
+    });
+    this.notify('initialized');
+    this.initialized = true;
   }
 
   private spawnChild(): void {
@@ -651,6 +719,7 @@ export class CodexAppServerRuntime {
       approvalPolicy: this.options.agent.approval ?? 'never',
       sandbox: this.options.agent.sandbox ?? 'danger-full-access',
       ...(this.options.agent.model ? { model: this.options.agent.model } : {}),
+      ...(this.options.agent.reasoning_effort ? { config: { model_reasoning_effort: this.options.agent.reasoning_effort } } : {}),
       baseInstructions: this.readPromptSections(['CLAUDE.md', 'soul.md', 'meta.md']),
       developerInstructions: this.readDeveloperInstructions(),
       sessionStartSource: 'startup',
@@ -760,6 +829,16 @@ export class CodexAppServerRuntime {
 
   private textInput(text: string): Record<string, JsonValue> {
     return { type: 'text', text, text_elements: [] };
+  }
+
+  private captureEffectiveSettings(value: unknown): void {
+    const record = this.asRecord(value);
+    const thread = this.asRecord(record.thread);
+    const model = this.stringField(record, 'model') ?? this.stringField(thread, 'model');
+    const effort = this.stringField(record, 'reasoningEffort', 'reasoning_effort')
+      ?? this.stringField(thread, 'reasoningEffort', 'reasoning_effort');
+    this.effectiveModel = model ?? this.options.agent.model;
+    this.effectiveReasoningEffort = effort ?? this.options.agent.reasoning_effort;
   }
 
   private getThreadId(value: unknown): string | null {

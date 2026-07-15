@@ -3,6 +3,14 @@ import { useApi } from './use-api'
 import { useWebSocket } from './use-websocket'
 import { useToast } from '@/components/toast'
 
+export interface CodexModelCatalogEntry {
+  model: string
+  displayName?: string
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
+  isDefault?: boolean
+}
+
 export interface AgentProvider {
   type: string
   command?: string
@@ -24,6 +32,7 @@ export interface AgentProvider {
 
 interface ConfigSummary {
   agents: {
+    defaults: { default?: string }
     providers: Record<string, AgentProvider>
   }
 }
@@ -34,12 +43,14 @@ export function useAgents() {
   const { on } = useWebSocket()
   const { toast } = useToast()
   const [agents, setAgents] = useState<Record<string, AgentProvider>>({})
+  const [defaultAgent, setDefaultAgent] = useState<string | undefined>()
   const [loading, setLoading] = useState(true)
 
   const reload = useCallback(async () => {
     try {
       const res = await get<ConfigSummary>('/api/config-summary')
       setAgents(res.agents.providers)
+      setDefaultAgent(res.agents.defaults.default)
     } catch (e) {
       console.error('useAgents: failed to load config-summary:', e)
       toast({ title: '加载 Agent 配置失败', description: e instanceof Error ? e.message : String(e), tone: 'error' })
@@ -56,5 +67,11 @@ export function useAgents() {
     return on('context_update', () => { reload() })
   }, [on, reload])
 
-  return { agents, loading, reload }
+  const reloadCodexModels = useCallback(async (agentName: string): Promise<CodexModelCatalogEntry[]> => {
+    const res = await get<{ ok: boolean; models?: CodexModelCatalogEntry[]; error?: string }>('/api/codex/models', { agent: agentName })
+    if (!res.ok) throw new Error(res.error || '加载 Codex models 失败')
+    return res.models ?? []
+  }, [get])
+
+  return { agents, defaultAgent, loading, reload, reloadCodexModels }
 }

@@ -19,7 +19,10 @@ export interface AgentProviderConfig {
   command: string;
   bare?: boolean;
   dangerously_skip_permissions?: boolean;
+  /** Claude CLI reasoning effort. */
   effort?: ClaudeEffort;
+  /** Codex app-server reasoning effort. Values are discovered per model via model/list. */
+  reasoning_effort?: string;
   sandbox?: CodexSandbox;
   approval?: CodexApproval;
   search?: boolean;

@@ -23,6 +23,7 @@ import { getLogDir } from './logger.js';
 import { resolveCronMessage } from './prompt-loader.js';
 import { extractBashCommand, isBashAction, runBashAction } from './task/shell-bash.js';
 import { CodexThreadInjector } from './codex-thread-injector.js';
+import { CodexAppServerRuntime, type CodexModelCatalogEntry } from './director-runtime/codex-app-server.js';
 import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace, resolveAllowedProjectPath } from './console-api.js';
 
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
@@ -276,6 +277,63 @@ export function startConsole(
       console.warn('[console] Failed to reload config.yaml, using startup config:', err);
       return config;
     }
+  }
+
+  const codexCatalogCache = new Map<string, { expiresAt: number; models: CodexModelCatalogEntry[] }>();
+
+  async function loadCodexModelCatalog(agentName: string): Promise<CodexModelCatalogEntry[]> {
+    const cached = codexCatalogCache.get(agentName);
+    if (cached && cached.expiresAt > Date.now()) return cached.models;
+    const cfg = currentConfig();
+    const agent = resolveAgentProvider(cfg.agents, 'director', agentName);
+    if (agent.type !== 'codex-app-server') throw new Error(`agent "${agentName}" is not a codex-app-server provider`);
+    const runtime = new CodexAppServerRuntime(
+      {
+        label: `model-discovery-${agentName}`,
+        logDir: join(getLogDir(), 'model-discovery', agentName),
+        config: cfg.director,
+        agent,
+        personaRole: 'director',
+      },
+      {
+        getSessionId: () => null,
+        getSessionName: () => null,
+        getRuntimeEnv: () => ({}),
+        setSessionName: () => undefined,
+        buildSessionName: () => 'model-discovery',
+        persistSession: () => undefined,
+        clearSession: () => undefined,
+        logOutput: () => undefined,
+        onChunk: () => undefined,
+        onToolCall: () => undefined,
+        onPartialAgentMessage: () => undefined,
+        onMetrics: () => undefined,
+        onTurnComplete: () => undefined,
+        onTurnFailure: () => undefined,
+        onRuntimeClosed: () => undefined,
+      },
+    );
+    try {
+      await runtime.startDiscovery();
+      const models = await runtime.listModels(false);
+      codexCatalogCache.set(agentName, { expiresAt: Date.now() + 5 * 60_000, models });
+      return models;
+    } finally {
+      await runtime.stop();
+    }
+  }
+
+  async function resolveCodexSessionSettings(agentName: string, model?: string, reasoningEffort?: string): Promise<{ model: string; reasoningEffort?: string }> {
+    const models = await loadCodexModelCatalog(agentName);
+    const selectedModel = model?.trim() || models.find((entry) => entry.isDefault)?.model;
+    if (!selectedModel) throw new Error('codex model/list did not provide a default model');
+    const entry = models.find((candidate) => candidate.model === selectedModel);
+    if (!entry) throw new Error(`unsupported Codex model: ${selectedModel}`);
+    const selectedEffort = reasoningEffort?.trim() || entry.defaultReasoningEffort;
+    if (selectedEffort && !entry.supportedReasoningEfforts.includes(selectedEffort)) {
+      throw new Error(`reasoning_effort "${selectedEffort}" is not supported by Codex model "${selectedModel}"`);
+    }
+    return { model: selectedModel, ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}) };
   }
 
   // Web chat 消息处理
@@ -1902,6 +1960,7 @@ export function startConsole(
       role: task.role,
       agent: task.agent ?? undefined,
       model: extra.model,
+      reasoningEffort: extra.reasoning_effort,
       prompt: task.prompt,
       description: task.description,
       projectDir: extra.project_dir,
@@ -2761,6 +2820,20 @@ export function startConsole(
             writeFileSync(filePath, body.content, 'utf-8');
             writeAuditEntry('state.update', true, { target: kind, path: filePath, bytes: Buffer.byteLength(body.content, 'utf-8') });
             return Response.json({ ok: true, kind, path: filePath });
+          }
+
+          // GET /api/codex/models?agent=<provider> — live model/effort catalog from Codex app-server
+          if (url.pathname === '/api/codex/models' && req.method === 'GET') {
+            try {
+              const agentName = url.searchParams.get('agent')?.trim() || currentConfig().agents.defaults.default || 'codex';
+              const agent = resolveAgentProvider(currentConfig().agents, 'director', agentName);
+              if (agent.type !== 'codex-app-server') {
+                return Response.json({ ok: false, error: 'reasoning_effort is only supported by codex-app-server' }, { status: 400 });
+              }
+              return Response.json({ ok: true, agent: agentName, models: await loadCodexModelCatalog(agentName) });
+            } catch (err) {
+              return Response.json({ ok: false, error: String(err) }, { status: 500 });
+            }
           }
 
           // GET /api/config-summary — safe, redacted runtime configuration for Settings
@@ -4187,7 +4260,7 @@ export function startConsole(
           // Web session API routes
           if (url.pathname === '/api/sessions' && req.method === 'POST') {
             try {
-              const body = await req.json() as { workspace: string; agent?: string; model?: string };
+              const body = await req.json() as { workspace: string; agent?: string; model?: string; reasoning_effort?: string };
               if (!body.workspace) {
                 return Response.json({ ok: false, error: 'workspace is required' }, { status: 400 });
               }
@@ -4195,32 +4268,48 @@ export function startConsole(
               if (!wsName) {
                 return Response.json({ ok: false, error: 'invalid workspace name' }, { status: 400 });
               }
+              const requestedAgentName = body.agent?.trim() || (wsName === 'main' ? director.getAgentName() : undefined) || currentConfig().agents.defaults.default || 'claude';
+              const requestedAgent = resolveAgentProvider(currentConfig().agents, 'director', requestedAgentName);
+              if (body.reasoning_effort !== undefined && (typeof body.reasoning_effort !== 'string' || !body.reasoning_effort.trim())) {
+                return Response.json({ ok: false, error: 'reasoning_effort must be a non-empty string' }, { status: 400 });
+              }
+              if (body.reasoning_effort && requestedAgent.type !== 'codex-app-server') {
+                return Response.json({ ok: false, error: 'reasoning_effort is only supported by codex-app-server' }, { status: 400 });
+              }
+              const codexSettings = requestedAgent.type === 'codex-app-server'
+                ? await resolveCodexSessionSettings(requestedAgentName, body.model, body.reasoning_effort)
+                : undefined;
+              const effectiveModel = codexSettings?.model ?? body.model?.trim();
+              const effectiveEffort = codexSettings?.reasoningEffort;
               if (wsName === 'main') {
-                if (body.agent?.trim()) {
-                  const switched = await director.switchAgent(body.agent.trim());
-                  if (!switched) return Response.json({ ok: false, error: `failed to switch main Director to ${body.agent}` }, { status: 500 });
-                }
-                await director.resetSession();
+                await director.resetSession({
+                  agentName: requestedAgentName,
+                  model: effectiveModel,
+                  reasoningEffort: effectiveEffort,
+                });
                 const sessionId = await director.waitForSessionId();
                 if (!sessionId) return Response.json({ ok: false, error: 'main session was not initialized' }, { status: 500 });
                 workspaceRegistry?.setDefaultSession('main', sessionId);
-                writeAuditEntry('session.create', true, { workspace: wsName, sessionId, director: 'main' });
-                return Response.json({ ok: true, sessionId, workspace: wsName });
+                const actualModel = director.getDirectorAgentModel();
+                const actualEffort = director.getDirectorReasoningEffort();
+                writeAuditEntry('session.create', true, { workspace: wsName, sessionId, director: 'main', model: actualModel, reasoning_effort: actualEffort });
+                return Response.json({ ok: true, sessionId, workspace: wsName, model: actualModel, reasoning_effort: actualEffort });
               }
               if (!sessionManager) return Response.json({ error: 'Session manager not available' }, { status: 503 });
               const entry = await sessionManager.createNewSession(wsName, {
                 feishuChatId: 'web-console',
-                agentName: body.agent,
-                model: body.model,
+                agentName: requestedAgentName,
+                model: effectiveModel,
+                reasoningEffort: effectiveEffort,
               });
               writeAuditEntry('session.create', true, { workspace: wsName, sessionId: entry.sessionId });
               // Persist new model to config.yaml supported_models if not already listed
-              if (body.model?.trim()) {
-                const agentName = body.agent ?? currentConfig().agents.defaults.default ?? 'claude';
+              if (effectiveModel) {
+                const agentName = requestedAgentName;
                 try {
-                  const saved = appendSupportedModel(agentName, body.model.trim());
-                  if (saved) console.log(`[api] Saved model "${body.model}" to ${agentName}.supported_models`);
-                  else console.log(`[api] Model "${body.model}" already in ${agentName}.supported_models or provider not found`);
+                  const saved = appendSupportedModel(agentName, effectiveModel);
+                  if (saved) console.log(`[api] Saved model "${effectiveModel}" to ${agentName}.supported_models`);
+                  else console.log(`[api] Model "${effectiveModel}" already in ${agentName}.supported_models or provider not found`);
                 } catch (e) {
                   console.error(`[api] Failed to save model to config:`, e);
                 }
@@ -4232,6 +4321,8 @@ export function startConsole(
                 archived: false,
                 role: entry.role,
                 cwd: entry.cwd,
+                model: entry.bridge.getDirectorAgentModel(),
+                reasoning_effort: entry.bridge.getDirectorReasoningEffort(),
               });
             } catch (err) {
               writeAuditEntry('session.create', false, { error: String(err) });

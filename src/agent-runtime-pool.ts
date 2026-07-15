@@ -48,6 +48,7 @@ interface RuntimeCreateOptions {
   feishuChatId: string;
   agentName?: string;
   model?: string;
+  reasoningEffort?: string;
   initialSessionId?: string;
 }
 
@@ -278,6 +279,7 @@ export class AgentRuntimePool extends EventEmitter {
       config: this.directorConfig,
       agentName: opts.agentName,
       model: opts.model,
+      reasoningEffort: opts.reasoningEffort,
       initialSessionId: opts.initialSessionId,
       label,
       isMain: false,
