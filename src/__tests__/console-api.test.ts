@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace, resolveAllowedProjectPath } from '../console-api.js';
+import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace, resolveAllowedProjectPath, resolveCodexModelSelection } from '../console-api.js';
 
 describe('console API contract', () => {
   test('send requires sessionId and text', () => {
@@ -48,6 +48,13 @@ describe('console API contract', () => {
     expect(parseSessionsWorkspace(new URL('http://local/api/sessions?director=old'))).toBe('main');
   });
 
+  test('Codex model selection leaves model and effort unset when model is omitted', () => {
+    const models = [{ model: 'gpt-5.4', supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' }];
+    expect(resolveCodexModelSelection(models)).toEqual({});
+    expect(resolveCodexModelSelection(models, 'gpt-5.4')).toEqual({ model: 'gpt-5.4', reasoningEffort: 'high' });
+    expect(() => resolveCodexModelSelection(models, undefined, 'high')).toThrow('requires an explicit Codex model');
+    expect(() => resolveCodexModelSelection(models, 'gpt-5.4', 'medium')).toThrow('not supported');
+  });
   test('project file paths are limited to allowed roots', () => {
     expect(resolveAllowedProjectPath('/repo/app/src/index.ts', ['/repo/app'])).toEqual({
       root: '/repo/app',

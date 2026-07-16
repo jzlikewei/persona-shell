@@ -47,6 +47,32 @@ export function parseMessagesSessionId(url: URL): string | null {
   return sessionId || null;
 }
 
+export interface CodexModelSelectionEntry {
+  model: string;
+  supportedReasoningEfforts: string[];
+  defaultReasoningEffort?: string;
+}
+
+export function resolveCodexModelSelection(
+  models: CodexModelSelectionEntry[],
+  model?: string,
+  reasoningEffort?: string,
+): { model?: string; reasoningEffort?: string } {
+  const selectedModel = model?.trim();
+  const requestedEffort = reasoningEffort?.trim();
+  if (!selectedModel) {
+    if (requestedEffort) throw new Error('reasoning_effort requires an explicit Codex model');
+    return {};
+  }
+  const entry = models.find((candidate) => candidate.model === selectedModel);
+  if (!entry) throw new Error(`unsupported Codex model: ${selectedModel}`);
+  const selectedEffort = requestedEffort || entry.defaultReasoningEffort;
+  if (selectedEffort && !entry.supportedReasoningEfforts.includes(selectedEffort)) {
+    throw new Error(`reasoning_effort "${selectedEffort}" is not supported by Codex model "${selectedModel}"`);
+  }
+  return { model: selectedModel, ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}) };
+}
+
 export function parseSessionsWorkspace(url: URL): string {
   return url.searchParams.get('workspace')?.trim() || 'main';
 }

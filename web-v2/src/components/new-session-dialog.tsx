@@ -28,9 +28,8 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
   const configuredModels = currentAgent?.supportedModels ?? []
   const supportedModels = isCodex ? codexModels.map(entry => entry.model) : configuredModels
   const selectedModelEntry = useMemo(() => {
-    if (!isCodex) return undefined
-    const model = modelInput || codexModels.find(entry => entry.isDefault)?.model
-    return codexModels.find(entry => entry.model === model)
+    if (!isCodex || !modelInput.trim()) return undefined
+    return codexModels.find(entry => entry.model === modelInput.trim())
   }, [codexModels, isCodex, modelInput])
 
   useEffect(() => {
@@ -65,7 +64,7 @@ export function NewSessionDialog({ open, onOpenChange, workspace, defaultAgent, 
   if (!open) return null
 
   const modelValue = modelInput.trim() || undefined
-  const effortValue = isCodex ? effortInput.trim() || selectedModelEntry?.defaultReasoningEffort : undefined
+  const effortValue = isCodex && modelValue ? effortInput.trim() || selectedModelEntry?.defaultReasoningEffort : undefined
 
   return (
     <div role="dialog" aria-modal="true" className="fixed inset-0 z-[160] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => onOpenChange(false)}>

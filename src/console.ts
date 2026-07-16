@@ -24,7 +24,7 @@ import { resolveCronMessage } from './prompt-loader.js';
 import { extractBashCommand, isBashAction, runBashAction } from './task/shell-bash.js';
 import { CodexThreadInjector } from './codex-thread-injector.js';
 import { CodexAppServerRuntime, type CodexModelCatalogEntry } from './director-runtime/codex-app-server.js';
-import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace, resolveAllowedProjectPath } from './console-api.js';
+import { parseMessagesSessionId, parseSendApiPayload, parseSessionsWorkspace, resolveAllowedProjectPath, resolveCodexModelSelection } from './console-api.js';
 
 /** Minimal WebSocket interface — matches Bun.ServerWebSocket surface used here */
 interface WsConnection {
@@ -323,17 +323,9 @@ export function startConsole(
     }
   }
 
-  async function resolveCodexSessionSettings(agentName: string, model?: string, reasoningEffort?: string): Promise<{ model: string; reasoningEffort?: string }> {
+  async function resolveCodexSessionSettings(agentName: string, model?: string, reasoningEffort?: string): Promise<{ model?: string; reasoningEffort?: string }> {
     const models = await loadCodexModelCatalog(agentName);
-    const selectedModel = model?.trim() || models.find((entry) => entry.isDefault)?.model;
-    if (!selectedModel) throw new Error('codex model/list did not provide a default model');
-    const entry = models.find((candidate) => candidate.model === selectedModel);
-    if (!entry) throw new Error(`unsupported Codex model: ${selectedModel}`);
-    const selectedEffort = reasoningEffort?.trim() || entry.defaultReasoningEffort;
-    if (selectedEffort && !entry.supportedReasoningEfforts.includes(selectedEffort)) {
-      throw new Error(`reasoning_effort "${selectedEffort}" is not supported by Codex model "${selectedModel}"`);
-    }
-    return { model: selectedModel, ...(selectedEffort ? { reasoningEffort: selectedEffort } : {}) };
+    return resolveCodexModelSelection(models, model, reasoningEffort);
   }
 
   // Web chat 消息处理
