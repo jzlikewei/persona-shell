@@ -322,6 +322,8 @@ initialize -> thread/start(baseInstructions, developerInstructions(+workspace co
 turn/start(input) -> item/agentMessage/delta ... -> turn/completed
 ```
 
+同一个 App Server 进程可能同时承载主 thread 与 Codex 内部子 Agent thread。Runtime 以已持久化的 sessionId（resume）或本次 `thread/start` 建立的 threadId 为 primary thread；只有 primary thread 的 turn、item、workflow、token usage 和 error 通知可以驱动当前响应与 lifecycle hooks，不带 threadId 的全局 error 则继续按 transport failure 处理。来自其他 thread 的通知不改变主 turn 状态，但所有 JSON-RPC server request（包括子 thread 的动态 tool call 和审批请求）仍按协议响应，避免阻断子 Agent 执行。
+
 **Kimi**（stdin/stdout pipe）：
 ```bash
 kimi --print \

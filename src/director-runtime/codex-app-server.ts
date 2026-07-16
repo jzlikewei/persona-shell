@@ -120,6 +120,8 @@ export class CodexAppServerRuntime {
   private requestId = 0;
   private initialized = false;
   private threadReady = false;
+  private primaryThreadId: string | null = null;
+  private awaitingPrimaryThreadStarted = false;
   private activeTurnId: string | null = null;
   private activeResponse = '';
   private activeDeltaCount = 0;
@@ -301,12 +303,14 @@ export class CodexAppServerRuntime {
   private async startInternal(): Promise<boolean> {
     this.initialized = false;
     this.threadReady = false;
+    this.primaryThreadId = this.hooks.getSessionId();
+    this.awaitingPrimaryThreadStarted = false;
     this.activeTurnId = null;
     this.activeResponse = '';
     this.activeDeltaCount = 0;
     this.currentTurnStartedAt = null;
 
-    const restoredSession = this.hooks.getSessionId();
+    const restoredSession = this.primaryThreadId;
     const restoredName = this.hooks.getSessionName();
     const sessionName = restoredName ?? this.hooks.buildSessionName();
     if (!restoredName) this.hooks.setSessionName(sessionName);
@@ -322,12 +326,13 @@ export class CodexAppServerRuntime {
         });
         const threadId = this.getThreadId(resumed) ?? restoredSession;
         this.captureEffectiveSettings(resumed);
-        this.hooks.persistSession(threadId, sessionName);
+        this.persistPrimaryThread(threadId, sessionName);
         await this.setThreadName(threadId, sessionName);
         this.threadReady = true;
         return false;
       } catch (err) {
         console.warn(`[bridge:${this.options.label}] Codex app-server resume failed, starting new thread: ${String(err)}`);
+        this.primaryThreadId = null;
         this.hooks.clearSession();
       }
     }
@@ -340,14 +345,21 @@ export class CodexAppServerRuntime {
     const sessionName = this.hooks.getSessionName() ?? this.hooks.buildSessionName();
     if (!this.hooks.getSessionName()) this.hooks.setSessionName(sessionName);
 
-    const started = await this.request('thread/start', {
-      ...this.threadOptions(),
-      ephemeral: this.options.agent.ephemeral ?? false,
-    });
-    const threadId = this.getThreadId(started);
+    this.primaryThreadId = null;
+    this.awaitingPrimaryThreadStarted = true;
+    let started: unknown;
+    try {
+      started = await this.request('thread/start', {
+        ...this.threadOptions(),
+        ephemeral: this.options.agent.ephemeral ?? false,
+      });
+    } finally {
+      this.awaitingPrimaryThreadStarted = false;
+    }
+    const threadId = this.getThreadId(started) ?? this.primaryThreadId;
     if (!threadId) throw new Error('codex app-server thread/start did not return a thread id');
     this.captureEffectiveSettings(started);
-    this.hooks.persistSession(threadId, sessionName);
+    this.persistPrimaryThread(threadId, sessionName);
     await this.setThreadName(threadId, sessionName);
     this.threadReady = true;
   }
@@ -398,6 +410,7 @@ export class CodexAppServerRuntime {
     child.on('close', () => {
       this.initialized = false;
       this.threadReady = false;
+      this.awaitingPrimaryThreadStarted = false;
       this.activeTurnId = null;
       this.rejectAll('codex app-server closed');
       void this.hooks.onRuntimeClosed();
@@ -488,15 +501,16 @@ export class CodexAppServerRuntime {
 
   private handleNotification(msg: JsonRpcNotification): void {
     const params = this.asRecord(msg.params);
+    if (msg.method === 'thread/started') {
+      this.handleThreadStarted(params);
+      return;
+    }
+    if (!this.belongsToPrimaryThread(params)) return;
+
     if (this.isToolLikeMethod(msg.method) && msg.method !== 'item/commandExecution/outputDelta') {
       this.hooks.onToolCall(this.extractToolName(params) ?? this.extractToolNameFromMethod(msg.method));
     }
     switch (msg.method) {
-      case 'thread/started': {
-        const threadId = this.getThreadId({ thread: params.thread });
-        if (threadId) this.hooks.persistSession(threadId, this.hooks.getSessionName());
-        break;
-      }
       case 'turn/started': {
         const turnId = this.getTurnId(params);
         if (turnId) {
@@ -581,8 +595,10 @@ export class CodexAppServerRuntime {
   private handleServerRequest(msg: JsonRpcServerRequest): void {
     const child = this.child;
     if (!child?.stdin || msg.id === undefined) return;
-    if (this.isToolLikeMethod(msg.method)) {
-      this.hooks.onToolCall(this.extractToolName(this.asRecord(msg.params)) ?? this.extractToolNameFromMethod(msg.method));
+    const params = this.asRecord(msg.params);
+    // Child requests still need a protocol response; only their observational tool hook is suppressed.
+    if (this.isToolLikeMethod(msg.method) && this.belongsToPrimaryThread(params)) {
+      this.hooks.onToolCall(this.extractToolName(params) ?? this.extractToolNameFromMethod(msg.method));
     }
 
     if (msg.method === 'item/tool/call') {
@@ -666,6 +682,7 @@ export class CodexAppServerRuntime {
     const deltaCount = this.activeDeltaCount;
     this.activeDeltaCount = 0;
     this.currentTurnStartedAt = null;
+    this.liveToolOutputs.clear();
 
     if (turn.status === 'failed') {
       this.hooks.onTurnFailure(this.summarize(turn.error ?? 'turn failed'));
@@ -843,9 +860,52 @@ export class CodexAppServerRuntime {
 
   private getThreadId(value: unknown): string | null {
     const record = this.asRecord(value);
-    if (typeof record.threadId === 'string') return record.threadId;
+    const threadId = this.stringField(record, 'threadId', 'thread_id');
+    if (threadId) return threadId;
     const thread = this.asRecord(record.thread);
     return typeof thread.id === 'string' ? thread.id : null;
+  }
+
+  private notificationThreadId(params: Record<string, unknown>): string | null {
+    const direct = this.getThreadId(params);
+    if (direct) return direct;
+
+    for (const key of ['turn', 'item', 'goal', 'error']) {
+      const nested = this.asRecord(params[key]);
+      const nestedThreadId = this.stringField(nested, 'threadId', 'thread_id');
+      if (nestedThreadId) return nestedThreadId;
+    }
+    return null;
+  }
+
+  private currentPrimaryThreadId(): string | null {
+    if (this.primaryThreadId) return this.primaryThreadId;
+    if (this.awaitingPrimaryThreadStarted) return null;
+    return this.hooks.getSessionId();
+  }
+
+  private belongsToPrimaryThread(params: Record<string, unknown>): boolean {
+    const notificationThreadId = this.notificationThreadId(params);
+    if (!notificationThreadId) return true;
+    const primaryThreadId = this.currentPrimaryThreadId();
+    return primaryThreadId !== null && notificationThreadId === primaryThreadId;
+  }
+
+  private persistPrimaryThread(threadId: string, sessionName: string | null): void {
+    this.primaryThreadId = threadId;
+    this.hooks.persistSession(threadId, sessionName);
+  }
+
+  private handleThreadStarted(params: Record<string, unknown>): void {
+    const threadId = this.notificationThreadId(params);
+    if (!threadId) return;
+
+    const primaryThreadId = this.currentPrimaryThreadId();
+    if (primaryThreadId && threadId !== primaryThreadId) return;
+    // Before thread/start returns, its thread/started notification is the only event allowed to claim identity.
+    if (!primaryThreadId && !this.awaitingPrimaryThreadStarted) return;
+
+    this.persistPrimaryThread(threadId, this.hooks.getSessionName());
   }
 
   private getTurnId(value: unknown): string | null {
